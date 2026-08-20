@@ -36,8 +36,12 @@ function today(){return new Date().toISOString().slice(0,10)}
 function save(){localStorage.setItem(KEY,JSON.stringify(data));renderAll()}
 function load(){try{const raw=JSON.parse(localStorage.getItem(KEY)||'null');data=normalize(raw||emptyData())}catch{data=emptyData()}}
 function normalize(raw){const d=emptyData();
- if(Array.isArray(raw.categories)) d.categories=raw.categories.map(c=>({id:c.id||uid(),name:String(c.name||c.label||'Catégorie'),parentId:c.parentId??c.parent??null}));
- if(Array.isArray(raw.activities)) d.activities=raw.activities.map(a=>({id:a.id||uid(),name:String(a.name||a.activity||'Activité'),categoryId:a.categoryId||a.catId||null,path:Array.isArray(a.path)?a.path.map(String):[]}));
+ const rawCats=Array.isArray(raw.categories)?raw.categories:[];
+ const byId=new Map(), pending=[];
+ rawCats.forEach(c=>{const id=String(c.id||uid()),name=String(c.name||c.label||'Catégorie');d.categories.push({id,name,parentId:null});byId.set(id,d.categories[d.categories.length-1]);pending.push({c,node:d.categories[d.categories.length-1]})});
+ const findCatId=v=>{if(v==null||v==='')return null;const key=String(v);if(byId.has(key))return key;const found=d.categories.find(x=>x.name===key);return found?.id||null};
+ pending.forEach(({c,node})=>{const parentValue=c.parentId??c.parent??c.parentID??c.parent_id??c.parentCategoryId??c.categoryParentId;node.parentId=findCatId(parentValue)});
+ if(Array.isArray(raw.activities)) d.activities=raw.activities.map(a=>({id:a.id||uid(),name:String(a.name||a.activity||'Activité'),categoryId:findCatId(a.categoryId??a.catId??a.category??a.parentId)||null,path:Array.isArray(a.path)?a.path.map(String):[]}));
  if(Array.isArray(raw.entries)) d.entries=raw.entries.map(e=>({...e,id:e.id||uid(),activityId:e.activityId||null,date:e.date||today(),start:e.start||`${e.date||today()}T09:00`,end:e.end||null,duration:Number(e.duration)||0,note:e.note||''}));
  d.settings={goal:Number(raw.settings?.goal)||8};
  migrateLegacy(raw,d); rebuildEntryLinks(d); return d}
