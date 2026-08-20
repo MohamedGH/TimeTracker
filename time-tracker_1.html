@@ -1,0 +1,1549 @@
+<div id="app"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.46.0/tabler-icons.min.css">
+<style>
+  #app {
+    --ink: #232821;
+    --ink-soft: #4b5148;
+    --paper: #F5F0E4;
+    --paper-raised: #FBF8F1;
+    --line: #DDD5C2;
+    --brass: #B3833C;
+    --brass-deep: #8C6329;
+    --moss: #5C7A5E;
+    --danger: #A65241;
+    max-width: 720px;
+    margin: 0 auto;
+    font-family: 'Inter', sans-serif;
+    color: var(--ink);
+    background: var(--paper);
+    padding: 20px;
+    border-radius: 6px;
+  }
+  #app * { box-sizing: border-box; }
+
+  .lt-title { font-family: 'Fraunces', serif; font-weight: 500; letter-spacing: -0.01em; }
+
+  .tabs { display: flex; gap: 28px; margin-bottom: 1.75rem; border-bottom: 1px solid var(--line); padding: 0 2px; }
+  .tab-btn {
+    width: auto; background: none; border: none; box-shadow: none; padding: 8px 2px 12px;
+    font-family: 'Fraunces', serif; font-size: 16px; color: var(--ink-soft);
+    position: relative; cursor: pointer; letter-spacing: 0.01em;
+  }
+  .tab-btn::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+    background: var(--brass); transform: scaleX(0); transform-origin: left; transition: transform 0.25s ease;
+  }
+  .tab-btn.active { color: var(--ink); font-weight: 600; }
+  .tab-btn.active::after { transform: scaleX(1); }
+  .tab-btn i { margin-right: 6px; opacity: 0.75; }
+
+  .card {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1.25rem 1.4rem;
+    margin-bottom: 1.1rem;
+    box-shadow: 0 1px 0 rgba(35,40,33,0.02);
+  }
+  .card-title {
+    font-family: 'Fraunces', serif; font-size: 15px; font-weight: 500; margin: 0 0 12px;
+    display: flex; align-items: center; gap: 8px; color: var(--ink);
+  }
+  .card-title::before { content: ''; width: 3px; height: 14px; background: var(--brass); display: inline-block; border-radius: 1px; }
+
+  .row { display: flex; gap: 12px; }
+  .field { flex: 1; display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+  .field label { font-size: 12px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; }
+
+  select, input, textarea {
+    width: 100%; background: var(--paper); border: 1px solid var(--line); border-radius: 3px;
+    padding: 9px 10px; font-family: 'Inter', sans-serif; font-size: 14px; color: var(--ink);
+    transition: border-color 0.15s ease;
+  }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: var(--brass); }
+  input[type="color"] { padding: 3px; height: 38px; cursor: pointer; }
+
+  button {
+    width: 100%; background: var(--ink); color: var(--paper-raised); border: none; border-radius: 3px;
+    padding: 10px 14px; font-family: 'Inter', sans-serif; font-size: 13.5px; font-weight: 500;
+    letter-spacing: 0.01em; cursor: pointer; transition: background 0.15s ease, transform 0.1s ease;
+  }
+  button:hover { background: var(--brass-deep); }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .start-saved-btn, .del-btn, .del-cat-btn { width: auto; background: none; color: var(--ink-soft); padding: 4px 6px; }
+  .start-saved-btn:hover { background: var(--moss); color: #fff; }
+  .del-btn:hover, .del-cat-btn:hover { background: var(--danger); color: #fff; }
+
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; margin-bottom: 1.5rem; background: var(--line); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .metric { background: var(--paper-raised); padding: 1rem 1.1rem; }
+  .metric .label { font-size: 11px; color: var(--ink-soft); margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric .value { font-family: 'Fraunces', serif; font-size: 26px; font-weight: 500; margin: 0; }
+
+  .entry-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .entry-row:last-child { border-bottom: none; }
+  .cat-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 9px; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent); }
+  .entry-meta { color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
+  .empty { text-align: center; color: var(--ink-soft); font-size: 13.5px; padding: 2.2rem 0; font-style: italic; font-family: 'Fraunces', serif; }
+  .error { color: var(--danger); font-size: 13px; margin: -6px 0 8px; }
+
+  .divider-or { display: flex; align-items: center; gap: 10px; margin: 16px 0 6px; }
+  .divider-or .line { flex: 1; height: 1px; background: var(--line); }
+  .divider-or span { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.08em; font-family: 'Fraunces', serif; font-style: italic; }
+
+  .timer-idle .card-title { margin-bottom: 10px; }
+  .timer-active { text-align: center; padding: 6px 0 2px; }
+  .timer-active .t-label { font-size: 13px; color: var(--ink-soft); margin-bottom: 8px; }
+  .timer-active .t-clock {
+    font-family: 'JetBrains Mono', monospace; font-size: 40px; font-weight: 500; letter-spacing: 0.02em;
+    color: var(--ink); margin: 4px 0 16px;
+  }
+  .pulse-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--brass); margin-right: 8px; animation: pulse 1.6s ease-in-out infinite; vertical-align: middle; }
+  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.75); } }
+
+  .arc-wrap { display: flex; flex-direction: column; align-items: center; padding: 6px 0 0; }
+  .arc-caption { font-size: 12px; color: var(--ink-soft); margin-top: -6px; text-align: center; }
+  .arc-legend { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 14px; font-size: 12px; color: var(--ink-soft); }
+  .arc-legend span { display: flex; align-items: center; gap: 6px; }
+
+  .cat-detail { border-bottom: 1px solid var(--line); }
+  .cat-detail:last-child { border-bottom: none; }
+  .cat-detail summary {
+    display: flex; align-items: center; justify-content: space-between; padding: 10px 2px;
+    cursor: pointer; list-style: none; font-size: 14px;
+  }
+  .cat-detail summary::-webkit-details-marker { display: none; }
+  .cat-detail summary::after {
+    content: '\203A'; margin-left: 8px; color: var(--ink-soft); font-size: 15px;
+    transform: rotate(90deg); display: inline-block; transition: transform 0.15s ease;
+  }
+  .cat-detail[open] summary::after { transform: rotate(270deg); }
+  .cat-detail-total { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--ink-soft); }
+  .cat-detail-acts { padding: 0 2px 8px 17px; }
+  .cat-detail-acts .entry-row { padding: 6px 0; font-size: 13px; }
+
+  .action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 1.1rem; }
+  .action-btn {
+    background: var(--paper-raised); color: var(--ink); border: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px;
+    font-size: 12px; font-weight: 500;
+  }
+  .action-btn:hover { background: var(--paper-raised); border-color: var(--brass); color: var(--brass-deep); }
+  .action-btn i { font-size: 19px; color: var(--brass); }
+
+  .period-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .period-tab {
+    width: auto; background: var(--paper); color: var(--ink-soft); border: 1px solid var(--line);
+    padding: 5px 11px; font-size: 12px; font-weight: 500; border-radius: 20px;
+  }
+  .period-tab:hover { background: var(--paper); border-color: var(--brass); color: var(--brass-deep); }
+  .period-tab.active { background: var(--ink); color: var(--paper-raised); border-color: var(--ink); }
+  .period-custom-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .period-custom-row input { flex: 1; }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(35,40,33,0.45); display: flex;
+    align-items: center; justify-content: center; padding: 20px; z-index: 50;
+    animation: fadeIn 0.15s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .modal-box {
+    background: var(--paper-raised); border: 1px solid var(--line); border-radius: 6px;
+    padding: 1.4rem 1.5rem; max-width: 420px; width: 100%; max-height: 88vh; overflow-y: auto;
+    box-shadow: 0 12px 34px rgba(35,40,33,0.22);
+  }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .modal-head .card-title { margin: 0; }
+  .modal-close { width: auto; background: none; color: var(--ink-soft); padding: 4px 8px; font-size: 16px; }
+  .modal-close:hover { background: var(--line); color: var(--ink); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-dot { animation: none; }
+    .tab-btn::after { transition: none; }
+    .modal-overlay { animation: none; }
+  }
+</style>
+<script>
+const CATS = [
+  { id: 'travail', label: 'Travail', color: '#4A5A75' },
+  { id: 'sommeil', label: 'Sommeil', color: '#5B4E7E' },
+  { id: 'loisirs', label: 'Loisirs', color: '#C98A3D' },
+  { id: 'sport', label: 'Sport', color: '#5C7A5E' },
+  { id: 'social', label: 'Social', color: '#B5697A' },
+  { id: 'transport', label: 'Transport', color: '#8B93A1' },
+  { id: 'etude', label: 'Étude', color: '#3F7068' },
+  { id: 'autre', label: 'Autre', color: '#948C7E' },
+];
+let entries = [];
+let savedActivities = [];
+let customCategories = [];
+let subCategories = []; // { id, catId, label }
+let tab = 'entry';
+let loaded = false;
+let activeTimer = null; // { activity, cat, sub, startTs, startTime, date }
+let timerInterval = null;
+let modalKind = null; // 'entry' | 'activity' | 'category' | 'subcategory' | null
+let periodMode = '7'; // '7' | '14' | '30' | '90' | 'custom'
+let customStart = null;
+let customEnd = null;
+let dayChartInstance = null;
+let hourChartInstance = null;
+let selectedArcDate = null;
+
+let editingEntryId = null;
+
+function openModal(kind, editId) { modalKind = kind; editingEntryId = editId || null; renderModal(); }
+function closeModal() { modalKind = null; editingEntryId = null; renderModal(); }
+
+function allCats() { return CATS.concat(customCategories); }
+function catInfo(id) { return allCats().find(c => c.id === id) || CATS[CATS.length - 1]; }
+function subsForCat(catId) { return subCategories.filter(s => s.catId === catId); }
+function subInfo(id) { return subCategories.find(s => s.id === id) || null; }
+
+function slugify(name) {
+  return name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+const IDB_NAME = 'carnet-du-temps';
+const IDB_STORE = 'kv';
+let idbInstance = null;
+
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    if (idbInstance) return resolve(idbInstance);
+    if (!window.indexedDB) return reject(new Error('IndexedDB indisponible'));
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = () => { idbInstance = req.result; resolve(idbInstance); };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openIDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await openIDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function loadEntries() {
+  try {
+    const res = await idbGet('time-entries');
+    entries = res ? JSON.parse(res) : [];
+  } catch (e) {
+    entries = [];
+  }
+  try {
+    const res2 = await idbGet('time-activities');
+    savedActivities = res2 ? JSON.parse(res2) : [];
+  } catch (e) {
+    savedActivities = [];
+  }
+  try {
+    const res3 = await idbGet('time-categories');
+    customCategories = res3 ? JSON.parse(res3) : [];
+  } catch (e) {
+    customCategories = [];
+  }
+  try {
+    const res4 = await idbGet('time-subcategories');
+    subCategories = res4 ? JSON.parse(res4) : [];
+  } catch (e) {
+    subCategories = [];
+  }
+  loaded = true;
+  render();
+}
+
+async function saveEntries() {
+  try {
+    await idbSet('time-entries', JSON.stringify(entries));
+  } catch (e) {
+    console.error('Save failed', e);
+  }
+}
+
+async function saveActivities() {
+  try {
+    await idbSet('time-activities', JSON.stringify(savedActivities));
+  } catch (e) {
+    console.error('Save failed', e);
+  }
+}
+
+async function saveCategories() {
+  try {
+    await idbSet('time-categories', JSON.stringify(customCategories));
+  } catch (e) {
+    console.error('Save failed', e);
+  }
+}
+
+async function saveSubCategories() {
+  try {
+    await idbSet('time-subcategories', JSON.stringify(subCategories));
+  } catch (e) {
+    console.error('Save failed', e);
+  }
+}
+
+function addSubCategory(catId, name) {
+  name = name.trim();
+  if (!name || !catId) return null;
+  let id = slugify(name) || 'sub-' + Date.now().toString(36);
+  if (subCategories.some(s => s.id === id)) id = id + '-' + Date.now().toString(36).slice(-4);
+  const sub = { id, catId, label: name };
+  subCategories.push(sub);
+  saveSubCategories();
+  return sub;
+}
+
+function removeSubCategory(id) {
+  subCategories = subCategories.filter(s => s.id !== id);
+  saveSubCategories();
+}
+
+function addCustomCategory(name, color) {
+  name = name.trim();
+  if (!name) return null;
+  let id = slugify(name) || 'cat-' + Date.now().toString(36);
+  if (allCats().some(c => c.id === id)) id = id + '-' + Date.now().toString(36).slice(-4);
+  const cat = { id, label: name, color };
+  customCategories.push(cat);
+  saveCategories();
+  return cat;
+}
+
+function removeCustomCategory(id) {
+  customCategories = customCategories.filter(c => c.id !== id);
+  saveCategories();
+  if (subCategories.some(s => s.catId === id)) {
+    subCategories = subCategories.filter(s => s.catId !== id);
+    saveSubCategories();
+  }
+}
+
+function addManualActivity(name, cat) {
+  name = name.trim();
+  if (!name) return;
+  const existing = savedActivities.find(a => a.name.toLowerCase() === name.toLowerCase());
+  if (existing) { existing.cat = cat; }
+  else savedActivities.push({ id: Date.now().toString(36), name, cat, count: 0 });
+  saveActivities();
+}
+
+function addSavedActivity(name, cat) {
+  name = name.trim();
+  if (!name) return;
+  const existing = savedActivities.find(a => a.name.toLowerCase() === name.toLowerCase());
+  if (existing) { existing.cat = cat; existing.count = (existing.count || 1) + 1; }
+  else savedActivities.push({ id: Date.now().toString(36), name, cat, count: 1 });
+  saveActivities();
+}
+
+function removeSavedActivity(id) {
+  savedActivities = savedActivities.filter(a => a.id !== id);
+  saveActivities();
+}
+
+function todayStr() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+function fmtHM(mins) {
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins % 60);
+  if (h === 0) return m + ' min';
+  if (m === 0) return h + ' h';
+  return h + ' h ' + m + ' min';
+}
+
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div style="margin-bottom:20px">
+      <p class="lt-title" style="font-size:22px;margin:0 0 2px">Carnet du temps</p>
+      <p style="font-size:12.5px;color:var(--ink-soft);margin:0">Ce que vous en avez fait, jour après jour</p>
+    </div>
+    <div class="tabs">
+      <button class="tab-btn ${tab === 'entry' ? 'active' : ''}" id="tab-entry"><i class="ti ti-feather" aria-hidden="true"></i>Saisir</button>
+      <button class="tab-btn ${tab === 'dash' ? 'active' : ''}" id="tab-dash"><i class="ti ti-sun" aria-hidden="true"></i>Dashboard</button>
+    </div>
+    <div id="content"></div>
+    <div id="modal-root"></div>
+  `;
+  document.getElementById('tab-entry').onclick = () => { tab = 'entry'; render(); };
+  document.getElementById('tab-dash').onclick = () => { tab = 'dash'; render(); };
+  if (tab === 'entry') renderEntry(); else renderDash();
+  renderModal();
+}
+
+function renderModal() {
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  if (!modalKind) { root.innerHTML = ''; return; }
+
+  const editEntry = editingEntryId ? entries.find(e => e.id === editingEntryId) : null;
+  const titles = { entry: editEntry ? 'Modifier l’entrée' : 'Nouvelle entrée', activity: 'Nouvelle activité', category: 'Nouvelle catégorie', subcategory: 'Nouvelle sous-catégorie' };
+  const bodies = {
+    entry: `
+      <div class="field">
+        <label for="f-activity">Activité</label>
+        <input id="f-activity" list="activity-list" placeholder="Ex: réunion projet, footing, lecture..." value="${editEntry ? editEntry.activity : ''}" />
+        <datalist id="activity-list">
+          ${savedActivities.map(a => `<option value="${a.name}">`).join('')}
+        </datalist>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="f-cat">Catégorie</label>
+          <select id="f-cat">
+            ${allCats().map(c => `<option value="${c.id}" ${editEntry && editEntry.cat === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" id="f-sub-wrap" style="display:${subsForCat((editEntry ? editEntry.cat : allCats()[0].id)).length ? 'flex' : 'none'}">
+          <label for="f-sub">Sous-catégorie</label>
+          <select id="f-sub">
+            <option value="">Aucune</option>
+            ${subsForCat(editEntry ? editEntry.cat : allCats()[0].id).map(s => `<option value="${s.id}" ${editEntry && editEntry.sub === s.id ? 'selected' : ''}>${s.label}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="f-date">Date</label>
+          <input id="f-date" type="date" value="${editEntry ? editEntry.date : todayStr()}" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="f-start">Début</label>
+          <input id="f-start" type="time" value="${editEntry ? editEntry.start : ''}" />
+        </div>
+        <div class="field">
+          <label for="f-end">Fin</label>
+          <input id="f-end" type="time" value="${editEntry ? editEntry.end : ''}" />
+        </div>
+      </div>
+      <div id="f-error" class="error" style="display:none"></div>
+      <div class="row" style="gap:8px">
+        <button id="f-submit" style="flex:1"><i class="ti ti-check" aria-hidden="true" style="margin-right:6px"></i>${editEntry ? 'Enregistrer' : 'Ajouter'}</button>
+        ${editEntry ? `<button id="f-delete" style="flex:1;background:var(--danger)"><i class="ti ti-trash" aria-hidden="true" style="margin-right:6px"></i>Supprimer</button>` : ''}
+      </div>
+      ${editEntry ? '' : `
+      <div class="divider-or"><div class="line"></div><span>ou en direct</span><div class="line"></div></div>
+      <div id="timer-zone"></div>
+      `}
+    `,
+    activity: `
+      <div class="field">
+        <label for="na-name">Nom</label>
+        <input id="na-name" placeholder="Ex: piano" />
+      </div>
+      <div class="field">
+        <label for="na-cat">Catégorie</label>
+        <select id="na-cat">
+          ${allCats().map(c => `<option value="${c.id}">${c.label}</option>`).join('')}
+        </select>
+      </div>
+      <button id="na-submit"><i class="ti ti-plus" aria-hidden="true" style="margin-right:6px"></i>Créer l'activité</button>
+    `,
+    category: `
+      <div class="row">
+        <div class="field" style="flex:2">
+          <label for="nc-name">Nom</label>
+          <input id="nc-name" placeholder="Ex: bénévolat" />
+        </div>
+        <div class="field" style="flex:1">
+          <label for="nc-color">Couleur</label>
+          <input id="nc-color" type="color" value="#B3833C" />
+        </div>
+      </div>
+      <button id="nc-submit"><i class="ti ti-plus" aria-hidden="true" style="margin-right:6px"></i>Créer la catégorie</button>
+      ${customCategories.length ? `<div style="margin-top:12px">${customCategories.map(c => `
+        <div class="entry-row">
+          <div><span class="cat-dot" style="background:${c.color}"></span>${c.label}</div>
+          <button class="del-cat-btn" data-id="${c.id}"><i class="ti ti-trash" aria-hidden="true"></i></button>
+        </div>`).join('')}</div>` : ''}
+    `,
+    subcategory: `
+      <div class="field">
+        <label for="ns-cat">Catégorie parente</label>
+        <select id="ns-cat">
+          ${allCats().map(c => `<option value="${c.id}">${c.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="ns-name">Nom</label>
+        <input id="ns-name" placeholder="Ex: réunions client" />
+      </div>
+      <button id="ns-submit"><i class="ti ti-plus" aria-hidden="true" style="margin-right:6px"></i>Créer la sous-catégorie</button>
+      <div id="ns-list" style="margin-top:14px"></div>
+    `,
+  };
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal-box" role="dialog" aria-modal="true" aria-label="${titles[modalKind]}">
+        <div class="modal-head">
+          <p class="card-title">${titles[modalKind]}</p>
+          <button class="modal-close" id="modal-close" aria-label="Fermer"><i class="ti ti-x" aria-hidden="true"></i></button>
+        </div>
+        ${bodies[modalKind]}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('modal-overlay').addEventListener('mousedown', (e) => {
+    if (e.target.id === 'modal-overlay') closeModal();
+  });
+  document.getElementById('modal-close').onclick = closeModal;
+
+  if (modalKind === 'entry') {
+    document.getElementById('f-submit').onclick = onSubmit;
+    document.getElementById('f-activity').addEventListener('change', onActivityPick);
+    document.getElementById('f-cat').addEventListener('change', onEntryCatChange);
+    if (editEntry) {
+      document.getElementById('f-delete').onclick = () => {
+        entries = entries.filter(e => e.id !== editEntry.id);
+        saveEntries();
+        closeModal();
+        renderEntryList();
+      };
+    } else {
+      renderTimerZone();
+    }
+  } else if (modalKind === 'activity') {
+    document.getElementById('na-submit').onclick = onCreateActivity;
+  } else if (modalKind === 'category') {
+    document.getElementById('nc-submit').onclick = onCreateCategory;
+    document.querySelectorAll('.del-cat-btn').forEach(btn => {
+      btn.onclick = () => { removeCustomCategory(btn.dataset.id); renderModal(); };
+    });
+  } else if (modalKind === 'subcategory') {
+    document.getElementById('ns-submit').onclick = onCreateSubCategory;
+    renderSubCategoryList();
+  }
+}
+
+function renderSubCategoryList() {
+  const el = document.getElementById('ns-list');
+  if (!el) return;
+  if (!subCategories.length) {
+    el.innerHTML = '<p class="empty">Aucune sous-catégorie pour l\'instant.</p>';
+    return;
+  }
+  const groups = allCats().filter(c => subsForCat(c.id).length);
+  el.innerHTML = groups.map(c => `
+    <p style="font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--ink-soft);margin:10px 0 4px">${c.label}</p>
+    ${subsForCat(c.id).map(s => `
+      <div class="entry-row">
+        <div><span class="cat-dot" style="background:${c.color}"></span>${s.label}</div>
+        <button class="del-sub-btn" data-id="${s.id}"><i class="ti ti-trash" aria-hidden="true"></i></button>
+      </div>
+    `).join('')}
+  `).join('');
+  el.querySelectorAll('.del-sub-btn').forEach(btn => {
+    btn.onclick = () => { removeSubCategory(btn.dataset.id); renderSubCategoryList(); };
+  });
+}
+
+function onCreateSubCategory() {
+  const catId = document.getElementById('ns-cat').value;
+  const name = document.getElementById('ns-name').value.trim();
+  if (!name) return;
+  addSubCategory(catId, name);
+  document.getElementById('ns-name').value = '';
+  renderSubCategoryList();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && modalKind) closeModal();
+});
+
+function renderEntry() {
+  const content = document.getElementById('content');
+  content.innerHTML = `
+    <div class="action-row">
+      <button class="action-btn" id="open-entry"><i class="ti ti-clock-plus" aria-hidden="true"></i>Nouvelle entrée</button>
+      <button class="action-btn" id="open-activity"><i class="ti ti-tag" aria-hidden="true"></i>Nouvelle activité</button>
+      <button class="action-btn" id="open-category"><i class="ti ti-category-plus" aria-hidden="true"></i>Nouvelle catégorie</button>
+      <button class="action-btn" id="open-subcategory"><i class="ti ti-sitemap" aria-hidden="true"></i>Nouvelle sous-catégorie</button>
+    </div>
+    <div class="card">
+      <p class="card-title">Activités enregistrées</p>
+      <div id="activities-list"></div>
+    </div>
+    <div class="card">
+      <p class="card-title">Sauvegarde locale</p>
+      <p style="font-size:12.5px;color:var(--ink-soft);margin:0 0 12px">Données stockées en local (IndexedDB) dans ce navigateur. Ouvre le fichier .html directement (hors Claude.ai) pour une persistance fiable sur ton PC ; exporte régulièrement pour une sauvegarde de secours.</p>
+      <div class="row">
+        <button id="f-export" style="flex:1"><i class="ti ti-download" aria-hidden="true" style="margin-right:6px"></i>Exporter (.json)</button>
+        <button id="f-import" style="flex:1"><i class="ti ti-upload" aria-hidden="true" style="margin-right:6px"></i>Importer</button>
+      </div>
+      <input type="file" id="f-import-input" accept="application/json" style="display:none" />
+      <div id="f-io-msg" class="entry-meta" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+        <button id="f-seed" style="flex:1"><i class="ti ti-refresh" aria-hidden="true" style="margin-right:6px"></i>Charger fixture</button>
+        <button id="f-clear" style="flex:1;color:var(--danger)"><i class="ti ti-trash" aria-hidden="true" style="margin-right:6px"></i>Effacer tout</button>
+      </div>
+    </div>
+    <div class="card">
+      <p class="card-title">Entrées récentes</p>
+      <div id="entry-list"></div>
+    </div>
+  `;
+  document.getElementById('open-entry').onclick = () => openModal('entry');
+  document.getElementById('open-activity').onclick = () => openModal('activity');
+  document.getElementById('open-category').onclick = () => openModal('category');
+  document.getElementById('open-subcategory').onclick = () => openModal('subcategory');
+  document.getElementById('f-seed').onclick = onSeed;
+  document.getElementById('f-clear').onclick = onClear;
+  document.getElementById('f-export').onclick = onExport;
+  document.getElementById('f-import').onclick = () => document.getElementById('f-import-input').click();
+  document.getElementById('f-import-input').addEventListener('change', onImport);
+  renderEntryList();
+  renderActivitiesList();
+}
+
+function onExport() {
+  const payload = { entries, savedActivities, customCategories, subCategories, exportedAt: new Date().toISOString() };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `carnet-du-temps-${todayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  const msg = document.getElementById('f-io-msg');
+  if (msg) msg.textContent = 'Fichier téléchargé.';
+}
+
+function onImport(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const msg = document.getElementById('f-io-msg');
+    try {
+      const data = JSON.parse(reader.result);
+      if (!Array.isArray(data.entries)) throw new Error('format invalide');
+      entries = data.entries || [];
+      savedActivities = data.savedActivities || [];
+      customCategories = data.customCategories || [];
+      subCategories = data.subCategories || [];
+      saveEntries();
+      saveActivities();
+      saveCategories();
+      saveSubCategories();
+      if (msg) msg.textContent = `Import réussi : ${entries.length} entrées.`;
+      renderEntryList();
+      renderActivitiesList();
+    } catch (err) {
+      if (msg) msg.textContent = 'Fichier invalide.';
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+function onCreateActivity() {
+  const name = document.getElementById('na-name').value.trim();
+  const cat = document.getElementById('na-cat').value;
+  if (!name) return;
+  addManualActivity(name, cat);
+  closeModal();
+  renderActivitiesList();
+}
+function onCreateCategory() {
+  const name = document.getElementById('nc-name').value.trim();
+  const color = document.getElementById('nc-color').value;
+  if (!name) return;
+  addCustomCategory(name, color);
+  renderModal();
+}
+
+function onActivityPick(e) {
+  const name = e.target.value.trim();
+  const match = savedActivities.find(a => a.name.toLowerCase() === name.toLowerCase());
+  if (match) {
+    document.getElementById('f-cat').value = match.cat;
+    onEntryCatChange();
+  }
+}
+
+function onEntryCatChange() {
+  const catId = document.getElementById('f-cat').value;
+  const wrap = document.getElementById('f-sub-wrap');
+  const select = document.getElementById('f-sub');
+  const subs = subsForCat(catId);
+  if (!wrap || !select) return;
+  if (!subs.length) {
+    wrap.style.display = 'none';
+    select.innerHTML = '<option value="">Aucune</option>';
+    return;
+  }
+  wrap.style.display = 'flex';
+  select.innerHTML = '<option value="">Aucune</option>' + subs.map(s => `<option value="${s.id}">${s.label}</option>`).join('');
+}
+
+function renderActivitiesList() {
+  const el = document.getElementById('activities-list');
+  if (!el) return;
+  if (savedActivities.length === 0) {
+    el.innerHTML = '<p class="empty">Chaque activité ajoutée est mémorisée ici automatiquement.</p>';
+    return;
+  }
+  const sorted = [...savedActivities].sort((a, b) => (b.count || 0) - (a.count || 0));
+  el.innerHTML = sorted.map(a => {
+    const c = catInfo(a.cat);
+    return `
+      <div class="entry-row">
+        <div><span class="cat-dot" style="background:${c.color}"></span>${a.name}<div class="entry-meta">${c.label} · utilisée ${a.count || 1}×</div></div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button class="start-saved-btn" data-id="${a.id}" style="width:auto" ${activeTimer ? 'disabled' : ''}><i class="ti ti-player-play" aria-hidden="true"></i></button>
+          <button class="del-btn" data-id="${a.id}" style="width:auto"><i class="ti ti-trash" aria-hidden="true"></i></button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  el.querySelectorAll('.del-btn').forEach(btn => {
+    btn.onclick = () => { removeSavedActivity(btn.dataset.id); renderActivitiesList(); };
+  });
+  el.querySelectorAll('.start-saved-btn').forEach(btn => {
+    btn.onclick = () => {
+      const a = savedActivities.find(x => x.id === btn.dataset.id);
+      if (!a || activeTimer) return;
+      startTimerFor(a.name, a.cat);
+    };
+  });
+}
+
+function renderTimerZone() {
+  const zone = document.getElementById('timer-zone');
+  if (!zone) return;
+
+  if (!activeTimer) {
+    zone.innerHTML = `
+      <div class="timer-idle">
+        <div class="field">
+          <label for="t-activity">Activité (chrono)</label>
+          <input id="t-activity" list="activity-list" placeholder="Ex: pause déjeuner" />
+        </div>
+        <div class="field">
+          <label for="t-cat">Catégorie</label>
+          <select id="t-cat">
+            ${allCats().map(c => `<option value="${c.id}">${c.label}</option>`).join('')}
+          </select>
+        </div>
+        <button id="t-start"><i class="ti ti-player-play" aria-hidden="true" style="margin-right:6px"></i>Début</button>
+      </div>
+    `;
+    document.getElementById('t-activity').addEventListener('change', (e) => {
+      const match = savedActivities.find(a => a.name.toLowerCase() === e.target.value.trim().toLowerCase());
+      if (match) document.getElementById('t-cat').value = match.cat;
+    });
+    document.getElementById('t-start').onclick = () => {
+      const activity = document.getElementById('t-activity').value.trim() || 'Sans titre';
+      const cat = document.getElementById('t-cat').value;
+      startTimerFor(activity, cat);
+    };
+  } else {
+    const c = catInfo(activeTimer.cat);
+    zone.innerHTML = `
+      <div class="timer-active">
+        <div class="t-label"><span class="cat-dot" style="background:${c.color}"></span>${activeTimer.activity} · ${c.label}</div>
+        <div class="t-clock" id="t-elapsed"><span class="pulse-dot"></span>00:00:00</div>
+        <button id="t-stop" style="background:var(--danger)"><i class="ti ti-player-stop" aria-hidden="true" style="margin-right:6px"></i>Fin</button>
+      </div>
+    `;
+    document.getElementById('t-stop').onclick = () => {
+      stopTicker();
+      const now = new Date();
+      const mins = Math.max(1, Math.round((now.getTime() - activeTimer.startTs) / 60000));
+      entries.push({
+        id: Date.now().toString(36),
+        activity: activeTimer.activity, cat: activeTimer.cat,
+        date: activeTimer.date, start: activeTimer.startTime,
+        end: `${pad(now.getHours())}:${pad(now.getMinutes())}`, mins,
+      });
+      saveEntries();
+      addSavedActivity(activeTimer.activity, activeTimer.cat);
+      activeTimer = null;
+      closeModal();
+      renderEntryList();
+      renderActivitiesList();
+    };
+    tickElapsed();
+  }
+}
+
+function startTimerFor(activity, cat) {
+  const now = new Date();
+  activeTimer = {
+    activity, cat,
+    startTs: now.getTime(),
+    startTime: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    date: todayStr(),
+  };
+  if (modalKind !== 'entry') openModal('entry');
+  else renderTimerZone();
+  renderActivitiesList();
+  startTicker();
+}
+
+function tickElapsed() {
+  const el = document.getElementById('t-elapsed');
+  if (!el || !activeTimer) return;
+  const secs = Math.floor((Date.now() - activeTimer.startTs) / 1000);
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  el.innerHTML = `<span class="pulse-dot"></span>${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+function startTicker() {
+  stopTicker();
+  timerInterval = setInterval(tickElapsed, 1000);
+}
+
+function stopTicker() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+}
+
+function pad(n) { return n.toString().padStart(2, '0'); }
+
+function genFixture() {
+  const activities = {
+    travail: ['Réunion équipe', 'Développement', 'Emails', 'Point projet'],
+    sommeil: ['Nuit'],
+    loisirs: ['Lecture', 'Série TV', 'Jeu vidéo'],
+    sport: ['Footing', 'Musculation', 'Vélo'],
+    social: ['Café avec amis', 'Appel famille'],
+    transport: ['Trajet domicile-travail'],
+    etude: ['Cours en ligne', 'Révisions'],
+    autre: ['Courses', 'Ménage'],
+  };
+  const out = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const date = d.toISOString().slice(0, 10);
+
+    out.push({ id: 'seed-' + date + '-sleep', activity: 'Nuit', cat: 'sommeil', date, start: '23:30', end: '07:00', mins: 450 });
+
+    const workStart = 9 * 60;
+    const workLabel = activities.travail[i % activities.travail.length];
+    out.push({ id: 'seed-' + date + '-work', activity: workLabel, cat: 'travail', date, start: `${pad(Math.floor(workStart/60))}:${pad(workStart%60)}`, end: '17:00', mins: 17*60 - workStart });
+
+    const extras = [
+      { cat: 'sport', dur: 30 + (i % 2) * 15, startH: 18 },
+      { cat: 'loisirs', dur: 60, startH: 20 },
+      { cat: 'transport', dur: 40, startH: 8 },
+    ];
+    extras.forEach((ex, idx) => {
+      if ((i + idx) % 2 === 0) {
+        const s = ex.startH * 60;
+        const e = s + ex.dur;
+        const label = activities[ex.cat][i % activities[ex.cat].length];
+        out.push({
+          id: `seed-${date}-${ex.cat}`,
+          activity: label, cat: ex.cat, date,
+          start: `${pad(Math.floor(s/60))}:${pad(s%60)}`,
+          end: `${pad(Math.floor(e/60))}:${pad(e%60)}`,
+          mins: ex.dur,
+        });
+      }
+    });
+  }
+  return out;
+}
+
+function onSeed() {
+  entries = entries.filter(e => !e.id.startsWith('seed-'));
+  entries = entries.concat(genFixture());
+  saveEntries();
+  render();
+}
+
+function onClear() {
+  entries = [];
+  saveEntries();
+  render();
+}
+
+function onSubmit() {
+  const activity = document.getElementById('f-activity').value.trim();
+  const cat = document.getElementById('f-cat').value;
+  const sub = document.getElementById('f-sub') ? (document.getElementById('f-sub').value || null) : null;
+  const date = document.getElementById('f-date').value;
+  const start = document.getElementById('f-start').value;
+  const end = document.getElementById('f-end').value;
+  const errEl = document.getElementById('f-error');
+
+  if (!activity || !date || !start || !end) {
+    errEl.textContent = 'Remplis tous les champs.';
+    errEl.style.display = 'block';
+    return;
+  }
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins <= 0) mins += 24 * 60;
+  if (mins <= 0) {
+    errEl.textContent = 'Heure de fin invalide.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+
+  if (editingEntryId) {
+    const idx = entries.findIndex(e => e.id === editingEntryId);
+    if (idx !== -1) entries[idx] = { ...entries[idx], activity, cat, sub, date, start, end, mins };
+  } else {
+    entries.push({ id: Date.now().toString(36), activity, cat, sub, date, start, end, mins });
+  }
+  saveEntries();
+  addSavedActivity(activity, cat);
+  closeModal();
+  renderEntryList();
+  renderActivitiesList();
+}
+
+function renderEntryList() {
+  const list = document.getElementById('entry-list');
+  const sorted = [...entries].sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)).slice(0, 12);
+  if (sorted.length === 0) {
+    list.innerHTML = '<p class="empty">Aucune entrée. Ajoute ta première activité ci-dessus.</p>';
+    return;
+  }
+  list.innerHTML = sorted.map(e => {
+    const c = catInfo(e.cat);
+    const s = e.sub ? subInfo(e.sub) : null;
+    return `
+      <div class="entry-row">
+        <div>
+          <span class="cat-dot" style="background:${c.color}"></span>${e.activity}
+          <div class="entry-meta">${c.label}${s ? ' › ' + s.label : ''} · ${e.date} · ${e.start}–${e.end}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="margin-right:4px">${fmtHM(e.mins)}</span>
+          <button class="edit-entry-btn" data-id="${e.id}" style="width:auto"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+          <button class="del-btn" data-id="${e.id}" style="width:auto"><i class="ti ti-trash" aria-hidden="true"></i></button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  list.querySelectorAll('.del-btn').forEach(btn => {
+    btn.onclick = () => {
+      entries = entries.filter(e => e.id !== btn.dataset.id);
+      saveEntries();
+      renderEntryList();
+    };
+  });
+  list.querySelectorAll('.edit-entry-btn').forEach(btn => {
+    btn.onclick = () => openModal('entry', btn.dataset.id);
+  });
+}
+
+function polarPt(cx, cy, r, angleDeg) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+}
+
+function minToAngle(min) { return 180 - (min / 1440) * 180; }
+
+function buildDayArc(dateStr) {
+  const cx = 150, cy = 140, r = 108;
+  const dayEntries = entries.filter(e => e.date === dateStr).map(e => {
+    const [sh, sm] = e.start.split(':').map(Number);
+    const startMin = sh * 60 + sm;
+    const endMin = Math.min(1440, startMin + e.mins);
+    return { ...e, startMin, endMin };
+  }).sort((a, b) => a.startMin - b.startMin);
+
+  const segs = dayEntries.map(e => {
+    const a1 = minToAngle(e.startMin), a2 = minToAngle(e.endMin);
+    const p1 = polarPt(cx, cy, r, a1), p2 = polarPt(cx, cy, r, a2);
+    const largeArc = (a1 - a2) > 180 ? 1 : 0;
+    const c = catInfo(e.cat);
+    return `<path d="M ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A ${r} ${r} 0 ${largeArc} 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}" stroke="${c.color}" stroke-width="20" fill="none" stroke-linecap="butt"><title>${e.activity} (${c.label})</title></path>`;
+  }).join('');
+
+  const ticks = [0, 360, 720, 1080, 1440].map(m => {
+    const p = polarPt(cx, cy, r + 20, minToAngle(m));
+    const label = m === 0 ? '0h' : m === 1440 ? '24h' : (m / 60) + 'h';
+    return `<text x="${p.x.toFixed(1)}" y="${p.y.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#948C7E">${label}</text>`;
+  }).join('');
+
+  const trackedMin = dayEntries.reduce((s, e) => s + (e.endMin - e.startMin), 0);
+
+  return `
+    <svg viewBox="0 0 300 168" width="100%" style="max-width:340px;display:block;margin:0 auto">
+      <path d="M ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy}" stroke="#DDD5C2" stroke-width="20" fill="none" stroke-linecap="butt" />
+      ${segs}
+      <line x1="${cx - r - 14}" y1="${cy}" x2="${cx + r + 14}" y2="${cy}" stroke="#DDD5C2" stroke-width="1" />
+      ${ticks}
+    </svg>
+    <p class="arc-caption">${trackedMin > 0 ? fmtHM(trackedMin) + ' suivies sur 24h' : 'Rien de suivi ce jour-là'}</p>
+  `;
+}
+
+function shadeColor(hex, percent) {
+  const num = parseInt(hex.replace('#', ''), 16);
+  let r = (num >> 16) + Math.round(2.55 * percent);
+  let g = ((num >> 8) & 0xff) + Math.round(2.55 * percent);
+  let b = (num & 0xff) + Math.round(2.55 * percent);
+  r = Math.min(255, Math.max(0, r));
+  g = Math.min(255, Math.max(0, g));
+  b = Math.min(255, Math.max(0, b));
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function buildStackedActivityData(catEntries) {
+  const labels = catEntries.map(([id]) => catInfo(id).label);
+  const catIndex = {};
+  catEntries.forEach(([id], i) => { catIndex[id] = i; });
+
+  const shadeSteps = [0, -22, 22, -38, 38, -50];
+  const datasets = [];
+
+  catEntries.forEach(([catId]) => {
+    const byActivity = {};
+    entries.filter(e => e.cat === catId).forEach(e => { byActivity[e.activity] = (byActivity[e.activity] || 0) + e.mins; });
+    const acts = Object.entries(byActivity).sort((a, b) => b[1] - a[1]);
+    const base = catInfo(catId).color;
+    acts.forEach(([name, mins], idx) => {
+      const data = new Array(labels.length).fill(0);
+      data[catIndex[catId]] = mins;
+      datasets.push({
+        label: name,
+        data,
+        backgroundColor: shadeColor(base, shadeSteps[idx % shadeSteps.length]),
+        borderWidth: 1,
+        borderColor: '#FBF8F1',
+        maxBarThickness: 30,
+      });
+    });
+  });
+
+  return { labels, datasets };
+}
+
+function renderDash() {
+  const content = document.getElementById('content');
+  if (entries.length === 0) {
+    content.innerHTML = '<div class="card"><p class="empty">Pas encore de données. Va dans "Saisir" pour ajouter des activités.</p></div>';
+    return;
+  }
+
+  const totalMins = entries.reduce((s, e) => s + e.mins, 0);
+  const days = new Set(entries.map(e => e.date)).size;
+  const avgPerDay = totalMins / days;
+
+  const byCat = {};
+  entries.forEach(e => { byCat[e.cat] = (byCat[e.cat] || 0) + e.mins; });
+  const topCatId = Object.entries(byCat).sort((a, b) => b[1] - a[1])[0][0];
+  const topCat = catInfo(topCatId);
+
+  const today = todayStr();
+  const defaultArcDate = entries.some(e => e.date === today) ? today : [...entries].sort((a, b) => b.date.localeCompare(a.date))[0].date;
+  const arcDate = selectedArcDate || defaultArcDate;
+  const arcDayEntriesSorted = entries.filter(e => e.date === arcDate).sort((a, b) => a.start.localeCompare(b.start));
+  const arcDayCats = [...new Set(arcDayEntriesSorted.map(e => e.cat))].map(catInfo);
+  const catEntriesCount = Object.keys(byCat).length;
+
+  content.innerHTML = `
+    <div class="metric-grid">
+      <div class="metric"><p class="label">Temps total suivi</p><p class="value">${fmtHM(totalMins)}</p></div>
+      <div class="metric"><p class="label">Moyenne / jour</p><p class="value">${fmtHM(avgPerDay)}</p></div>
+      <div class="metric"><p class="label">Catégorie dominante</p><p class="value" style="color:${topCat.color}">${topCat.label}</p></div>
+      <div class="metric"><p class="label">Jours suivis</p><p class="value">${days}</p></div>
+    </div>
+    <div class="card">
+      <p class="card-title">${arcDate === today ? "L'arc du jour" : 'Journée du'} — ${arcDate}</p>
+      <div class="row" style="gap:8px;margin-bottom:12px">
+        <button id="arc-prev" style="width:auto;padding:8px 12px"><i class="ti ti-chevron-left" aria-hidden="true"></i></button>
+        <input type="date" id="arc-date-input" value="${arcDate}" style="flex:1" />
+        <button id="arc-next" style="width:auto;padding:8px 12px" ${arcDate >= today ? 'disabled' : ''}><i class="ti ti-chevron-right" aria-hidden="true"></i></button>
+        <button id="arc-today" style="width:auto;padding:8px 12px" ${arcDate === today ? 'disabled' : ''}>Aujourd'hui</button>
+      </div>
+      <div class="arc-wrap">${buildDayArc(arcDate)}</div>
+      ${arcDayCats.length ? `<div class="arc-legend">${arcDayCats.map(c => `<span><span class="cat-dot" style="background:${c.color}"></span>${c.label}</span>`).join('')}</div>` : ''}
+      ${arcDayEntriesSorted.length ? `
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          ${arcDayEntriesSorted.map(e => {
+            const c = catInfo(e.cat);
+            const s = e.sub ? subInfo(e.sub) : null;
+            return `
+              <div class="entry-row">
+                <div><span class="cat-dot" style="background:${c.color}"></span>${e.activity}
+                  <div class="entry-meta">${c.label}${s ? ' › ' + s.label : ''} · ${e.start}–${e.end}</div>
+                </div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--ink-soft)">${fmtHM(e.mins)}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : '<p class="empty">Rien de suivi ce jour-là.</p>'}
+    </div>
+    <div class="card">
+      <p class="card-title">Répartition par catégorie</p>
+      <div style="position:relative;width:100%;height:${Math.max(160, catEntriesCount * 46)}px;margin-bottom:14px">
+        <canvas id="catChart" role="img" aria-label="Répartition du temps par catégorie et par activité"></canvas>
+      </div>
+      <div id="cat-breakdown"></div>
+    </div>
+    <div class="card">
+      <p class="card-title">${periodMode === 'today' ? "Temps par heure — aujourd'hui" : 'Temps par jour'}</p>
+      <div class="period-tabs" id="period-tabs">
+        <button class="period-tab ${periodMode === 'today' ? 'active' : ''}" data-period="today">Aujourd'hui</button>
+        <button class="period-tab ${periodMode === '7' ? 'active' : ''}" data-period="7">7 jours</button>
+        <button class="period-tab ${periodMode === '14' ? 'active' : ''}" data-period="14">14 jours</button>
+        <button class="period-tab ${periodMode === '30' ? 'active' : ''}" data-period="30">30 jours</button>
+        <button class="period-tab ${periodMode === '90' ? 'active' : ''}" data-period="90">90 jours</button>
+        <button class="period-tab ${periodMode === 'custom' ? 'active' : ''}" data-period="custom">Personnalisé</button>
+      </div>
+      <div class="period-custom-row" id="period-custom-row" style="display:${periodMode === 'custom' ? 'flex' : 'none'}">
+        <input type="date" id="period-start" value="${customStart || ''}" />
+        <span style="color:var(--ink-soft);font-size:12px">à</span>
+        <input type="date" id="period-end" value="${customEnd || ''}" />
+      </div>
+      <div style="position:relative;width:100%;height:${periodMode === 'today' ? '150px' : '240px'}">
+        <canvas id="dayChart" role="img" aria-label="Temps total par jour, réparti par catégorie et activité"></canvas>
+      </div>
+      <div class="arc-legend" id="dayChart-legend" style="margin-top:12px"></div>
+      ${periodMode === 'today' ? `
+        <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line)">
+          <p class="card-title" style="font-size:13px">Répartition par heure</p>
+          <div style="position:relative;width:100%;height:280px">
+            <canvas id="hourChart" role="img" aria-label="Temps par tranche horaire, réparti par catégorie et activité"></canvas>
+          </div>
+          <div class="arc-legend" id="hourChart-legend" style="margin-top:12px"></div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  const catEntries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  const breakdown = document.getElementById('cat-breakdown');
+  breakdown.innerHTML = catEntries.map(([id, mins]) => {
+    const c = catInfo(id);
+    const pct = Math.round((mins / totalMins) * 100);
+    const byActivity = {};
+    entries.filter(e => e.cat === id).forEach(e => { byActivity[e.activity] = (byActivity[e.activity] || 0) + e.mins; });
+    const acts = Object.entries(byActivity).sort((a, b) => b[1] - a[1]);
+    return `
+      <details class="cat-detail">
+        <summary>
+          <span><span class="cat-dot" style="background:${c.color}"></span><strong>${c.label}</strong></span>
+          <span class="cat-detail-total">${fmtHM(mins)} · ${pct}%</span>
+        </summary>
+        <div class="cat-detail-acts">
+          ${acts.map(([name, m]) => `
+            <div class="entry-row">
+              <span>${name}</span>
+              <span class="entry-meta" style="margin:0">${fmtHM(m)}</span>
+            </div>`).join('')}
+        </div>
+      </details>
+    `;
+  }).join('');
+
+  new Chart(document.getElementById('catChart'), {
+    type: 'bar',
+    data: buildStackedActivityData(catEntries),
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#232821', titleFont: { family: 'Inter' }, bodyFont: { family: 'Inter' },
+          callbacks: {
+            title: () => '',
+            label: (ctx) => {
+              const mins = ctx.raw;
+              if (!mins) return null;
+              return `${ctx.dataset.label} — ${fmtHM(mins)}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { stacked: true, beginAtZero: true, ticks: { callback: v => Math.round(v / 60) + 'h', font: { family: 'Inter', size: 11 }, color: '#4b5148' }, grid: { color: '#DDD5C2' } },
+        y: { stacked: true, ticks: { font: { family: 'Fraunces', size: 12.5 }, color: '#232821' }, grid: { display: false } }
+      }
+    }
+  });
+
+  document.querySelectorAll('.period-tab').forEach(btn => {
+    btn.onclick = () => {
+      periodMode = btn.dataset.period;
+      if (periodMode === 'custom' && !customStart) {
+        const d = new Date(); d.setDate(d.getDate() - 13);
+        customStart = d.toISOString().slice(0, 10);
+        customEnd = todayStr();
+      }
+      renderDash();
+    };
+  });
+  const psEl = document.getElementById('period-start');
+  const peEl = document.getElementById('period-end');
+  if (psEl) psEl.onchange = () => { customStart = psEl.value; renderDayChart(); };
+  if (peEl) peEl.onchange = () => { customEnd = peEl.value; renderDayChart(); };
+
+  const arcDateInput = document.getElementById('arc-date-input');
+  if (arcDateInput) arcDateInput.onchange = () => { selectedArcDate = arcDateInput.value; renderDash(); };
+  const arcPrev = document.getElementById('arc-prev');
+  if (arcPrev) arcPrev.onclick = () => {
+    const d = new Date(arcDate); d.setDate(d.getDate() - 1);
+    selectedArcDate = d.toISOString().slice(0, 10);
+    renderDash();
+  };
+  const arcNext = document.getElementById('arc-next');
+  if (arcNext) arcNext.onclick = () => {
+    const d = new Date(arcDate); d.setDate(d.getDate() + 1);
+    const next = d.toISOString().slice(0, 10);
+    if (next <= today) { selectedArcDate = next; renderDash(); }
+  };
+  const arcTodayBtn = document.getElementById('arc-today');
+  if (arcTodayBtn) arcTodayBtn.onclick = () => { selectedArcDate = today; renderDash(); };
+
+  renderDayChart();
+}
+
+function getPeriodDates() {
+  if (periodMode === 'today') return [todayStr()];
+  if (periodMode === 'custom' && customStart && customEnd) {
+    const d1 = new Date(customStart);
+    const d2 = new Date(customEnd);
+    const start = d1 <= d2 ? d1 : d2;
+    const stop = d1 <= d2 ? d2 : d1;
+    const out = [];
+    const cur = new Date(start);
+    while (cur <= stop) {
+      out.push(cur.toISOString().slice(0, 10));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  }
+  const n = parseInt(periodMode, 10) || 7;
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function buildStackedDayData(period) {
+  const periodSet = new Set(period);
+  const scoped = entries.filter(e => periodSet.has(e.date));
+
+  // Regrouper par nom d'activité (une activité = une seule barre, même si elle a été
+  // loguée sous plusieurs catégories) ; la couleur suit la catégorie majoritaire.
+  const byActivity = {};
+  scoped.forEach(e => {
+    if (!byActivity[e.activity]) byActivity[e.activity] = { total: 0, byCat: {} };
+    byActivity[e.activity].total += e.mins;
+    byActivity[e.activity].byCat[e.cat] = (byActivity[e.activity].byCat[e.cat] || 0) + e.mins;
+  });
+  const actOrder = Object.entries(byActivity).sort((a, b) => b[1].total - a[1].total);
+
+  const catTotals = {};
+  scoped.forEach(e => { catTotals[e.cat] = (catTotals[e.cat] || 0) + e.mins; });
+  const catOrder = Object.keys(catTotals).sort((a, b) => catTotals[b] - catTotals[a]);
+
+  const shadeSteps = [0, -22, 22, -38, 38, -50];
+  const shadeCounters = {};
+  const datasets = actOrder.map(([name, info]) => {
+    const mainCatId = Object.entries(info.byCat).sort((a, b) => b[1] - a[1])[0][0];
+    const c = catInfo(mainCatId);
+    const idx = shadeCounters[mainCatId] || 0;
+    shadeCounters[mainCatId] = idx + 1;
+    const data = period.map(d => scoped.filter(e => e.date === d && e.activity === name).reduce((s, e) => s + e.mins, 0));
+    return {
+      label: name,
+      catLabel: c.label,
+      data,
+      backgroundColor: shadeColor(c.color, shadeSteps[idx % shadeSteps.length]),
+      borderWidth: 0,
+      maxBarThickness: 34,
+    };
+  });
+
+  const dayLabels = period.map(d => period.length > 31 ? d.slice(5) : d.slice(5).replace('-', '/'));
+  const catLegend = catOrder.map(id => catInfo(id));
+  return { labels: dayLabels, datasets, catLegend };
+}
+
+function buildTimelineDayData(dateStr) {
+  const scoped = entries.filter(e => e.date === dateStr).map(e => {
+    const [sh, sm] = e.start.split(':').map(Number);
+    const startMin = sh * 60 + sm;
+    const endMin = Math.min(1440, startMin + e.mins);
+    return { ...e, startMin, endMin };
+  });
+
+  const catTotals = {};
+  scoped.forEach(e => { catTotals[e.cat] = (catTotals[e.cat] || 0) + e.mins; });
+  const catOrder = Object.keys(catTotals).sort((a, b) => catTotals[b] - catTotals[a]);
+  const catIndex = {};
+  catOrder.forEach((id, i) => { catIndex[id] = i; });
+
+  const shadeSteps = [0, -22, 22, -38, 38, -50];
+  const datasets = [];
+
+  catOrder.forEach(catId => {
+    const catScoped = scoped.filter(e => e.cat === catId).sort((a, b) => a.startMin - b.startMin);
+    const byActivity = {};
+    catScoped.forEach(e => { (byActivity[e.activity] = byActivity[e.activity] || []).push(e); });
+    const actNames = Object.keys(byActivity).sort((a, b) => {
+      const ta = byActivity[a].reduce((s, e) => s + e.mins, 0);
+      const tb = byActivity[b].reduce((s, e) => s + e.mins, 0);
+      return tb - ta;
+    });
+    const base = catInfo(catId).color;
+
+    actNames.forEach((name, idx) => {
+      const color = shadeColor(base, shadeSteps[idx % shadeSteps.length]);
+      byActivity[name].forEach(e => {
+        const data = new Array(catOrder.length).fill(null);
+        data[catIndex[catId]] = [e.startMin / 60, e.endMin / 60];
+        datasets.push({
+          label: name,
+          catLabel: catInfo(catId).label,
+          data,
+          backgroundColor: color,
+          borderRadius: 3,
+          borderSkipped: false,
+          barPercentage: 0.85,
+          categoryPercentage: 0.85,
+          _start: e.start,
+          _end: e.end,
+          _mins: e.mins,
+        });
+      });
+    });
+  });
+
+  const labels = catOrder.map(id => catInfo(id).label);
+  const catLegend = catOrder.map(id => catInfo(id));
+  return { labels, datasets, catLegend };
+}
+
+function buildHourGridData(dateStr) {
+  const scoped = entries.filter(e => e.date === dateStr).map(e => {
+    const [sh, sm] = e.start.split(':').map(Number);
+    const startMin = sh * 60 + sm;
+    const endMin = Math.min(1440, startMin + e.mins);
+    return { ...e, startMin, endMin };
+  });
+  const hours = Array.from({ length: 24 }, (_, h) => h);
+
+  const catTotals = {};
+  scoped.forEach(e => { catTotals[e.cat] = (catTotals[e.cat] || 0) + e.mins; });
+  const catOrder = Object.keys(catTotals).sort((a, b) => catTotals[b] - catTotals[a]);
+
+  const shadeSteps = [0, -22, 22, -38, 38, -50];
+  const datasets = [];
+
+  catOrder.forEach(catId => {
+    const catScoped = scoped.filter(e => e.cat === catId).sort((a, b) => a.startMin - b.startMin);
+    const byActivity = {};
+    catScoped.forEach(e => { (byActivity[e.activity] = byActivity[e.activity] || []).push(e); });
+    const actNames = Object.keys(byActivity).sort((a, b) => {
+      const ta = byActivity[a].reduce((s, e) => s + e.mins, 0);
+      const tb = byActivity[b].reduce((s, e) => s + e.mins, 0);
+      return tb - ta;
+    });
+    const base = catInfo(catId).color;
+
+    actNames.forEach((name, idx) => {
+      const color = shadeColor(base, shadeSteps[idx % shadeSteps.length]);
+      byActivity[name].forEach(e => {
+        const firstHour = Math.floor(e.startMin / 60);
+        const lastHour = Math.min(23, Math.floor((e.endMin - 1) / 60));
+        const data = new Array(24).fill(null);
+        for (let h = firstHour; h <= lastHour; h++) {
+          const segStart = Math.max(e.startMin, h * 60) - h * 60;
+          const segEnd = Math.min(e.endMin, h * 60 + 60) - h * 60;
+          if (segEnd > segStart) data[h] = [segStart, segEnd];
+        }
+        datasets.push({
+          label: name,
+          catLabel: catInfo(catId).label,
+          data,
+          backgroundColor: color,
+          borderRadius: 3,
+          borderSkipped: false,
+          barPercentage: 0.95,
+          categoryPercentage: 0.95,
+          _start: e.start,
+          _end: e.end,
+          _mins: e.mins,
+        });
+      });
+    });
+  });
+
+  const labels = hours.map(h => h + 'h');
+  const catLegend = catOrder.map(id => catInfo(id));
+  return { labels, datasets, catLegend };
+}
+
+function renderDayChart() {
+  const canvas = document.getElementById('dayChart');
+  if (!canvas) return;
+  const isToday = periodMode === 'today';
+
+  if (isToday) {
+    const { labels, datasets, catLegend } = buildTimelineDayData(todayStr());
+    const legendEl = document.getElementById('dayChart-legend');
+    if (legendEl) {
+      legendEl.innerHTML = catLegend.length
+        ? catLegend.map(c => `<span><span class="cat-dot" style="background:${c.color}"></span>${c.label}</span>`).join('')
+        : '';
+    }
+    if (dayChartInstance) { dayChartInstance.destroy(); }
+    if (!datasets.length) {
+      canvas.style.display = 'none';
+      if (legendEl) legendEl.innerHTML = '<span style="font-style:italic">Rien de suivi aujourd\'hui.</span>';
+      return;
+    }
+    canvas.style.display = 'block';
+    dayChartInstance = new Chart(canvas, {
+      type: 'bar',
+      data: { labels, datasets },
+      options: {
+        indexAxis: 'y',
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#232821', titleFont: { family: 'Inter' }, bodyFont: { family: 'Inter' },
+            callbacks: {
+              title: (items) => items.length ? items[0].dataset.catLabel : '',
+              label: (ctx) => `${ctx.dataset.label} — ${ctx.dataset._start}–${ctx.dataset._end} · ${fmtHM(ctx.dataset._mins)}`
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: 'linear', min: 0, max: 24, stacked: true,
+            ticks: { stepSize: 3, callback: v => v + 'h', font: { family: 'JetBrains Mono', size: 11 }, color: '#4b5148' },
+            grid: { color: '#DDD5C2' }
+          },
+          y: { stacked: true, ticks: { font: { family: 'Fraunces', size: 12.5 }, color: '#232821' }, grid: { display: false } }
+        }
+      }
+    });
+
+    const hourCanvas = document.getElementById('hourChart');
+    if (hourChartInstance) { hourChartInstance.destroy(); hourChartInstance = null; }
+    if (hourCanvas) {
+      const hourData = buildHourGridData(todayStr());
+      const hourLegendEl = document.getElementById('hourChart-legend');
+      if (hourLegendEl) {
+        hourLegendEl.innerHTML = hourData.catLegend.length
+          ? hourData.catLegend.map(c => `<span><span class="cat-dot" style="background:${c.color}"></span>${c.label}</span>`).join('')
+          : '';
+      }
+      hourChartInstance = new Chart(hourCanvas, {
+        type: 'bar',
+        data: { labels: hourData.labels, datasets: hourData.datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#232821', titleFont: { family: 'Inter' }, bodyFont: { family: 'Inter' },
+              callbacks: {
+                title: (items) => items.length ? hourData.labels[items[0].dataIndex] : '',
+                label: (ctx) => `${ctx.dataset.label} (${ctx.dataset.catLabel}) — ${ctx.dataset._start}–${ctx.dataset._end} · ${fmtHM(ctx.dataset._mins)}`
+              }
+            }
+          },
+          scales: {
+            y: {
+              type: 'linear', min: 0, max: 60, reverse: true,
+              ticks: { stepSize: 15, callback: v => v + 'm', font: { family: 'Inter', size: 11 }, color: '#4b5148' },
+              grid: { color: '#DDD5C2' }
+            },
+            x: {
+              ticks: { font: { family: 'JetBrains Mono', size: 10.5 }, color: '#4b5148', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+              grid: { display: false }
+            }
+          }
+        }
+      });
+    }
+    return;
+  }
+
+  const period = getPeriodDates();
+  const { labels, datasets, catLegend } = buildStackedDayData(period);
+  const legendEl = document.getElementById('dayChart-legend');
+  if (legendEl) {
+    legendEl.innerHTML = catLegend.length
+      ? catLegend.map(c => `<span><span class="cat-dot" style="background:${c.color}"></span>${c.label}</span>`).join('')
+      : '';
+  }
+  canvas.style.display = 'block';
+  if (dayChartInstance) { dayChartInstance.destroy(); }
+  dayChartInstance = new Chart(canvas, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#232821', titleFont: { family: 'Inter' }, bodyFont: { family: 'Inter' },
+          callbacks: {
+            title: (items) => items.length ? period[items[0].dataIndex] : '',
+            label: (ctx) => {
+              const mins = ctx.raw;
+              if (!mins) return null;
+              return `${ctx.dataset.label} (${ctx.dataset.catLabel}) — ${fmtHM(mins)}`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: { stacked: true, beginAtZero: true, ticks: { callback: v => Math.round(v / 60) + 'h', font: { family: 'Inter', size: 11 }, color: '#4b5148' }, grid: { color: '#DDD5C2' } },
+        x: {
+          stacked: true,
+          ticks: {
+            font: { family: 'JetBrains Mono', size: 11 }, color: '#4b5148',
+            maxRotation: period.length > 14 ? 60 : 0, autoSkip: true, maxTicksLimit: period.length > 30 ? 15 : undefined
+          },
+          grid: { display: false }
+        }
+      }
+    }
+  });
+}
+
+loadEntries();
+</script>
