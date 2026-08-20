@@ -1,0 +1,30 @@
+name: Fix imported category hierarchy
+on:
+  push:
+    branches: [ChatGPT]
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix import normalization
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          old = """function normalize(raw){const d=emptyData();\n if(Array.isArray(raw.categories)) d.categories=raw.categories.map(c=>({id:c.id||uid(),name:String(c.name||c.label||'Catégorie'),parentId:c.parentId??c.parent??null}));\n if(Array.isArray(raw.activities)) d.activities=raw.activities.map(a=>({id:a.id||uid(),name:String(a.name||a.activity||'Activité'),categoryId:a.categoryId||a.catId||null,path:Array.isArray(a.path)?a.path.map(String):[]}));\n if(Array.isArray(raw.entries)) d.entries=raw.entries.map(e=>({...e,id:e.id||uid(),activityId:e.activityId||null,date:e.date||today(),start:e.start||`${e.date||today()}T09:00`,end:e.end||null,duration:Number(e.duration)||0,note:e.note||''}));\n d.settings={goal:Number(raw.settings?.goal)||8};\n migrateLegacy(raw,d); rebuildEntryLinks(d); return d}"""
+          new = """function normalize(raw){const d=emptyData();\n const rawCats=Array.isArray(raw.categories)?raw.categories:[];\n const byId=new Map(), pending=[];\n rawCats.forEach(c=>{const id=String(c.id||uid()),name=String(c.name||c.label||'Catégorie');d.categories.push({id,name,parentId:null});byId.set(id,d.categories[d.categories.length-1]);pending.push({c,node:d.categories[d.categories.length-1]})});\n const findCatId=v=>{if(v==null||v==='')return null;const key=String(v);if(byId.has(key))return key;const found=d.categories.find(x=>x.name===key);return found?.id||null};\n pending.forEach(({c,node})=>{const parentValue=c.parentId??c.parent??c.parentID??c.parent_id??c.parentCategoryId??c.categoryParentId;node.parentId=findCatId(parentValue)});\n if(Array.isArray(raw.activities)) d.activities=raw.activities.map(a=>({id:a.id||uid(),name:String(a.name||a.activity||'Activité'),categoryId:findCatId(a.categoryId??a.catId??a.category??a.parentId)||null,path:Array.isArray(a.path)?a.path.map(String):[]}));\n if(Array.isArray(raw.entries)) d.entries=raw.entries.map(e=>({...e,id:e.id||uid(),activityId:e.activityId||null,date:e.date||today(),start:e.start||`${e.date||today()}T09:00`,end:e.end||null,duration:Number(e.duration)||0,note:e.note||''}));\n d.settings={goal:Number(raw.settings?.goal)||8};\n migrateLegacy(raw,d); rebuildEntryLinks(d); return d}"""
+          if old not in s:
+              raise SystemExit('normalize block not found')
+          p.write_text(s.replace(old,new),encoding='utf-8')
+      - name: Commit fix and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git rm .github/workflows/fix-import.yml
+          git commit -m 'Fix imported category parent hierarchy'
+          git push
