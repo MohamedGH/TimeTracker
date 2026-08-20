@@ -42,7 +42,7 @@ function normalize(raw){const d=emptyData();
  const findCatId=v=>{if(v==null||v==='')return null;const key=String(v);if(byId.has(key))return key;const found=d.categories.find(x=>x.name===key);return found?.id||null};
  pending.forEach(({c,node})=>{const parentValue=c.parentId??c.parent??c.parentID??c.parent_id??c.parentCategoryId??c.categoryParentId;node.parentId=findCatId(parentValue)});
  if(Array.isArray(raw.activities)) d.activities=raw.activities.map(a=>({id:a.id||uid(),name:String(a.name||a.activity||'Activité'),categoryId:findCatId(a.categoryId??a.catId??a.category??a.parentId)||null,path:Array.isArray(a.path)?a.path.map(String):[]}));
- if(Array.isArray(raw.entries)) d.entries=raw.entries.map(e=>({...e,id:e.id||uid(),activityId:e.activityId||null,date:e.date||today(),start:e.start||`${e.date||today()}T09:00`,end:e.end||null,duration:Number(e.duration)||0,note:e.note||''}));
+ if(Array.isArray(raw.entries)) d.entries=raw.entries.map(e=>({...e,id:e.id||uid(),activityId:e.activityId||null,date:e.date||today(),start:e.start||`${e.date||today()}T09:00`,end:e.end||null,duration:importedEntryDuration(e),note:e.note||''}));
  d.settings={goal:Number(raw.settings?.goal)||8};
  migrateLegacy(raw,d); rebuildEntryLinks(d); return d}
 function migrateLegacy(raw,d){
@@ -53,7 +53,33 @@ function migrateLegacy(raw,d){
  if(Array.isArray(raw.savedActivities)) raw.savedActivities.forEach(a=>{if(!d.activities.some(x=>x.name===(a.name||a.activity))){const path=[a.cat,a.sub].filter(Boolean);d.activities.push({id:a.id||uid(),name:a.name||a.activity||'Activité',categoryId:resolvePath(path),path})}});
  d.activities.forEach(a=>{if(!a.categoryId&&a.path?.length)a.categoryId=resolvePath(a.path)});
 }
-function rebuildEntryLinks(d){d.entries.forEach(e=>{if(!e.activityId&&e.activity){let a=d.activities.find(x=>x.name===e.activity);if(!a){a={id:uid(),name:e.activity,path:[e.cat,e.sub].filter(Boolean),categoryId:null};d.activities.push(a)}e.activityId=a.id}if(e.duration===0&&e.start&&e.end){const s=new Date(e.start),en=new Date(e.end);if(!isNaN(s)&&!isNaN(en))e.duration=Math.max(0,(en-s)/1000)}})}
+
+/* imported-entry-date-fix-v1 */
+function parseEntryDate(date,value){
+  if(value instanceof Date) return value;
+  const v=String(value??'').trim();
+  if(!v) return new Date(NaN);
+  if(/^\d{4}-\d{2}-\d{2}T/.test(v)) return new Date(v);
+  if(/^\d{2}:\d{2}(:\d{2})?$/.test(v)){
+    const d=String(date||today());
+    const t=v.length===5?v+':00':v;
+    return new Date(`${d}T${t}`);
+  }
+  return new Date(v);
+}
+function importedEntryDuration(e){
+  const explicit=Number(e.duration);
+  if(Number.isFinite(explicit)&&explicit>0) return explicit;
+  const mins=Number(e.mins);
+  if(Number.isFinite(mins)&&mins>0) return mins*60;
+  const s=parseEntryDate(e.date,e.start),en=parseEntryDate(e.date,e.end);
+  if(isNaN(s)||isNaN(en)) return 0;
+  let seconds=(en-s)/1000;
+  if(seconds<0) seconds+=86400;
+  return Math.max(0,seconds);
+}
+
+function rebuildEntryLinks(d){d.entries.forEach(e=>{if(!e.activityId&&e.activity){let a=d.activities.find(x=>x.name===e.activity);if(!a){a={id:uid(),name:e.activity,path:[e.cat,e.sub].filter(Boolean),categoryId:null};d.activities.push(a)}e.activityId=a.id}if(e.duration===0&&e.start&&e.end)e.duration=importedEntryDuration(e)})}
 function categoryPath(categoryId){const out=[],seen=new Set();let c=data.categories.find(x=>x.id===categoryId);while(c&&!seen.has(c.id)){seen.add(c.id);out.unshift(c);c=data.categories.find(x=>x.id===c.parentId)}return out}
 function activityPath(a){if(a.categoryId){const p=categoryPath(a.categoryId);if(p.length)return p}if(Array.isArray(a.path))return a.path.map(name=>({id:null,name}));return[]}
 function activityLabel(a){return `${a.name} — ${activityPath(a).map(c=>c.name).join(' › ')}`}
@@ -73,8 +99,8 @@ $('stop').onclick=()=>{if(!running)return;const endTs=Date.now(),duration=Math.m
 
 function renderToday(){const es=dayEntries();const total=es.reduce((n,e)=>n+Number(e.duration||0),0);$('total').textContent=formatDuration(total);$('count').textContent=es.length;const pct=Math.min(100,Math.round(total/(data.settings.goal*3600)*100));$('percent').textContent=pct+'%';$('bar').style.width=pct+'%';
  if(!es.length){$('entries').innerHTML='<div class="empty">Aucune entrée aujourd’hui.</div>';$('timeline').innerHTML='';return}
- $('entries').innerHTML=es.map(e=>{const a=data.activities.find(x=>x.id===e.activityId);return `<div class="entry"><div><b>${esc(a?.name||'Activité supprimée')}</b><div class="path">${esc(a?activityPath(a).map(c=>c.name).join(' › '):'')}</div><div class="meta">${new Date(e.start).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})} · ${formatDuration(e.duration)}</div></div><div class="actions"><button class="icon-btn" data-edit-entry="${e.id}">✎</button><button class="icon-btn danger" data-delete-entry="${e.id}">×</button></div></div>`}).join('');
- const dayStart=new Date(es[0].date+'T00:00:00').getTime(),dayEnd=dayStart+86400000;$('timeline').innerHTML=es.map(e=>{const s=new Date(e.start).getTime(),left=Math.max(0,(s-dayStart)/86400000*100),width=Math.max(.5,e.duration/86400*100),a=data.activities.find(x=>x.id===e.activityId);return `<div class="seg" style="margin-left:${left}%;width:${width}%;background:${colorFor(a?.id)}"><span>${esc(a?.name||'')}</span></div>`}).join('');
+ $('entries').innerHTML=es.map(e=>{const a=data.activities.find(x=>x.id===e.activityId);return `<div class="entry"><div><b>${esc(a?.name||'Activité supprimée')}</b><div class="path">${esc(a?activityPath(a).map(c=>c.name).join(' › '):'')}</div><div class="meta">${parseEntryDate(e.date,e.start).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})} · ${formatDuration(e.duration)}</div></div><div class="actions"><button class="icon-btn" data-edit-entry="${e.id}">✎</button><button class="icon-btn danger" data-delete-entry="${e.id}">×</button></div></div>`}).join('');
+ const dayStart=new Date(es[0].date+'T00:00:00').getTime(),dayEnd=dayStart+86400000;$('timeline').innerHTML=es.map(e=>{const s=parseEntryDate(e.date,e.start).getTime(),left=Math.max(0,(s-dayStart)/86400000*100),width=Math.max(.5,e.duration/86400*100),a=data.activities.find(x=>x.id===e.activityId);return `<div class="seg" style="margin-left:${left}%;width:${width}%;background:${colorFor(a?.id)}"><span>${esc(a?.name||'')}</span></div>`}).join('');
  document.querySelectorAll('[data-edit-entry]').forEach(b=>b.onclick=()=>editEntry(b.dataset.editEntry));document.querySelectorAll('[data-delete-entry]').forEach(b=>b.onclick=()=>{if(confirm('Supprimer cette entrée ?')){data.entries=data.entries.filter(e=>e.id!==b.dataset.deleteEntry);save()}})
 }
 function colorFor(id){let h=0;for(const ch of String(id||''))h=(h*31+ch.charCodeAt(0))%360;return `hsl(${h} 42% 62%)`}
