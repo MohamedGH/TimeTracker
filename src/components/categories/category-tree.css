@@ -1,0 +1,49 @@
+.category-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.category-tree__children {
+  list-style: none;
+  margin: 0 0 0 1.25rem;
+  padding: 0;
+  border-inline-start: 1px solid currentColor;
+  opacity: .9;
+}
+
+.category-tree__row {
+  display: flex;
+  gap: .35rem;
+  align-items: center;
+  padding: .25rem 0;
+}
+
+.category-tree__select {
+  flex: 1;
+  text-align: start;
+}
+
+.category-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / .35);
+  z-index: 1000;
+}
+
+.category-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1rem;
+  background: Canvas;
+  color: CanvasText;
+  border: 1px solid ButtonBorder;
+  border-radius: .5rem;
+}
+
+.category-dialog > button:first-child {
+  float: inline-end;
+}
