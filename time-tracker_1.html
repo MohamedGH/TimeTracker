@@ -193,6 +193,7 @@ let customEnd = null;
 let dayChartInstance = null;
 let hourChartInstance = null;
 let selectedArcDate = null;
+let showAllEntries = false;
 
 let editingEntryId = null;
 
@@ -340,21 +341,26 @@ function removeCustomCategory(id) {
   }
 }
 
-function addManualActivity(name, cat) {
+function addManualActivity(name, cat, sub) {
   name = name.trim();
   if (!name) return;
   const existing = savedActivities.find(a => a.name.toLowerCase() === name.toLowerCase());
-  if (existing) { existing.cat = cat; }
-  else savedActivities.push({ id: Date.now().toString(36), name, cat, count: 0 });
+  if (existing) { existing.cat = cat; existing.sub = sub || null; }
+  else savedActivities.push({ id: Date.now().toString(36), name, cat, sub: sub || null, count: 0 });
   saveActivities();
 }
 
-function addSavedActivity(name, cat) {
+function addSavedActivity(name, cat, sub) {
   name = name.trim();
   if (!name) return;
   const existing = savedActivities.find(a => a.name.toLowerCase() === name.toLowerCase());
-  if (existing) { existing.cat = cat; existing.count = (existing.count || 1) + 1; }
-  else savedActivities.push({ id: Date.now().toString(36), name, cat, count: 1 });
+  if (existing) {
+    existing.cat = cat;
+    if (sub !== undefined) existing.sub = sub || null;
+    existing.count = (existing.count || 1) + 1;
+  } else {
+    savedActivities.push({ id: Date.now().toString(36), name, cat, sub: sub || null, count: 1 });
+  }
   saveActivities();
 }
 
@@ -405,13 +411,6 @@ function renderModal() {
   const titles = { entry: editEntry ? 'Modifier l’entrée' : 'Nouvelle entrée', activity: 'Nouvelle activité', category: 'Nouvelle catégorie', subcategory: 'Nouvelle sous-catégorie' };
   const bodies = {
     entry: `
-      <div class="field">
-        <label for="f-activity">Activité</label>
-        <input id="f-activity" list="activity-list" placeholder="Ex: réunion projet, footing, lecture..." value="${editEntry ? editEntry.activity : ''}" />
-        <datalist id="activity-list">
-          ${savedActivities.map(a => `<option value="${a.name}">`).join('')}
-        </datalist>
-      </div>
       <div class="row">
         <div class="field">
           <label for="f-cat">Catégorie</label>
@@ -427,6 +426,13 @@ function renderModal() {
           </select>
         </div>
       </div>
+      <div class="field">
+        <label for="f-activity">Activité</label>
+        <input id="f-activity" list="activity-list" placeholder="Ex: réunion projet, footing, lecture..." value="${editEntry ? editEntry.activity : ''}" />
+        <datalist id="activity-list">
+          ${savedActivities.filter(a => a.cat === (editEntry ? editEntry.cat : allCats()[0].id)).map(a => `<option value="${a.name}">`).join('')}
+        </datalist>
+      </div>
       <div class="row">
         <div class="field">
           <label for="f-date">Date</label>
@@ -436,7 +442,7 @@ function renderModal() {
       <div class="row">
         <div class="field">
           <label for="f-start">Début</label>
-          <input id="f-start" type="time" value="${editEntry ? editEntry.start : ''}" />
+          <input id="f-start" type="time" value="${editEntry ? editEntry.start : getLastEntryEnd()}" />
         </div>
         <div class="field">
           <label for="f-end">Fin</label>
@@ -458,11 +464,20 @@ function renderModal() {
         <label for="na-name">Nom</label>
         <input id="na-name" placeholder="Ex: piano" />
       </div>
-      <div class="field">
-        <label for="na-cat">Catégorie</label>
-        <select id="na-cat">
-          ${allCats().map(c => `<option value="${c.id}">${c.label}</option>`).join('')}
-        </select>
+      <div class="row">
+        <div class="field">
+          <label for="na-cat">Catégorie</label>
+          <select id="na-cat">
+            ${allCats().map(c => `<option value="${c.id}">${c.label}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" id="na-sub-wrap" style="display:${subsForCat(allCats()[0].id).length ? 'flex' : 'none'}">
+          <label for="na-sub">Sous-catégorie</label>
+          <select id="na-sub">
+            <option value="">Aucune</option>
+            ${subsForCat(allCats()[0].id).map(s => `<option value="${s.id}">${s.label}</option>`).join('')}
+          </select>
+        </div>
       </div>
       <button id="na-submit"><i class="ti ti-plus" aria-hidden="true" style="margin-right:6px"></i>Créer l'activité</button>
     `,
@@ -533,6 +548,7 @@ function renderModal() {
     }
   } else if (modalKind === 'activity') {
     document.getElementById('na-submit').onclick = onCreateActivity;
+    document.getElementById('na-cat').addEventListener('change', onNewActivityCatChange);
   } else if (modalKind === 'category') {
     document.getElementById('nc-submit').onclick = onCreateCategory;
     document.querySelectorAll('.del-cat-btn').forEach(btn => {
@@ -670,11 +686,29 @@ function onImport(e) {
 function onCreateActivity() {
   const name = document.getElementById('na-name').value.trim();
   const cat = document.getElementById('na-cat').value;
+  const subEl = document.getElementById('na-sub');
+  const sub = subEl ? (subEl.value || null) : null;
   if (!name) return;
-  addManualActivity(name, cat);
+  addManualActivity(name, cat, sub);
   closeModal();
   renderActivitiesList();
 }
+
+function onNewActivityCatChange() {
+  const catId = document.getElementById('na-cat').value;
+  const wrap = document.getElementById('na-sub-wrap');
+  const select = document.getElementById('na-sub');
+  const subs = subsForCat(catId);
+  if (!wrap || !select) return;
+  if (!subs.length) {
+    wrap.style.display = 'none';
+    select.innerHTML = '<option value="">Aucune</option>';
+    return;
+  }
+  wrap.style.display = 'flex';
+  select.innerHTML = '<option value="">Aucune</option>' + subs.map(s => `<option value="${s.id}">${s.label}</option>`).join('');
+}
+
 function onCreateCategory() {
   const name = document.getElementById('nc-name').value.trim();
   const color = document.getElementById('nc-color').value;
@@ -689,11 +723,22 @@ function onActivityPick(e) {
   if (match) {
     document.getElementById('f-cat').value = match.cat;
     onEntryCatChange();
+    if (match.sub) {
+      const sel = document.getElementById('f-sub');
+      if (sel) sel.value = match.sub;
+    }
   }
+}
+
+function refreshActivityDatalist(catId) {
+  const dl = document.getElementById('activity-list');
+  if (!dl) return;
+  dl.innerHTML = savedActivities.filter(a => a.cat === catId).map(a => `<option value="${a.name}">`).join('');
 }
 
 function onEntryCatChange() {
   const catId = document.getElementById('f-cat').value;
+  refreshActivityDatalist(catId);
   const wrap = document.getElementById('f-sub-wrap');
   const select = document.getElementById('f-sub');
   const subs = subsForCat(catId);
@@ -717,9 +762,10 @@ function renderActivitiesList() {
   const sorted = [...savedActivities].sort((a, b) => (b.count || 0) - (a.count || 0));
   el.innerHTML = sorted.map(a => {
     const c = catInfo(a.cat);
+    const s = a.sub ? subInfo(a.sub) : null;
     return `
       <div class="entry-row">
-        <div><span class="cat-dot" style="background:${c.color}"></span>${a.name}<div class="entry-meta">${c.label} · utilisée ${a.count || 1}×</div></div>
+        <div><span class="cat-dot" style="background:${c.color}"></span>${a.name}<div class="entry-meta">${c.label}${s ? ' › ' + s.label : ''} · utilisée ${a.count || 1}×</div></div>
         <div style="display:flex;align-items:center;gap:10px">
           <button class="start-saved-btn" data-id="${a.id}" style="width:auto" ${activeTimer ? 'disabled' : ''}><i class="ti ti-player-play" aria-hidden="true"></i></button>
           <button class="del-btn" data-id="${a.id}" style="width:auto"><i class="ti ti-trash" aria-hidden="true"></i></button>
@@ -734,7 +780,7 @@ function renderActivitiesList() {
     btn.onclick = () => {
       const a = savedActivities.find(x => x.id === btn.dataset.id);
       if (!a || activeTimer) return;
-      startTimerFor(a.name, a.cat);
+      startTimerFor(a.name, a.cat, a.sub);
     };
   });
 }
@@ -750,23 +796,48 @@ function renderTimerZone() {
           <label for="t-activity">Activité (chrono)</label>
           <input id="t-activity" list="activity-list" placeholder="Ex: pause déjeuner" />
         </div>
-        <div class="field">
-          <label for="t-cat">Catégorie</label>
-          <select id="t-cat">
-            ${allCats().map(c => `<option value="${c.id}">${c.label}</option>`).join('')}
-          </select>
+        <div class="row">
+          <div class="field">
+            <label for="t-cat">Catégorie</label>
+            <select id="t-cat">
+              ${allCats().map(c => `<option value="${c.id}">${c.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" id="t-sub-wrap" style="display:${subsForCat(allCats()[0].id).length ? 'flex' : 'none'}">
+            <label for="t-sub">Sous-catégorie</label>
+            <select id="t-sub">
+              <option value="">Aucune</option>
+              ${subsForCat(allCats()[0].id).map(s => `<option value="${s.id}">${s.label}</option>`).join('')}
+            </select>
+          </div>
         </div>
         <button id="t-start"><i class="ti ti-player-play" aria-hidden="true" style="margin-right:6px"></i>Début</button>
       </div>
     `;
+    document.getElementById('t-cat').addEventListener('change', () => {
+      const catId = document.getElementById('t-cat').value;
+      refreshActivityDatalist(catId);
+      const wrap = document.getElementById('t-sub-wrap');
+      const select = document.getElementById('t-sub');
+      const subs = subsForCat(catId);
+      if (!subs.length) { wrap.style.display = 'none'; select.innerHTML = '<option value="">Aucune</option>'; return; }
+      wrap.style.display = 'flex';
+      select.innerHTML = '<option value="">Aucune</option>' + subs.map(s => `<option value="${s.id}">${s.label}</option>`).join('');
+    });
     document.getElementById('t-activity').addEventListener('change', (e) => {
       const match = savedActivities.find(a => a.name.toLowerCase() === e.target.value.trim().toLowerCase());
-      if (match) document.getElementById('t-cat').value = match.cat;
+      if (match) {
+        document.getElementById('t-cat').value = match.cat;
+        document.getElementById('t-cat').dispatchEvent(new Event('change'));
+        if (match.sub) document.getElementById('t-sub').value = match.sub;
+      }
     });
     document.getElementById('t-start').onclick = () => {
       const activity = document.getElementById('t-activity').value.trim() || 'Sans titre';
       const cat = document.getElementById('t-cat').value;
-      startTimerFor(activity, cat);
+      const subEl = document.getElementById('t-sub');
+      const sub = subEl ? (subEl.value || null) : null;
+      startTimerFor(activity, cat, sub);
     };
   } else {
     const c = catInfo(activeTimer.cat);
@@ -783,12 +854,12 @@ function renderTimerZone() {
       const mins = Math.max(1, Math.round((now.getTime() - activeTimer.startTs) / 60000));
       entries.push({
         id: Date.now().toString(36),
-        activity: activeTimer.activity, cat: activeTimer.cat,
+        activity: activeTimer.activity, cat: activeTimer.cat, sub: activeTimer.sub || null,
         date: activeTimer.date, start: activeTimer.startTime,
         end: `${pad(now.getHours())}:${pad(now.getMinutes())}`, mins,
       });
       saveEntries();
-      addSavedActivity(activeTimer.activity, activeTimer.cat);
+      addSavedActivity(activeTimer.activity, activeTimer.cat, activeTimer.sub);
       activeTimer = null;
       closeModal();
       renderEntryList();
@@ -798,10 +869,10 @@ function renderTimerZone() {
   }
 }
 
-function startTimerFor(activity, cat) {
+function startTimerFor(activity, cat, sub) {
   const now = new Date();
   activeTimer = {
-    activity, cat,
+    activity, cat, sub: sub || null,
     startTs: now.getTime(),
     startTime: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
     date: todayStr(),
@@ -922,7 +993,7 @@ function onSubmit() {
     entries.push({ id: Date.now().toString(36), activity, cat, sub, date, start, end, mins });
   }
   saveEntries();
-  addSavedActivity(activity, cat);
+  addSavedActivity(activity, cat, sub);
   closeModal();
   renderEntryList();
   renderActivitiesList();
@@ -930,28 +1001,38 @@ function onSubmit() {
 
 function renderEntryList() {
   const list = document.getElementById('entry-list');
-  const sorted = [...entries].sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)).slice(0, 12);
+  const allSorted = [...entries].sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start));
+  const sorted = showAllEntries ? allSorted : allSorted.slice(0, 12);
   if (sorted.length === 0) {
     list.innerHTML = '<p class="empty">Aucune entrée. Ajoute ta première activité ci-dessus.</p>';
     return;
   }
-  list.innerHTML = sorted.map(e => {
-    const c = catInfo(e.cat);
-    const s = e.sub ? subInfo(e.sub) : null;
-    return `
-      <div class="entry-row">
-        <div>
-          <span class="cat-dot" style="background:${c.color}"></span>${e.activity}
-          <div class="entry-meta">${c.label}${s ? ' › ' + s.label : ''} · ${e.date} · ${e.start}–${e.end}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="margin-right:4px">${fmtHM(e.mins)}</span>
-          <button class="edit-entry-btn" data-id="${e.id}" style="width:auto"><i class="ti ti-pencil" aria-hidden="true"></i></button>
-          <button class="del-btn" data-id="${e.id}" style="width:auto"><i class="ti ti-trash" aria-hidden="true"></i></button>
-        </div>
-      </div>
-    `;
-  }).join('');
+  list.innerHTML = `
+    <div style="${showAllEntries ? 'max-height:480px;overflow-y:auto' : ''}">
+      ${sorted.map(e => {
+        const c = catInfo(e.cat);
+        const s = e.sub ? subInfo(e.sub) : null;
+        return `
+          <div class="entry-row">
+            <div>
+              <span class="cat-dot" style="background:${c.color}"></span>${e.activity}
+              <div class="entry-meta">${c.label}${s ? ' › ' + s.label : ''} · ${e.date} · ${e.start}–${e.end}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="margin-right:4px">${fmtHM(e.mins)}</span>
+              <button class="edit-entry-btn" data-id="${e.id}" style="width:auto"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+              <button class="del-btn" data-id="${e.id}" style="width:auto"><i class="ti ti-trash" aria-hidden="true"></i></button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+    ${allSorted.length > 12 ? `
+      <button id="toggle-all-entries" style="margin-top:10px;background:var(--paper);color:var(--ink-soft);border:1px solid var(--line)">
+        ${showAllEntries ? 'Réduire' : `Voir toutes les entrées (${allSorted.length})`}
+      </button>
+    ` : ''}
+  `;
   list.querySelectorAll('.del-btn').forEach(btn => {
     btn.onclick = () => {
       entries = entries.filter(e => e.id !== btn.dataset.id);
@@ -962,6 +1043,72 @@ function renderEntryList() {
   list.querySelectorAll('.edit-entry-btn').forEach(btn => {
     btn.onclick = () => openModal('entry', btn.dataset.id);
   });
+  const toggleBtn = document.getElementById('toggle-all-entries');
+  if (toggleBtn) toggleBtn.onclick = () => { showAllEntries = !showAllEntries; renderEntryList(); };
+}
+
+function dateStrToDayIndex(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return Math.round(Date.UTC(y, m - 1, d) / 86400000);
+}
+
+function dayIndexToDateStr(dayIndex) {
+  return new Date(dayIndex * 86400000).toISOString().slice(0, 10);
+}
+
+function getLastEntryEnd() {
+  if (!entries.length) return '';
+  let latest = null, latestAbs = -Infinity;
+  entries.forEach(e => {
+    const abs = toAbsMin(e.date, e.start) + e.mins;
+    if (abs > latestAbs) { latestAbs = abs; latest = e; }
+  });
+  return latest ? latest.end : '';
+}
+
+function toAbsMin(dateStr, hm) {
+  const [h, m] = hm.split(':').map(Number);
+  return dateStrToDayIndex(dateStr) * 1440 + h * 60 + m;
+}
+
+function absMinToDate(absMin) {
+  return dayIndexToDateStr(Math.floor(absMin / 1440));
+}
+
+function minToHHMM(min) {
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  return pad(h % 24) + ':' + pad(m);
+}
+
+function splitEntryIntoDaySegments(entry) {
+  const absStart = toAbsMin(entry.date, entry.start);
+  const absEnd = absStart + entry.mins;
+  const segments = [];
+  let cursor = absStart;
+  while (cursor < absEnd) {
+    const dayStartAbs = Math.floor(cursor / 1440) * 1440;
+    const dayEndAbs = dayStartAbs + 1440;
+    const segEndAbs = Math.min(absEnd, dayEndAbs);
+    segments.push({
+      date: absMinToDate(dayStartAbs),
+      startMin: cursor - dayStartAbs,
+      endMin: segEndAbs - dayStartAbs,
+      mins: segEndAbs - cursor,
+      entry,
+    });
+    cursor = segEndAbs;
+  }
+  return segments;
+}
+
+function allDaySegments() {
+  const out = [];
+  entries.forEach(e => { splitEntryIntoDaySegments(e).forEach(seg => out.push(seg)); });
+  return out;
+}
+
+function daySegmentsFor(dateStr) {
+  return allDaySegments().filter(s => s.date === dateStr).sort((a, b) => a.startMin - b.startMin);
 }
 
 function polarPt(cx, cy, r, angleDeg) {
@@ -973,19 +1120,14 @@ function minToAngle(min) { return 180 - (min / 1440) * 180; }
 
 function buildDayArc(dateStr) {
   const cx = 150, cy = 140, r = 108;
-  const dayEntries = entries.filter(e => e.date === dateStr).map(e => {
-    const [sh, sm] = e.start.split(':').map(Number);
-    const startMin = sh * 60 + sm;
-    const endMin = Math.min(1440, startMin + e.mins);
-    return { ...e, startMin, endMin };
-  }).sort((a, b) => a.startMin - b.startMin);
+  const daySegs = daySegmentsFor(dateStr);
 
-  const segs = dayEntries.map(e => {
-    const a1 = minToAngle(e.startMin), a2 = minToAngle(e.endMin);
+  const segs = daySegs.map(seg => {
+    const a1 = minToAngle(seg.startMin), a2 = minToAngle(seg.endMin);
     const p1 = polarPt(cx, cy, r, a1), p2 = polarPt(cx, cy, r, a2);
     const largeArc = (a1 - a2) > 180 ? 1 : 0;
-    const c = catInfo(e.cat);
-    return `<path d="M ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A ${r} ${r} 0 ${largeArc} 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}" stroke="${c.color}" stroke-width="20" fill="none" stroke-linecap="butt"><title>${e.activity} (${c.label})</title></path>`;
+    const c = catInfo(seg.entry.cat);
+    return `<path d="M ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A ${r} ${r} 0 ${largeArc} 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}" stroke="${c.color}" stroke-width="20" fill="none" stroke-linecap="butt"><title>${seg.entry.activity} (${c.label})</title></path>`;
   }).join('');
 
   const ticks = [0, 360, 720, 1080, 1440].map(m => {
@@ -994,7 +1136,7 @@ function buildDayArc(dateStr) {
     return `<text x="${p.x.toFixed(1)}" y="${p.y.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#948C7E">${label}</text>`;
   }).join('');
 
-  const trackedMin = dayEntries.reduce((s, e) => s + (e.endMin - e.startMin), 0);
+  const trackedMin = daySegs.reduce((s, seg) => s + seg.mins, 0);
 
   return `
     <svg viewBox="0 0 300 168" width="100%" style="max-width:340px;display:block;margin:0 auto">
@@ -1067,8 +1209,8 @@ function renderDash() {
   const today = todayStr();
   const defaultArcDate = entries.some(e => e.date === today) ? today : [...entries].sort((a, b) => b.date.localeCompare(a.date))[0].date;
   const arcDate = selectedArcDate || defaultArcDate;
-  const arcDayEntriesSorted = entries.filter(e => e.date === arcDate).sort((a, b) => a.start.localeCompare(b.start));
-  const arcDayCats = [...new Set(arcDayEntriesSorted.map(e => e.cat))].map(catInfo);
+  const arcDaySegs = daySegmentsFor(arcDate);
+  const arcDayCats = [...new Set(arcDaySegs.map(seg => seg.entry.cat))].map(catInfo);
   const catEntriesCount = Object.keys(byCat).length;
 
   content.innerHTML = `
@@ -1088,17 +1230,19 @@ function renderDash() {
       </div>
       <div class="arc-wrap">${buildDayArc(arcDate)}</div>
       ${arcDayCats.length ? `<div class="arc-legend">${arcDayCats.map(c => `<span><span class="cat-dot" style="background:${c.color}"></span>${c.label}</span>`).join('')}</div>` : ''}
-      ${arcDayEntriesSorted.length ? `
+      ${arcDaySegs.length ? `
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
-          ${arcDayEntriesSorted.map(e => {
+          ${arcDaySegs.map(seg => {
+            const e = seg.entry;
             const c = catInfo(e.cat);
             const s = e.sub ? subInfo(e.sub) : null;
+            const isPartial = e.date !== arcDate || minToHHMM(seg.startMin) !== e.start || minToHHMM(seg.endMin) !== e.end;
             return `
               <div class="entry-row">
-                <div><span class="cat-dot" style="background:${c.color}"></span>${e.activity}
-                  <div class="entry-meta">${c.label}${s ? ' › ' + s.label : ''} · ${e.start}–${e.end}</div>
+                <div><span class="cat-dot" style="background:${c.color}"></span>${e.activity}${isPartial ? ' <span style="font-size:10px;color:var(--brass-deep);font-style:italic">(suite)</span>' : ''}
+                  <div class="entry-meta">${c.label}${s ? ' › ' + s.label : ''} · ${minToHHMM(seg.startMin)}–${minToHHMM(seg.endMin)}</div>
                 </div>
-                <span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--ink-soft)">${fmtHM(e.mins)}</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--ink-soft)">${fmtHM(seg.mins)}</span>
               </div>
             `;
           }).join('')}
@@ -1258,20 +1402,21 @@ function getPeriodDates() {
 
 function buildStackedDayData(period) {
   const periodSet = new Set(period);
-  const scoped = entries.filter(e => periodSet.has(e.date));
+  const scopedSegs = allDaySegments().filter(seg => periodSet.has(seg.date));
 
   // Regrouper par nom d'activité (une activité = une seule barre, même si elle a été
   // loguée sous plusieurs catégories) ; la couleur suit la catégorie majoritaire.
   const byActivity = {};
-  scoped.forEach(e => {
-    if (!byActivity[e.activity]) byActivity[e.activity] = { total: 0, byCat: {} };
-    byActivity[e.activity].total += e.mins;
-    byActivity[e.activity].byCat[e.cat] = (byActivity[e.activity].byCat[e.cat] || 0) + e.mins;
+  scopedSegs.forEach(seg => {
+    const name = seg.entry.activity, cat = seg.entry.cat;
+    if (!byActivity[name]) byActivity[name] = { total: 0, byCat: {} };
+    byActivity[name].total += seg.mins;
+    byActivity[name].byCat[cat] = (byActivity[name].byCat[cat] || 0) + seg.mins;
   });
   const actOrder = Object.entries(byActivity).sort((a, b) => b[1].total - a[1].total);
 
   const catTotals = {};
-  scoped.forEach(e => { catTotals[e.cat] = (catTotals[e.cat] || 0) + e.mins; });
+  scopedSegs.forEach(seg => { catTotals[seg.entry.cat] = (catTotals[seg.entry.cat] || 0) + seg.mins; });
   const catOrder = Object.keys(catTotals).sort((a, b) => catTotals[b] - catTotals[a]);
 
   const shadeSteps = [0, -22, 22, -38, 38, -50];
@@ -1281,7 +1426,7 @@ function buildStackedDayData(period) {
     const c = catInfo(mainCatId);
     const idx = shadeCounters[mainCatId] || 0;
     shadeCounters[mainCatId] = idx + 1;
-    const data = period.map(d => scoped.filter(e => e.date === d && e.activity === name).reduce((s, e) => s + e.mins, 0));
+    const data = period.map(d => scopedSegs.filter(seg => seg.date === d && seg.entry.activity === name).reduce((s, seg) => s + seg.mins, 0));
     return {
       label: name,
       catLabel: c.label,
@@ -1298,12 +1443,15 @@ function buildStackedDayData(period) {
 }
 
 function buildTimelineDayData(dateStr) {
-  const scoped = entries.filter(e => e.date === dateStr).map(e => {
-    const [sh, sm] = e.start.split(':').map(Number);
-    const startMin = sh * 60 + sm;
-    const endMin = Math.min(1440, startMin + e.mins);
-    return { ...e, startMin, endMin };
-  });
+  const scoped = daySegmentsFor(dateStr).map(seg => ({
+    cat: seg.entry.cat,
+    activity: seg.entry.activity,
+    startMin: seg.startMin,
+    endMin: seg.endMin,
+    mins: seg.mins,
+    start: minToHHMM(seg.startMin),
+    end: minToHHMM(seg.endMin),
+  }));
 
   const catTotals = {};
   scoped.forEach(e => { catTotals[e.cat] = (catTotals[e.cat] || 0) + e.mins; });
@@ -1353,12 +1501,15 @@ function buildTimelineDayData(dateStr) {
 }
 
 function buildHourGridData(dateStr) {
-  const scoped = entries.filter(e => e.date === dateStr).map(e => {
-    const [sh, sm] = e.start.split(':').map(Number);
-    const startMin = sh * 60 + sm;
-    const endMin = Math.min(1440, startMin + e.mins);
-    return { ...e, startMin, endMin };
-  });
+  const scoped = daySegmentsFor(dateStr).map(seg => ({
+    cat: seg.entry.cat,
+    activity: seg.entry.activity,
+    startMin: seg.startMin,
+    endMin: seg.endMin,
+    mins: seg.mins,
+    start: minToHHMM(seg.startMin),
+    end: minToHHMM(seg.endMin),
+  }));
   const hours = Array.from({ length: 24 }, (_, h) => h);
 
   const catTotals = {};
