@@ -1,6 +1,6 @@
 const DB_NAME = 'carnet-du-temps';
 const STORE_NAME = 'kv';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let databasePromise;
 
@@ -63,6 +63,32 @@ export const STORAGE_KEYS = Object.freeze({
   entries: 'time-entries',
   activities: 'time-activities',
   categories: 'time-categories',
+  // Legacy key kept readable for one-way migration.
   subcategories: 'time-subcategories',
   activeTimer: 'time-active-timer',
+  schemaVersion: 'time-schema-version',
 });
+
+export const STORAGE_SCHEMA_VERSION = 2;
+
+export async function loadCategoryData() {
+  const [categories, legacySubcategories] = await Promise.all([
+    getValue(STORAGE_KEYS.categories, []),
+    getValue(STORAGE_KEYS.subcategories, []),
+  ]);
+
+  return {
+    categories: Array.isArray(categories) ? categories : [],
+    legacySubcategories: Array.isArray(legacySubcategories) ? legacySubcategories : [],
+  };
+}
+
+export async function migrateCategoryStorage(migrate) {
+  const current = await loadCategoryData();
+  const migrated = migrate(current.categories, current.legacySubcategories);
+
+  await setValue(STORAGE_KEYS.categories, migrated);
+  await setValue(STORAGE_KEYS.schemaVersion, STORAGE_SCHEMA_VERSION);
+
+  return migrated;
+}
