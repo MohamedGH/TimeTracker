@@ -1,24 +1,19 @@
 /**
  * State contracts used during the vanilla -> Vue/Pinia migration.
- * These factories keep defaults in one place before TypeScript is introduced.
  */
 
 export function createEntriesState() {
-  return {
-    entries: [],
-  };
+  return { entries: [] };
 }
 
 export function createTimerState() {
-  return {
-    activeTimer: null,
-  };
+  return { activeTimer: null };
 }
 
 export function createCategoriesState() {
   return {
-    customCategories: [],
-    subCategories: [],
+    // One flat collection representing an unlimited-depth tree.
+    categories: [],
     savedActivities: [],
   };
 }
