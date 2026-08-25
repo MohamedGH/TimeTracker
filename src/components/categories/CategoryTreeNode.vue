@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Category } from '../../types/category';
+import { useCategoriesStore } from '../../stores/categories';
 
 defineOptions({ name: 'CategoryTreeNode' });
 
-defineProps<{
+const props = defineProps<{
   category: Category;
-  children: Category[];
   selectedId: string | null;
 }>();
 
@@ -16,6 +17,9 @@ const emit = defineEmits<{
   move: [id: string];
   remove: [id: string];
 }>();
+
+const store = useCategoriesStore();
+const children = computed(() => store.children(props.category.id));
 </script>
 
 <template>
@@ -41,7 +45,6 @@ const emit = defineEmits<{
         v-for="child in children"
         :key="child.id"
         :category="child"
-        :children="[]"
         :selected-id="selectedId"
         @select="emit('select', $event)"
         @add="emit('add', $event)"
