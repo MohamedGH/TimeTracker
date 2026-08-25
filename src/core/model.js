@@ -1,12 +1,14 @@
+import { migrateCategoryTree } from './category-tree.js';
+
 export const DEFAULT_CATEGORIES = Object.freeze([
-  { id: 'travail', label: 'Travail', color: '#4A5A75' },
-  { id: 'sommeil', label: 'Sommeil', color: '#5B4E7E' },
-  { id: 'loisirs', label: 'Loisirs', color: '#C98A3D' },
-  { id: 'sport', label: 'Sport', color: '#5C7A5E' },
-  { id: 'social', label: 'Social', color: '#B5697A' },
-  { id: 'transport', label: 'Transport', color: '#8B93A1' },
-  { id: 'etude', label: 'Étude', color: '#3F7068' },
-  { id: 'autre', label: 'Autre', color: '#948C7E' },
+  { id: 'travail', label: 'Travail', color: '#4A5A75', parentId: null, builtin: true },
+  { id: 'sommeil', label: 'Sommeil', color: '#5B4E7E', parentId: null, builtin: true },
+  { id: 'loisirs', label: 'Loisirs', color: '#C98A3D', parentId: null, builtin: true },
+  { id: 'sport', label: 'Sport', color: '#5C7A5E', parentId: null, builtin: true },
+  { id: 'social', label: 'Social', color: '#B5697A', parentId: null, builtin: true },
+  { id: 'transport', label: 'Transport', color: '#8B93A1', parentId: null, builtin: true },
+  { id: 'etude', label: 'Étude', color: '#3F7068', parentId: null, builtin: true },
+  { id: 'autre', label: 'Autre', color: '#948C7E', parentId: null, builtin: true },
 ]);
 
 export function slugify(value) {
@@ -52,10 +54,19 @@ export function validateBackup(data) {
     throw new Error('Format de sauvegarde invalide.');
   }
 
+  const legacyCategories = normalizeList(data.customCategories);
+  const legacySubCategories = normalizeList(data.subCategories);
+  const categoryTree = Array.isArray(data.categories)
+    ? migrateCategoryTree(data.categories, [])
+    : migrateCategoryTree(legacyCategories, legacySubCategories);
+
   return {
+    version: Number(data.version) || 1,
     entries: normalizeEntries(data.entries),
     savedActivities: normalizeList(data.savedActivities),
-    customCategories: normalizeList(data.customCategories),
-    subCategories: normalizeList(data.subCategories),
+    categories: categoryTree,
+    // Kept during migration for backward compatibility with the legacy UI.
+    customCategories: legacyCategories,
+    subCategories: legacySubCategories,
   };
 }
