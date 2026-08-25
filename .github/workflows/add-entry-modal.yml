@@ -1,0 +1,52 @@
+name: Add entry modal
+on:
+  push:
+    branches: [ChatGPT]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ChatGPT
+      - name: Patch entry modal
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('index.html')
+          s=p.read_text(encoding='utf-8')
+          old='<section class="card"><div class="head"><h2>Entrée</h2></div><div class="notice">Nouvelle entrée = <b>activité uniquement</b>. La catégorie, la sous-catégorie et tous les niveaux parents sont déterminés automatiquement.</div></section>'
+          new='<section class="card"><div class="head"><h2>Entrée</h2><button class="btn" id="addEntry">＋ Ajouter une entrée</button></div><div class="notice">Nouvelle entrée = <b>activité uniquement</b>. La catégorie, la sous-catégorie et tous les niveaux parents sont déterminés automatiquement.</div></section>'
+          if old not in s: raise SystemExit('entry section not found')
+          s=s.replace(old,new,1)
+          marker="function editEntry(id){"
+          if marker not in s: raise SystemExit('editEntry marker not found')
+          fn=r'''function addEntryModal(){
+ const activityOptions=data.activities.map(a=>`<option value="${a.id}">${esc(activityLabel(a))}</option>`).join('');
+ openModal('Ajouter une entrée',`<div class="form"><label>Activité</label><select id="newEntryAct"><option value="">Choisir une activité…</option>${activityOptions}</select><div class="row"><div><label>Date</label><input id="newEntryDate" type="date" value="${today()}"></div><div><label>Durée (minutes)</label><input id="newEntryDur" type="number" min="0" value="0"></div></div><div class="row"><div><label>Début</label><input id="newEntryStart" type="time"></div><div><label>Fin</label><input id="newEntryEnd" type="time"></div></div><label>Note</label><textarea id="newEntryNote"></textarea><div class="notice">Choisissez uniquement l’activité. Sa chaîne de catégories est automatiquement conservée.</div><div class="actions"><button class="btn secondary" id="cancelNewEntry">Annuler</button><button class="btn" id="saveNewEntry">Ajouter</button></div></div>`);
+ $('cancelNewEntry').onclick=closeModal;
+ $('saveNewEntry').onclick=()=>{
+   const activityId=$('newEntryAct').value,date=$('newEntryDate').value,start=$('newEntryStart').value,end=$('newEntryEnd').value;
+   if(!activityId||!validDateString(date)){alert('Activité et date obligatoires.');return}
+   let duration=Math.max(0,Number($('newEntryDur').value||0))*60;
+   if(start&&end){const a=parseEntryDate(date,start),b=parseEntryDate(date,end);if(!isNaN(a)&&!isNaN(b)){duration=(b-a)/1000;if(duration<0)duration+=86400}}
+   data.entries.push({id:uid(),activityId,date,start:start||null,end:end||null,duration,note:$('newEntryNote').value.trim()});
+   closeModal();save()
+ };
+}
+'''
+          s=s.replace(marker,fn+marker,1)
+          marker2="$('addCategory').onclick=()=>categoryModal(null);$('addActivity').onclick=()=>activityModal();"
+          repl=marker2+"$('addEntry').onclick=()=>addEntryModal();"
+          if marker2 not in s: raise SystemExit('button bindings marker not found')
+          s=s.replace(marker2,repl,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          rm .github/workflows/add-entry-modal.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html .github/workflows/add-entry-modal.yml
+          git commit -m 'Add modal for manual entries'
+          git push origin HEAD:ChatGPT
