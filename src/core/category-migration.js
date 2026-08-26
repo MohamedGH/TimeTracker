@@ -5,10 +5,15 @@ import { migrateSavedActivities } from './saved-activities.js';
 export function migrateEntriesToCategoryTree(entries = [], customCategories = [], subCategories = []) {
   const categories = migrateCategoryTree(customCategories, subCategories);
   const byId = new Set(categories.map(category => category.id));
-  const subByPair = new Map(
-    subCategories.filter(item => item?.id && item?.catId)
-      .map(item => [`${item.catId}::${item.label}`, item.id]),
-  );
+  const subByPair = new Map();
+
+  for (const item of subCategories) {
+    if (!item?.catId || !item?.label) continue;
+    const migrated = categories.find(category =>
+      category.parentId === item.catId && category.label === String(item.label).trim()
+    );
+    if (migrated) subByPair.set(`${item.catId}::${item.label}`, migrated.id);
+  }
 
   return entries.map(entry => {
     if (!entry || typeof entry !== 'object') return entry;
@@ -29,11 +34,8 @@ export function migrateBackupToCategoryTree(data) {
   const customCategories = hasCanonicalCategories ? data.categories : (data.customCategories ?? []);
   const subCategories = hasCanonicalCategories ? [] : (data.subCategories ?? []);
   const categories = migrateCategoryTree(customCategories, subCategories);
-
   const entries = migrateEntriesToCategoryTree(data.entries ?? [], customCategories, subCategories);
 
-  // Legacy exports used several names for saved activities. Accept all known
-  // forms and normalize them to the canonical savedActivities array.
   const legacyActivities = Array.isArray(data.savedActivities)
     ? data.savedActivities
     : Array.isArray(data.activities)
