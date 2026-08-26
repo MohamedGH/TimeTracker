@@ -15,13 +15,21 @@ export async function createAppState() {
 
   const categories = mergeCategories(DEFAULT_CATEGORIES, migrateCategoryTree(storedCategories, []));
   const categoryIds = new Set(categories.map(category => category.id));
+  const categoryLabels = new Set(categories.map(category => String(category.label || '').trim().toLowerCase()).filter(Boolean));
 
-  // Older migration builds could accidentally persist category records in the
-  // saved-activities collection. They are identifiable because a category id
-  // is globally unique and must never also be an activity id. Remove these
-  // stale records when loading so existing browser data is repaired too.
+  // Repair data produced by older migration builds. Categories must never be
+  // displayed as saved activities. Some legacy builds persisted category
+  // records as activities and could also create label-only records such as
+  // "Islam", "Code", "Maman" or "Sans catégorie".
   const normalizedActivities = Array.isArray(activities)
-    ? activities.filter(activity => activity?.id && !categoryIds.has(activity.id))
+    ? activities.filter(activity => {
+        if (!activity?.id || !String(activity.name || '').trim()) return false;
+        if (categoryIds.has(activity.id)) return false;
+        const name = String(activity.name).trim().toLowerCase();
+        if (name === 'sans catégorie') return false;
+        if (categoryLabels.has(name)) return false;
+        return true;
+      })
     : [];
 
   const state = {
