@@ -36,9 +36,9 @@ export function validateBackup(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Format de sauvegarde invalide.');
   const legacyCategories = normalizeList(data.customCategories);
   const legacySubCategories = normalizeList(data.subCategories);
-  const categories = Array.isArray(data.categories)
-    ? migrateCategoryTree(data.categories, [])
-    : migrateCategoryTree(legacyCategories, legacySubCategories);
+  const suppliedCategories = Array.isArray(data.categories) ? data.categories : legacyCategories;
+  const categories = migrateCategoryTree([...DEFAULT_CATEGORIES, ...suppliedCategories],
+    Array.isArray(data.categories) ? [] : legacySubCategories);
   return {
     version: Math.max(2, Number(data.version) || 1),
     entries: normalizeEntries(data.entries, categories, legacySubCategories),
