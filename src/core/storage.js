@@ -59,6 +59,16 @@ export async function removeValue(key) {
   });
 }
 
+export async function clearAllData() {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('Impossible d’effacer toutes les données.'));
+  });
+}
+
 export const STORAGE_KEYS = Object.freeze({
   entries: 'time-entries',
   activities: 'time-activities',
