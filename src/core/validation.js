@@ -12,7 +12,7 @@ export function isDate(value) {
 }
 export function isTimeEntry(value) { return Boolean(value && isString(value.id) && isString(value.activity) && (value.categoryId === null || isString(value.categoryId)) && isDate(value.date) && isTime(value.start) && isTime(value.end) && isFiniteNumber(value.mins) && value.mins >= 0); }
 export function isSavedActivity(value) { return Boolean(value && isString(value.id) && isString(value.label) && (value.categoryId === null || isString(value.categoryId))); }
-export function isCategory(value) { return Boolean(value && isString(value.id) && isString(value.label) && isString(value.color) && (value.parentId === null || value.parentId === undefined || isString(value.parentId))); }
+export function isCategory(value) { return Boolean(value && isString(value.id) && isString(value.label) && (value.color === null || isString(value.color)) && (value.parentId === null || value.parentId === undefined || isString(value.parentId))); }
 
 export function validateImportData(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Format JSON invalide.');
