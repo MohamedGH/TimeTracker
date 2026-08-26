@@ -13,63 +13,35 @@ export const DEFAULT_CATEGORIES = Object.freeze([
 ]);
 
 export function slugify(value) {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
+  return String(value ?? '').trim().toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
 export function isValidEntry(entry) {
-  return Boolean(
-    entry &&
-    typeof entry.id === 'string' &&
-    typeof entry.activity === 'string' &&
-    (entry.categoryId === null || typeof entry.categoryId === 'string') &&
-    typeof entry.date === 'string' &&
-    typeof entry.start === 'string' &&
-    typeof entry.end === 'string' &&
-    Number.isFinite(entry.mins),
-  );
+  return Boolean(entry && typeof entry.id === 'string' && typeof entry.activity === 'string' &&
+    (entry.categoryId === null || typeof entry.categoryId === 'string') && typeof entry.date === 'string' &&
+    typeof entry.start === 'string' && typeof entry.end === 'string' && Number.isFinite(entry.mins));
 }
 
-export function normalizeEntries(value, categories = []) {
+export function normalizeEntries(value, categories = [], legacySubCategories = []) {
   if (!Array.isArray(value)) return [];
-
-  return migrateEntriesToCategoryId(value, categories)
+  return migrateEntriesToCategoryId(value, categories, legacySubCategories)
     .filter(isValidEntry)
-    .map(entry => ({
-      ...entry,
-      activity: entry.activity.trim(),
-      categoryId: entry.categoryId ?? null,
-      mins: Math.max(0, Number(entry.mins)),
-    }));
+    .map(entry => ({ ...entry, activity: entry.activity.trim(), categoryId: entry.categoryId ?? null, mins: Math.max(0, Number(entry.mins)) }));
 }
 
-export function normalizeList(value) {
-  return Array.isArray(value) ? value : [];
-}
+export function normalizeList(value) { return Array.isArray(value) ? value : []; }
 
 export function validateBackup(data) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('Format de sauvegarde invalide.');
-  }
-
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Format de sauvegarde invalide.');
   const legacyCategories = normalizeList(data.customCategories);
   const legacySubCategories = normalizeList(data.subCategories);
-
   const categories = Array.isArray(data.categories)
     ? migrateCategoryTree(data.categories, [])
-    : migrateCategoryTree(
-        legacyCategories,
-        legacySubCategories,
-      );
-
+    : migrateCategoryTree(legacyCategories, legacySubCategories);
   return {
     version: Math.max(2, Number(data.version) || 1),
-    entries: normalizeEntries(data.entries, categories),
+    entries: normalizeEntries(data.entries, categories, legacySubCategories),
     savedActivities: normalizeList(data.savedActivities),
     categories,
   };
