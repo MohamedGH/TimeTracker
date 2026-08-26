@@ -1,4 +1,5 @@
 import { migrateCategoryTree } from './category-tree.js';
+import { migrateEntriesToCategoryId } from './entry-migration.js';
 
 export const DEFAULT_CATEGORIES = Object.freeze([
   { id: 'travail', label: 'Travail', color: '#4A5A75', parentId: null, builtin: true },
@@ -26,7 +27,7 @@ export function isValidEntry(entry) {
     entry &&
     typeof entry.id === 'string' &&
     typeof entry.activity === 'string' &&
-    typeof entry.cat === 'string' &&
+    (entry.categoryId === null || typeof entry.categoryId === 'string') &&
     typeof entry.date === 'string' &&
     typeof entry.start === 'string' &&
     typeof entry.end === 'string' &&
@@ -34,15 +35,17 @@ export function isValidEntry(entry) {
   );
 }
 
-export function normalizeEntries(value) {
+export function normalizeEntries(value, categories = []) {
   if (!Array.isArray(value)) return [];
-  return value.filter(isValidEntry).map(entry => ({
-    ...entry,
-    activity: entry.activity.trim(),
-    cat: entry.cat.trim(),
-    sub: typeof entry.sub === 'string' ? entry.sub.trim() : '',
-    mins: Math.max(0, Number(entry.mins)),
-  }));
+
+  return migrateEntriesToCategoryId(value, categories)
+    .filter(isValidEntry)
+    .map(entry => ({
+      ...entry,
+      activity: entry.activity.trim(),
+      categoryId: entry.categoryId ?? null,
+      mins: Math.max(0, Number(entry.mins)),
+    }));
 }
 
 export function normalizeList(value) {
@@ -56,17 +59,18 @@ export function validateBackup(data) {
 
   const legacyCategories = normalizeList(data.customCategories);
   const legacySubCategories = normalizeList(data.subCategories);
-  const categoryTree = Array.isArray(data.categories)
+
+  const categories = Array.isArray(data.categories)
     ? migrateCategoryTree(data.categories, [])
-    : migrateCategoryTree(legacyCategories, legacySubCategories);
+    : migrateCategoryTree(
+        legacyCategories,
+        legacySubCategories,
+      );
 
   return {
-    version: Number(data.version) || 1,
-    entries: normalizeEntries(data.entries),
+    version: Math.max(2, Number(data.version) || 1),
+    entries: normalizeEntries(data.entries, categories),
     savedActivities: normalizeList(data.savedActivities),
-    categories: categoryTree,
-    // Kept during migration for backward compatibility with the legacy UI.
-    customCategories: legacyCategories,
-    subCategories: legacySubCategories,
+    categories,
   };
 }
