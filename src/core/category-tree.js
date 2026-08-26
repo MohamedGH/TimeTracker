@@ -3,9 +3,6 @@
  *
  * A category is a node. `parentId: null` means root. Any node can have
  * children, so the depth is unlimited: category -> subcategory -> ...
- *
- * Legacy `subCategories` using `{ id, catId, label }` are migrated to nodes
- * with the same identifier and `parentId = catId`.
  */
 
 export function createCategory({ id, label, color = null, parentId = null, builtin = false }) {
@@ -30,20 +27,31 @@ export function migrateCategoryTree(customCategories = [], subCategories = []) {
   }
 
   for (const legacy of subCategories) {
-    if (!legacy?.id || !legacy?.label || ids.has(legacy.id)) continue;
+    if (!legacy?.id || !legacy?.label) continue;
     const parentId = legacy.parentId ?? legacy.catId ?? null;
+    if (parentId && !ids.has(parentId)) continue;
+
+    // Legacy exports can contain the same id at different levels (e.g.
+    // root `code` and `informatique -> code`). Category ids are globally
+    // unique in the canonical tree, so make a deterministic id for a
+    // colliding child while retaining the original id when there is no clash.
+    let id = legacy.id;
+    if (ids.has(id)) {
+      id = `${parentId || 'root'}::${legacy.id}`;
+      let suffix = 2;
+      while (ids.has(id)) id = `${parentId || 'root'}::${legacy.id}-${suffix++}`;
+    }
+
     nodes.push(createCategory({
-      id: legacy.id,
+      id,
       label: legacy.label,
       color: legacy.color ?? null,
       parentId,
       builtin: false,
     }));
-    ids.add(legacy.id);
+    ids.add(id);
   }
 
-  // Repair orphaned parents: an invalid parent becomes a root node instead
-  // of making the whole tree unreachable.
   const knownIds = new Set(nodes.map(node => node.id));
   return nodes.map(node => ({
     ...node,
@@ -64,14 +72,12 @@ export function getAncestors(nodes, nodeId) {
   const result = [];
   const visited = new Set();
   let current = byId.get(nodeId);
-
   while (current?.parentId && !visited.has(current.parentId)) {
     visited.add(current.parentId);
     current = byId.get(current.parentId);
     if (!current) break;
     result.unshift(current);
   }
-
   return result;
 }
 
@@ -79,13 +85,11 @@ export function getDescendants(nodes, nodeId) {
   const result = [];
   const queue = [nodeId];
   const childrenByParent = new Map();
-
   for (const node of nodes) {
     const key = node.parentId ?? null;
     if (!childrenByParent.has(key)) childrenByParent.set(key, []);
     childrenByParent.get(key).push(node);
   }
-
   while (queue.length) {
     const parentId = queue.shift();
     for (const child of childrenByParent.get(parentId) ?? []) {
@@ -93,7 +97,6 @@ export function getDescendants(nodes, nodeId) {
       queue.push(child.id);
     }
   }
-
   return result;
 }
 
@@ -116,11 +119,9 @@ export function validateCategoryTree(nodes) {
     if (!node?.id || !node?.label || ids.has(node.id)) return false;
     ids.add(node.id);
   }
-
   for (const node of nodes) {
     if (node.parentId && !ids.has(node.parentId)) return false;
     if (node.parentId && wouldCreateCycle(nodes, node.id, node.parentId)) return false;
   }
-
   return true;
 }
