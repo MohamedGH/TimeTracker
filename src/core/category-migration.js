@@ -1,4 +1,5 @@
 import { migrateCategoryTree } from './category-tree.js';
+import { migrateSavedActivities } from './saved-activities.js';
 
 /** One-way compatibility migration for legacy TimeEntry data. */
 export function migrateEntriesToCategoryTree(entries = [], customCategories = [], subCategories = []) {
@@ -22,24 +23,37 @@ export function migrateEntriesToCategoryTree(entries = [], customCategories = []
 }
 
 export function migrateBackupToCategoryTree(data) {
-  const hasCanonicalCategories = Array.isArray(data?.categories);
-  const categories = hasCanonicalCategories
-    ? migrateCategoryTree(data.categories, [])
-    : migrateCategoryTree(data?.customCategories ?? [], data?.subCategories ?? []);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
 
-  const legacyCategories = hasCanonicalCategories
-    ? categories
-    : (data?.customCategories ?? []);
-  const legacySubCategories = hasCanonicalCategories
-    ? []
-    : (data?.subCategories ?? []);
+  const hasCanonicalCategories = Array.isArray(data.categories);
+  const customCategories = hasCanonicalCategories ? data.categories : (data.customCategories ?? []);
+  const subCategories = hasCanonicalCategories ? [] : (data.subCategories ?? []);
+  const categories = migrateCategoryTree(customCategories, subCategories);
 
-  const { customCategories: _customCategories, subCategories: _subCategories, ...rest } = data ?? {};
+  const entries = migrateEntriesToCategoryTree(data.entries ?? [], customCategories, subCategories);
+
+  // Legacy exports used several names for saved activities. Accept all known
+  // forms and normalize them to the canonical savedActivities array.
+  const legacyActivities = Array.isArray(data.savedActivities)
+    ? data.savedActivities
+    : Array.isArray(data.activities)
+      ? data.activities
+      : [];
+  const savedActivities = migrateSavedActivities(legacyActivities, categories, subCategories);
+
+  const {
+    customCategories: _customCategories,
+    subCategories: _subCategories,
+    activities: _activities,
+    savedActivities: _savedActivities,
+    ...rest
+  } = data;
 
   return {
     ...rest,
-    version: Math.max(2, Number(data?.version) || 1),
+    version: Math.max(2, Number(data.version) || 1),
     categories,
-    entries: migrateEntriesToCategoryTree(data?.entries ?? [], legacyCategories, legacySubCategories),
+    entries,
+    savedActivities,
   };
 }
