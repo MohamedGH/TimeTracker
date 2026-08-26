@@ -1,18 +1,24 @@
 /**
  * Timer domain logic. No DOM access.
- * The Vue migration can expose this through a useTimer() composable.
  */
 
 export function createTimerState(timer = null) {
-  return timer ? { ...timer } : null;
+  return timer ? { ...timer, categoryId: timer.categoryId ?? timer.cat ?? null } : null;
 }
 
-export function createActiveTimer({ activity, cat, sub = null, startTs = Date.now(), startTime, date }) {
-  if (!activity || !cat || !Number.isFinite(startTs) || !startTime || !date) {
+export function createActiveTimer({ activity, categoryId, cat = categoryId, startTs = Date.now(), startTime, date }) {
+  const resolvedCategoryId = categoryId ?? cat;
+  if (!activity || !resolvedCategoryId || !Number.isFinite(startTs) || !startTime || !date) {
     throw new Error('Timer invalide.');
   }
-
-  return { activity, cat, sub, startTs, startTime, date };
+  return {
+    activity,
+    categoryId: resolvedCategoryId,
+    cat: resolvedCategoryId,
+    startTs,
+    startTime,
+    date,
+  };
 }
 
 export function elapsedMinutes(timer, now = Date.now()) {
@@ -27,16 +33,14 @@ export function elapsedSeconds(timer, now = Date.now()) {
 
 export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID()) {
   if (!timer) throw new Error('Aucun timer actif.');
-
   return {
     id,
     activity: timer.activity,
-    cat: timer.cat,
-    sub: timer.sub ?? null,
+    categoryId: timer.categoryId ?? timer.cat ?? null,
     date: timer.date,
     start: timer.startTime,
     end: endTime,
-    endDate,
+    ...(endDate ? { endDate } : {}),
     mins: elapsedMinutes(timer),
   };
 }
