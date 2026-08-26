@@ -31,10 +31,6 @@ export function migrateCategoryTree(customCategories = [], subCategories = []) {
     const parentId = legacy.parentId ?? legacy.catId ?? null;
     if (parentId && !ids.has(parentId)) continue;
 
-    // Legacy exports can contain the same id at different levels (e.g.
-    // root `code` and `informatique -> code`). Category ids are globally
-    // unique in the canonical tree, so make a deterministic id for a
-    // colliding child while retaining the original id when there is no clash.
     let id = legacy.id;
     if (ids.has(id)) {
       id = `${parentId || 'root'}::${legacy.id}`;

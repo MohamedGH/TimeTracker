@@ -1,6 +1,6 @@
 import { getValue, setValue, removeValue, STORAGE_KEYS, STORAGE_SCHEMA_VERSION } from './storage.js';
 import { migrateCategoryTree } from './category-tree.js';
-import { migrateEntriesToCategoryTree } from './category-migration.js';
+import { migrateEntriesToCategoryTree } from './category-migration.ts';
 import { migrateSavedActivities } from './saved-activities.js';
 
 /** One-way migration of persisted data to the canonical schema. */
