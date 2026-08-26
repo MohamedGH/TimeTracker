@@ -15,10 +15,9 @@ export function destroyCharts() {
   categoryChart = undefined;
 }
 
-export function renderCharts({ dayCanvas, hourCanvas, categoryCanvas, entries }) {
+export async function renderCharts({ dayCanvas, hourCanvas, categoryCanvas, entries }) {
   destroyCharts();
   if (!window.Chart || !dayCanvas || !hourCanvas) return;
-
   const byDay = new Map();
   const byHour = Array.from({ length: 24 }, () => 0);
   const categoryByDay = new Map();
@@ -33,24 +32,20 @@ export function renderCharts({ dayCanvas, hourCanvas, categoryCanvas, entries })
       m.set(entry.categoryId, (m.get(entry.categoryId) || 0) + mins);
     }
   }
-
   const dayLabels = [...byDay.keys()].sort();
   const categories = mergeCategories(await getValue(STORAGE_KEYS.categories, []));
   const categoryMap = new Map(categories.map(c => [c.id, c]));
   const roots = categories.filter(c => !c.parentId);
-
   dayChart = new window.Chart(dayCanvas, {
     type: 'bar',
     data: { labels: dayLabels, datasets: roots.map(category => ({ label: category.label, data: dayLabels.map(day => categoryByDay.get(day)?.get(category.id) || 0) })) },
     options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Minutes' } } }, plugins: { tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatMinutes(ctx.raw)} · ${((ctx.raw / 1440) * 100).toFixed(1)} % du jour` } } } },
   });
-
   hourChart = new window.Chart(hourCanvas, {
     type: 'line',
     data: { labels: byHour.map((_, i) => `${String(i).padStart(2, '0')}h`), datasets: [{ label: 'Temps suivi', data: byHour, tension: 0.25, fill: true }] },
     options: { responsive: true, scales: { y: { beginAtZero: true, title: { display: true, text: 'Minutes' } } }, plugins: { tooltip: { callbacks: { label: ctx => `${formatMinutes(ctx.raw)} · ${((ctx.raw / 1440) * 100).toFixed(1)} % du jour` } } } },
   });
-
   if (categoryCanvas) renderCategoryChart(categoryCanvas, entries, categories, categoryMap);
 }
 
@@ -68,11 +63,7 @@ function renderCategoryChart(canvas, entries, categories, categoryById) {
     }
   }
   const rows = [...totals.entries()].filter(([, mins]) => mins > 0).sort((a, b) => b[1] - a[1]);
-  categoryChart = new window.Chart(canvas, {
-    type: 'doughnut',
-    data: { labels: rows.map(([id]) => formatCategoryPath(categories, id)), datasets: [{ data: rows.map(([, mins]) => mins) }] },
-    options: { responsive: true, plugins: { legend: { position: 'right' }, tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatMinutes(ctx.raw)} · ${((ctx.raw / 1440) * 100).toFixed(1)} % du jour` } } } },
-  });
+  categoryChart = new window.Chart(canvas, { type: 'doughnut', data: { labels: rows.map(([id]) => formatCategoryPath(categories, id)), datasets: [{ data: rows.map(([, mins]) => mins) }] }, options: { responsive: true, plugins: { legend: { position: 'right' }, tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatMinutes(ctx.raw)} · ${((ctx.raw / 1440) * 100).toFixed(1)} % du jour` } } } } });
 }
 
 function mergeCategories(stored) {
