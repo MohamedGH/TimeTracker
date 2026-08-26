@@ -10,7 +10,7 @@ export function installCategorySelectors(root) {
   };
 
   function enhanceSelect(select) {
-    if (select.dataset.categorySelectorEnhanced === '1') return;
+    if (select.dataset.categorySelectorEnhanced === '1' || select.dataset.categorySelectorGenerated === '1') return;
     const options = [...select.options]
       .filter(option => option.value)
       .map(option => ({
@@ -43,20 +43,22 @@ export function installCategorySelectors(root) {
 
     function renderChain(targetPath = currentPath()) {
       container.replaceChildren();
-      const rootChildren = childrenFor([]);
-      if (!rootChildren.length) return;
 
       let parentPath = [];
       let depth = 0;
-      let selectedPath = targetPath;
+      const selectedPath = Array.isArray(targetPath) ? targetPath : [];
+
       while (true) {
         const children = childrenFor(parentPath);
         if (!children.length) break;
+
         const field = document.createElement('div');
         field.className = 'field category-level';
-        const label = document.createElement('label');
-        label.textContent = depth === 0 ? 'Catégorie' : 'Sous-catégorie';
+        const fieldLabel = document.createElement('label');
+        fieldLabel.textContent = depth === 0 ? 'Catégorie' : 'Sous-catégorie';
         const visible = document.createElement('select');
+        visible.dataset.categorySelectorGenerated = '1';
+
         const placeholder = document.createElement('option');
         placeholder.value = '';
         placeholder.textContent = depth === 0 ? 'Choisir une catégorie' : 'Choisir une sous-catégorie';
@@ -71,30 +73,25 @@ export function installCategorySelectors(root) {
 
         const wanted = selectedPath[depth];
         if (wanted && children.some(child => child.label === wanted)) visible.value = wanted;
-        field.append(label, visible);
+
+        field.append(fieldLabel, visible);
         container.appendChild(field);
+
+        visible.addEventListener('change', () => {
+          const fields = [...container.querySelectorAll('.category-level select')];
+          const index = fields.indexOf(visible);
+          const path = fields.slice(0, index + 1).map(fieldSelect => fieldSelect.value).filter(Boolean);
+          const id = idForPath(path);
+
+          select.value = id;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          renderChain(path);
+        });
 
         const chosen = visible.value;
         if (!chosen) break;
         parentPath = [...parentPath, chosen];
         depth += 1;
-
-        visible.addEventListener('change', () => {
-          const path = [];
-          let current = container.querySelectorAll('.category-level');
-          const index = [...current].indexOf(field);
-          for (let i = 0; i <= index; i++) {
-            const value = current[i].querySelector('select').value;
-            if (!value) break;
-            path.push(value);
-          }
-          const id = idForPath(path);
-          if (id) {
-            select.value = id;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-          renderChain(path);
-        });
       }
     }
 
