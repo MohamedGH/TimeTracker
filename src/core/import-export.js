@@ -1,5 +1,5 @@
 import { validateImportData } from './validation.js';
-import { migrateBackupToCategoryTree } from './category-migration.js';
+import { migrateBackupToCategoryTree } from './category-migration.ts';
 
 export function buildExportPayload({ entries = [], savedActivities = [], categories = [], customCategories = [], subCategories = [] }) {
   const canonicalCategories = categories.length ? categories : [...customCategories, ...subCategories];
