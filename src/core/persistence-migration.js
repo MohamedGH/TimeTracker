@@ -3,37 +3,19 @@ import { migrateCategoryTree } from './category-tree.js';
 import { migrateEntriesToCategoryTree } from './category-migration.js';
 import { migrateSavedActivities } from './saved-activities.js';
 
-/**
- * One-way migration of existing IndexedDB data to schema v2.
- * It is intentionally idempotent: running it again does not duplicate data.
- */
 export async function migratePersistedData() {
   const version = await getValue(STORAGE_KEYS.schemaVersion, 1);
   if (Number(version) >= STORAGE_SCHEMA_VERSION) return { migrated: false, version };
 
   const [legacyCategories, legacySubcategories, entries, activities] = await Promise.all([
-    getValue(STORAGE_KEYS.categories, []),
-    getValue(STORAGE_KEYS.subcategories, []),
-    getValue(STORAGE_KEYS.entries, []),
-    getValue(STORAGE_KEYS.activities, []),
+    getValue(STORAGE_KEYS.categories, []), getValue(STORAGE_KEYS.subcategories, []),
+    getValue(STORAGE_KEYS.entries, []), getValue(STORAGE_KEYS.activities, []),
   ]);
-
-  const categories = migrateCategoryTree(
-    Array.isArray(legacyCategories) ? legacyCategories : [],
-    Array.isArray(legacySubcategories) ? legacySubcategories : [],
-  );
-
-  const migratedEntries = migrateEntriesToCategoryTree(
-    Array.isArray(entries) ? entries : [],
-    Array.isArray(legacyCategories) ? legacyCategories : [],
-    Array.isArray(legacySubcategories) ? legacySubcategories : [],
-  );
-
-  const migratedActivities = migrateSavedActivities(
-    Array.isArray(activities) ? activities : [],
-    categories,
-    Array.isArray(legacySubcategories) ? legacySubcategories : [],
-  );
+  const oldCategories = Array.isArray(legacyCategories) ? legacyCategories : [];
+  const oldSubcategories = Array.isArray(legacySubcategories) ? legacySubcategories : [];
+  const categories = migrateCategoryTree(oldCategories, oldSubcategories);
+  const migratedEntries = migrateEntriesToCategoryTree(Array.isArray(entries) ? entries : [], categories, oldSubcategories);
+  const migratedActivities = migrateSavedActivities(Array.isArray(activities) ? activities : [], categories, oldSubcategories);
 
   await Promise.all([
     setValue(STORAGE_KEYS.categories, categories),
@@ -41,12 +23,5 @@ export async function migratePersistedData() {
     setValue(STORAGE_KEYS.activities, migratedActivities),
     setValue(STORAGE_KEYS.schemaVersion, STORAGE_SCHEMA_VERSION),
   ]);
-
-  return {
-    migrated: true,
-    version: STORAGE_SCHEMA_VERSION,
-    categories,
-    entries: migratedEntries,
-    activities: migratedActivities,
-  };
+  return { migrated: true, version: STORAGE_SCHEMA_VERSION, categories, entries: migratedEntries, activities: migratedActivities };
 }
