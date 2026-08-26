@@ -55,7 +55,13 @@ import { today } from '../core/time';
 const store = useAppStore();
 
 const activity = ref('');
-const categoryId = ref<string | null>(store.categories[0]?.id || null);
+const categoryId = ref<string | null>(null);
+
+watch(() => store.categories, (cats) => {
+  if (!categoryId.value && cats.length) {
+    categoryId.value = cats[0].id;
+  }
+}, { immediate: true });
 const date = ref(today());
 const start = ref('09:00');
 const end = ref('10:00');

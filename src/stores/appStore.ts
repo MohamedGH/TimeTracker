@@ -99,8 +99,9 @@ export const useAppStore = defineStore('app', {
     },
 
     async startTimer(activity: string, categoryId: string | null, date: string, startTime: string) {
-      if (!activity || !categoryId) return;
-      this.activeTimer = createActiveTimer({ activity, categoryId, startTs: Date.now(), startTime, date });
+      if (!activity) return;
+      const targetCategory = categoryId || this.categories[0]?.id || null;
+      this.activeTimer = createActiveTimer({ activity, categoryId: targetCategory, startTs: Date.now(), startTime, date });
       await this.persist();
     },
 

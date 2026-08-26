@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createTimeEntry, updateTimeEntry, isTimeEntry } from '../src/core/time-entry.js';
-import { createActiveTimer, elapsedSeconds, elapsedMinutes } from '../src/core/timer.js';
+import { createTimeEntry, updateTimeEntry, isTimeEntry } from '../src/core/time-entry.ts';
+import { createActiveTimer, elapsedSeconds, elapsedMinutes } from '../src/core/timer.ts';
 import {
   createCategory,
   getChildren,
@@ -15,7 +15,7 @@ import {
 } from '../src/core/category-tree.js';
 import { isDate, isTime } from '../src/core/validation.js';
 import { buildExportPayload, parseImportPayload } from '../src/core/import-export.js';
-import { addCategory, renameCategory, moveCategory, deleteCategory } from '../src/state/category-actions.js';
+import { addCategory, renameCategory, moveCategory, deleteCategory } from '../src/state/category-actions.ts';
 
 test('TimeEntry - creation and validation', () => {
   const entry = createTimeEntry({

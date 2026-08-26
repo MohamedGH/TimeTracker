@@ -1,5 +1,5 @@
 import type { TimeEntry } from '../types';
-import { durationBetween } from './time';
+import { durationBetween } from './time.js';
 
 export function createTimeEntry({
   id,

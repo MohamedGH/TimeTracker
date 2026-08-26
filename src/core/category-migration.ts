@@ -1,4 +1,4 @@
-import type { Category } from '../types';
+import type { Category, TimeEntry } from '../types';
 import { createCategory } from './category-tree.js';
 
 export function migrateCategoryTree(customCategories: any[] = [], subCategories: any[] = []): Category[] {
@@ -46,15 +46,35 @@ export function migrateCategoryTree(customCategories: any[] = [], subCategories:
   }));
 }
 
-export function migrateEntriesToCategoryTree(entries: any[], categories: any[], legacySubCategories: any[] = []): any[] {
-  return entries;
+export function migrateEntriesToCategoryTree(entries: any[] = [], categories: Category[] = [], legacySubCategories: any[] = []): TimeEntry[] {
+  if (!Array.isArray(entries)) return [];
+  const categoryIds = new Set(categories.map(c => c.id));
+  const categoryByLabel = new Map(categories.map(c => [c.label.toLowerCase(), c.id]));
+
+  return entries.map(entry => {
+    if (!entry) return entry;
+    let categoryId = entry.categoryId ?? null;
+    if (!categoryId && entry.cat) {
+      if (categoryIds.has(entry.cat)) {
+        categoryId = entry.cat;
+      } else if (categoryByLabel.has(String(entry.cat).toLowerCase())) {
+        categoryId = categoryByLabel.get(String(entry.cat).toLowerCase())!;
+      }
+    }
+    return {
+      ...entry,
+      categoryId,
+    };
+  });
 }
 
 export function migrateBackupToCategoryTree(backup: any): any {
   if (!backup || typeof backup !== 'object') return backup;
   const categories = migrateCategoryTree(backup.categories || backup.customCategories || [], backup.subCategories || []);
+  const entries = migrateEntriesToCategoryTree(backup.entries || [], categories, backup.subCategories || []);
   return {
     ...backup,
     categories,
+    entries,
   };
 }

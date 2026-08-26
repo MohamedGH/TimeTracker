@@ -41,7 +41,7 @@
       <canvas ref="hourCanvas"></canvas>
 
       <h3 class="chart-title">Répartition du temps par catégorie / sous-catégorie</h3>
-      <div ref="categoryContainer"></div>
+      <canvas ref="categoryCanvas"></canvas>
     </section>
   </div>
 </template>
@@ -56,7 +56,7 @@ const store = useAppStore();
 
 const dayCanvas = ref<HTMLCanvasElement | null>(null);
 const hourCanvas = ref<HTMLCanvasElement | null>(null);
-const categoryContainer = ref<HTMLDivElement | null>(null);
+const categoryCanvas = ref<HTMLCanvasElement | null>(null);
 
 const periods = [
   { id: '7', label: '7 jours' },
@@ -94,7 +94,7 @@ function updateCharts() {
     renderCharts({
       dayCanvas: dayCanvas.value,
       hourCanvas: hourCanvas.value,
-      categoryCanvas: categoryContainer.value,
+      categoryCanvas: categoryCanvas.value,
       entries: dashboardEntries.value,
     });
   }

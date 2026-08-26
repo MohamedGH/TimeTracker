@@ -1,5 +1,5 @@
 import type { Category } from '../types';
-import { createCategory, getDescendants, wouldCreateCycle } from '../core/category-tree';
+import { createCategory, getDescendants, wouldCreateCycle } from '../core/category-tree.js';
 
 export function addCategory(
   categories: Category[],
