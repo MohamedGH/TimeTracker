@@ -1,4 +1,5 @@
 import { validateImportData } from './validation.js';
+import { migrateBackupToCategoryTree } from './category-migration.js';
 
 export function buildExportPayload({ entries = [], savedActivities = [], categories = [], customCategories = [], subCategories = [] }) {
   const canonicalCategories = categories.length ? categories : [...customCategories, ...subCategories];
@@ -15,5 +16,5 @@ export function parseImportPayload(raw) {
   let parsed;
   try { parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; }
   catch { throw new Error('Le fichier JSON est invalide.'); }
-  return validateImportData(parsed);
+  return validateImportData(migrateBackupToCategoryTree(parsed));
 }
