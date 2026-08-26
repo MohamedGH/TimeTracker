@@ -1,5 +1,6 @@
 import { createAppState } from './app-state.js';
 import { createUI } from './ui.js';
+import { installCategorySelectors } from './category-selector.js';
 
 async function bootstrap() {
   const root = document.getElementById('app');
@@ -7,6 +8,7 @@ async function bootstrap() {
   try {
     const { state, persist } = await createAppState();
     createUI({ root, state, persist });
+    installCategorySelectors(root);
   } catch (error) {
     root.replaceChildren();
     const box = document.createElement('div');
