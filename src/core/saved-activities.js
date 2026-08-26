@@ -1,7 +1,7 @@
-/** Saved activities reference a category node at any depth. */
+/** Canonical saved activities reference a category node at any depth. */
 export function normalizeSavedActivity(activity, categories = []) {
   if (!activity || typeof activity !== 'object') return null;
-  const categoryId = activity.categoryId ?? activity.subCategoryId ?? null;
+  const categoryId = activity.categoryId ?? null;
   if (categoryId && !categories.some(category => category.id === categoryId)) return null;
   return {
     id: String(activity.id ?? crypto.randomUUID()),
@@ -10,6 +10,7 @@ export function normalizeSavedActivity(activity, categories = []) {
   };
 }
 
+/** One-way compatibility migration for legacy saved activities. */
 export function migrateSavedActivities(activities = [], categories = [], subCategories = []) {
   const subByLegacyPair = new Map(
     subCategories.filter(item => item?.id && item?.catId)
