@@ -17,20 +17,34 @@ export function isSavedActivity(value) {
     (value.categoryId === null || isString(value.categoryId)));
 }
 export function isCategory(value) {
-  return Boolean(value && isString(value.id) && isString(value.label) && isString(value.color));
+  return Boolean(value && isString(value.id) && isString(value.label) && isString(value.color) &&
+    (value.parentId === null || value.parentId === undefined || isString(value.parentId)));
 }
-export function isSubCategory(value) {
-  return Boolean(value && isString(value.id) && isString(value.catId) && isString(value.label));
-}
+
 export function validateImportData(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Format JSON invalide.');
   const entries = value.entries ?? [];
   const savedActivities = value.savedActivities ?? [];
-  const categories = value.categories ?? value.customCategories ?? [];
-  const subCategories = value.subCategories ?? [];
+  const categories = value.categories ?? [];
   if (!Array.isArray(entries) || !entries.every(isTimeEntry)) throw new Error('Entrées de temps invalides.');
   if (!Array.isArray(savedActivities) || !savedActivities.every(isSavedActivity)) throw new Error('Activités enregistrées invalides.');
   if (!Array.isArray(categories) || !categories.every(isCategory)) throw new Error('Catégories invalides.');
-  if (!Array.isArray(subCategories) || !subCategories.every(isSubCategory)) throw new Error('Sous-catégories invalides.');
-  return { version: Math.max(2, Number(value.version) || 1), entries, savedActivities, categories, subCategories };
+
+  const ids = new Set(categories.map(category => category.id));
+  if (categories.some(category => category.parentId && !ids.has(category.parentId))) {
+    throw new Error('Hiérarchie de catégories invalide.');
+  }
+  if (entries.some(entry => entry.categoryId && !ids.has(entry.categoryId))) {
+    throw new Error('Catégorie d’une entrée introuvable.');
+  }
+  if (savedActivities.some(activity => activity.categoryId && !ids.has(activity.categoryId))) {
+    throw new Error('Catégorie d’une activité enregistrée introuvable.');
+  }
+
+  return {
+    version: Math.max(2, Number(value.version) || 1),
+    entries,
+    savedActivities,
+    categories,
+  };
 }
