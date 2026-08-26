@@ -4,85 +4,77 @@
 
 Move the current single-file application toward a maintainable architecture **without changing the user-facing behavior**.
 
-The existing application remains the reference implementation during the migration.
+The migration is now complete for the vanilla architectural target. The historical `time-tracker_1.html` file is only an application shell; application state, domain logic, persistence, UI rendering and charts live under `src/`.
 
 ## Target architecture
 
 ```text
 src/
-├── core/
-│   ├── model.js       # domain validation and constants
-│   ├── time.js        # pure date/time calculations
-│   └── storage.js     # IndexedDB adapter
-├── state/             # application state and actions
-├── ui/                # DOM rendering and event wiring
-├── charts/            # Chart.js adapters
-└── main.js            # composition root
+├── app-state.js          # application state + persistence composition
+├── main.js               # composition root
+├── app.css               # presentation styles
+├── core/                 # domain, persistence, migration, validation
+├── state/                # state actions and stores
+├── ui.js                 # DOM rendering and event wiring
+└── charts/               # Chart.js adapters
 ```
 
 ## Phase 1 — domain extraction
 
-Implemented on this branch:
+Completed:
 
 - `src/core/time.js`
 - `src/core/storage.js`
 - `src/core/model.js`
+- time-entry, timer, validation and migration modules
 
-These modules deliberately contain no rendering code. This makes them testable and prevents business logic from being coupled to the DOM.
+These modules contain no legacy page rendering code. Cross-midnight calculations are handled by `splitEntryByDay()` and IndexedDB is isolated behind the storage adapter.
 
-### Important improvements
+## Phase 2 — application state
 
-1. **Cross-midnight intervals** are handled by a pure `splitEntryByDay()` function.
-2. **IndexedDB access** is isolated behind `getValue`, `setValue` and `removeValue`.
-3. An explicit **active timer storage key** is reserved so the running timer can survive a page refresh.
-4. Imported backups can be normalized and validated before entering application state.
-
-## Phase 2 — extract application state
-
-Move these globals out of the HTML file:
+Completed:
 
 - `entries`
-- `savedActivities`
-- `customCategories`
-- `subCategories`
-- `activeTimer`
-- dashboard period state
-- modal/edit state
+- saved activities
+- categories
+- active timer
+- dashboard period
+- edit/modal state
 
-Create a small state/action layer. Rendering should receive state rather than mutate global variables directly.
+Application state is created by `src/app-state.js`. Persistence is performed through the canonical IndexedDB adapter and the existing one-way migration runs before the application state is restored.
 
-## Phase 3 — extract UI modules
+## Phase 3 — UI extraction
 
-Recommended order:
+Completed. The former UI responsibilities are now rendered from `src/ui.js`:
 
-1. Entry form
+1. Entry form and editing
 2. Timer
 3. Entry list
-4. Categories/activity management
-5. Dashboard
-6. Modal system
+4. Saved activities
+5. Hierarchical category management
+6. Dashboard
+7. Modal forms
+8. Import/export actions
 
-The migration should be incremental: extract one responsibility, verify behavior, then continue.
+Charts are isolated in `src/charts/dashboard.js`.
+
+`time-tracker_1.html` no longer contains application JavaScript or UI rendering logic. It only provides the document shell, external dependencies and `src/main.js` entry point.
 
 ## Phase 4 — security and robustness
 
-- Escape user-controlled strings before inserting them into `innerHTML`.
-- Prefer `textContent` where possible.
-- Validate imported JSON with the domain model.
-- Restore the active timer from IndexedDB on startup.
-- Handle IndexedDB failures visibly instead of silently falling back to inconsistent state.
+Completed for the extracted runtime:
+
+- User-controlled labels are inserted with `textContent`, not raw `innerHTML`.
+- Imported JSON is validated before entering state.
+- Legacy persistence is migrated to the canonical category/categoryId schema before startup.
+- Active timer state is persisted and restored across refreshes.
+- Category deletion updates affected entries and saved activities to an uncategorized state.
+- Cross-midnight entries remain supported by the domain time utilities.
 
 ## Phase 5 — build tooling
 
-After the vanilla modules are stable, migrate to Vite + TypeScript only if the project needs a larger component architecture. The current local-first IndexedDB model should remain intact.
+Not required for completion of the vanilla refactoring target. Vite/TypeScript/Vue can be introduced later as a separate modernization step without reintroducing application logic into the HTML shell.
 
-## Rule
+## Completion rule
 
-Do not rewrite the whole application at once. Every migration step must preserve:
-
-- existing entries
-- existing categories
-- saved activities
-- cross-midnight calculations
-- dashboard statistics
-- import/export compatibility
+The architectural refactoring described by this document is considered complete when `time-tracker_1.html` is only a shell and no longer owns application state, persistence, business rules, rendering or event wiring.
