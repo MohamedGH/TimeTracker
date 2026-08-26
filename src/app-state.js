@@ -14,9 +14,19 @@ export async function createAppState() {
   ]);
 
   const categories = mergeCategories(DEFAULT_CATEGORIES, migrateCategoryTree(storedCategories, []));
+  const categoryIds = new Set(categories.map(category => category.id));
+
+  // Older migration builds could accidentally persist category records in the
+  // saved-activities collection. They are identifiable because a category id
+  // is globally unique and must never also be an activity id. Remove these
+  // stale records when loading so existing browser data is repaired too.
+  const normalizedActivities = Array.isArray(activities)
+    ? activities.filter(activity => activity?.id && !categoryIds.has(activity.id))
+    : [];
+
   const state = {
     entries: normalizeEntries(entries, categories, []),
-    activities: Array.isArray(activities) ? activities : [],
+    activities: normalizedActivities,
     categories,
     activeTimer: activeTimer || null,
     tab: 'entry',
