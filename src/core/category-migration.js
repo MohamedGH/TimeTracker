@@ -22,13 +22,17 @@ export function migrateEntriesToCategoryTree(entries = [], customCategories = []
 }
 
 export function migrateBackupToCategoryTree(data) {
-  const categories = migrateCategoryTree(
-    data?.categories ?? data?.customCategories ?? [], data?.subCategories ?? [],
-  );
+  const legacyCategories = data?.customCategories ?? data?.categories ?? [];
+  const legacySubCategories = data?.subCategories ?? [];
+  const categories = migrateCategoryTree(legacyCategories, legacySubCategories);
   return {
     ...data,
     version: Math.max(2, Number(data?.version) || 1),
     categories,
-    entries: migrateEntriesToCategoryTree(data?.entries ?? [], categories, data?.subCategories ?? []),
+    entries: migrateEntriesToCategoryTree(
+      data?.entries ?? [],
+      legacyCategories,
+      legacySubCategories,
+    ),
   };
 }
