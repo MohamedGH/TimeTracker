@@ -12,16 +12,40 @@ export function migrateEntriesToCategoryTree(entries = [], customCategories = []
     const migrated = categories.find(category =>
       category.parentId === item.catId && category.label === String(item.label).trim()
     );
-    if (migrated) subByPair.set(`${item.catId}::${item.label}`, migrated.id);
+    if (migrated) subByPair.set(`${item.catId}::${String(item.label).trim()}`, migrated.id);
   }
+
+  // Legacy category ids may be present with different casing or labels in
+  // older exports. Resolve the root category by id first, then by label.
+  const categoryById = new Map(categories.map(category => [String(category.id), category]));
+  const categoryByLabel = new Map(
+    categories
+      .filter(category => category.parentId == null)
+      .map(category => [String(category.label).trim().toLowerCase(), category.id]),
+  );
 
   return entries.map(entry => {
     if (!entry || typeof entry !== 'object') return entry;
-    const categoryId = entry.categoryId && byId.has(entry.categoryId)
+
+    let categoryId = entry.categoryId && byId.has(entry.categoryId)
       ? entry.categoryId
-      : entry.sub
-        ? subByPair.get(`${entry.cat}::${entry.sub}`) ?? null
-        : entry.cat && byId.has(entry.cat) ? entry.cat : null;
+      : null;
+
+    // A legacy `sub` is authoritative when it is present: resolve the exact
+    // child under the legacy parent category before falling back to the root.
+    if (!categoryId && entry.sub) {
+      categoryId = subByPair.get(`${entry.cat}::${String(entry.sub).trim()}`) ?? null;
+    }
+
+    if (!categoryId && entry.cat) {
+      const rawCat = String(entry.cat).trim();
+      categoryId = byId.has(rawCat)
+        ? rawCat
+        : categoryById.has(rawCat)
+          ? categoryById.get(rawCat).id
+          : categoryByLabel.get(rawCat.toLowerCase()) ?? null;
+    }
+
     const { cat: _cat, sub: _sub, ...rest } = entry;
     return { ...rest, categoryId };
   });
