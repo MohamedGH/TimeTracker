@@ -1,11 +1,20 @@
+﻿import './app.css';
 import { createAppState } from './app-state.js';
 import { createUI } from './ui.js';
 import { installCategorySelectors } from './category-selector.js';
+import { initAnalytics, hasConsentDecision } from './core/analytics/index.js';
+import { initBehaviorTracking } from './core/behavior/index.js';
 
 async function bootstrap() {
   const root = document.getElementById('app');
   if (!root) throw new Error('Conteneur #app introuvable.');
   try {
+    // Consent-gated and safe even if GA4 is unconfigured (see
+    // core/analytics/analytics.js). If no consent decision exists yet,
+    // createUI() shows a consent banner and calls initAnalytics() /
+    // initBehaviorTracking() itself once the person responds.
+    if (hasConsentDecision()) initBehaviorTracking({ root });
+    if (hasConsentDecision()) initAnalytics();
     const { state, persist } = await createAppState();
     createUI({ root, state, persist });
     installCategorySelectors(root);
@@ -14,7 +23,7 @@ async function bootstrap() {
     const box = document.createElement('div');
     box.className = 'startup-error';
     const title = document.createElement('h1');
-    title.textContent = 'TimeTracker ne peut pas démarrer';
+    title.textContent = 'TimeTracker ne peut pas dÃ©marrer';
     const message = document.createElement('p');
     message.textContent = error?.message || 'Une erreur inattendue est survenue.';
     box.append(title, message);
@@ -24,3 +33,4 @@ async function bootstrap() {
 }
 
 bootstrap();
+

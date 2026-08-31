@@ -3,6 +3,8 @@ import type { Category, CategoryInput } from '../types/category';
 import { addCategory, deleteCategory, moveCategory, renameCategory } from '../state/category-actions.js';
 import { getAncestors, getChildren, getDescendants, getRoots, formatCategoryPath } from '../core/category-tree.js';
 import { loadPersistedCategories, persistCategories } from './category-persistence';
+import { trackEvent } from '../core/analytics/analytics.js';
+import { categoryCreatedPayload, categoryMovedPayload, categoryDeletedPayload } from '../core/analytics/events.js';
 
 export const useCategoriesStore = defineStore('categories', {
   state: (): { categories: Category[]; initialized: boolean; loading: boolean } => ({
@@ -42,21 +44,26 @@ export const useCategoriesStore = defineStore('categories', {
     async add(input: CategoryInput) {
       this.categories = addCategory(this.categories, input) as Category[];
       await this.persist();
+      trackEvent('category_created', categoryCreatedPayload({ depth: getAncestors(this.categories, input.id).length }));
     },
 
     async rename(id: string, label: string) {
       this.categories = renameCategory(this.categories, id, label) as Category[];
       await this.persist();
+      trackEvent('category_renamed');
     },
 
     async move(id: string, parentId: string | null) {
       this.categories = moveCategory(this.categories, id, parentId) as Category[];
       await this.persist();
+      trackEvent('category_moved', categoryMovedPayload({ depth: getAncestors(this.categories, id).length }));
     },
 
     async remove(id: string, cascade = false) {
+      const descendantCount = getDescendants(this.categories, id).length;
       this.categories = deleteCategory(this.categories, id, { cascade }) as Category[];
       await this.persist();
+      trackEvent('category_deleted', categoryDeletedPayload({ cascade, descendantCount }));
     },
   },
 });
