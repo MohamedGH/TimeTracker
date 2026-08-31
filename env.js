@@ -1,0 +1,3 @@
+﻿window.ENV = {
+  GA4_MEASUREMENT_ID: 'G-T422S6EFJ8'
+};
