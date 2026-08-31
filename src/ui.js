@@ -28,7 +28,41 @@ export function createUI({ root, state, persist }) {
   function entryPage(){const f=document.createDocumentFragment();f.append(timerCard(),entryCard(),activitiesCard(),entriesCard(),dataCard());return f;}
   function timerCard(){const c=card('Timer');if(!state.activeTimer){c.appendChild(node('p','muted','Aucun timer actif.'));return c;}const t=state.activeTimer;const box=node('div','timer-active');box.append(node('div','muted',`${t.activity} · ${categoryPath(t.categoryId??t.cat)}`),node('div','t-clock',clock(elapsedSeconds(t))));box.lastChild.dataset.timerClock='1';const stop=button('Arrêter le timer','danger','timer-stop');stop.onclick=stopTimer;box.appendChild(stop);c.appendChild(box);return c;}
   function entryCard(){const c=card(state.editingEntryId?'Modifier une entrée':'Nouvelle entrée');const old=state.entries.find(e=>e.id===state.editingEntryId);const form=node('form','entry-form');form.dataset.behaviorForm='entry-form';const activity=input('Activité','text',old?.activity||'',true,'activity'),category=selectCategory(old?.categoryId);attachActivitySuggestions(activity,category);const date=input('Date','date',old?.date||today(),true,'date'),start=input('Début','time',old?.start||'09:00',true,'start'),end=input('Fin','time',old?.end||'10:00',true,'end');const row=node('div','row');row.append(date.wrap,start.wrap,end.wrap);form.append(activity.wrap,category.wrap,row);const save=button(old?'Enregistrer les modifications':'Enregistrer',undefined,'entry-save');save.type='submit';form.appendChild(save);const timer=button('Démarrer le timer','secondary','timer-start');timer.onclick=()=>startTimer(activity.input.value.trim(),category.select.value,date.input.value,start.input.value);form.appendChild(timer);if(old){const cancel=button('Annuler','secondary','entry-cancel');cancel.onclick=()=>{state.editingEntryId=null;rerender();};form.appendChild(cancel);}form.onsubmit=async e=>{e.preventDefault();const value=createTimeEntry({id:old?.id||crypto.randomUUID(),activity:activity.input.value,categoryId:category.select.value||null,date:date.input.value,start:start.input.value,end:end.input.value});if(!value.activity||value.mins<=0){showError(c,'Vérifiez l’activité et les horaires.');getBehaviorTracking()?.tracker.trackFormResult('entry-form','error',{object:'time_entry',code:'invalid-entry'});return;}state.entries=old?state.entries.map(x=>x.id===old.id?value:x):[value,...state.entries];state.editingEntryId=null;state.error=null;await persist();trackEvent(old?'time_entry_updated':'time_entry_created',old?timeEntryUpdatedPayload({durationMinutes:value.mins,hasCategory:Boolean(value.categoryId)}):timeEntryCreatedPayload({durationMinutes:value.mins,hasCategory:Boolean(value.categoryId)}));getBehaviorTracking()?.tracker.trackFormResult('entry-form','success',{object:'time_entry'});rerender();};c.appendChild(form);return c;}
-  function attachActivitySuggestions(activity,category){const listId=`activity-suggestions-${crypto.randomUUID()}`;const list=document.createElement('datalist');list.id=listId;activity.input.setAttribute('list',listId);activity.wrap.appendChild(list);const refresh=()=>{const selectedId=category.select.value;list.replaceChildren();if(!selectedId)return;const allowed=new Set([selectedId,...getDescendants(state.categories,selectedId).map(x=>x.id)]);const seen=new Set();for(const a of state.activities){const name=String(a.label||a.name||a.activity||'').trim();const categoryId=a.categoryId??a.cat;if(!name||!categoryId||!allowed.has(categoryId)||seen.has(name.toLowerCase()))continue;const option=document.createElement('option');option.value=name;list.appendChild(option);seen.add(name.toLowerCase());}};category.select.addEventListener('change',refresh);refresh();}
+  function attachActivitySuggestions(activity,category){
+    const listId=`activity-suggestions-${crypto.randomUUID()}`;
+    const datalist=document.createElement('datalist');
+    datalist.id=listId;
+    activity.input.setAttribute('list',listId);
+    activity.wrap.appendChild(datalist);
+    const visibleList=node('div','activity-suggestions');
+    activity.wrap.appendChild(visibleList);
+    const refresh=()=>{
+      const selectedId=category.select.value;
+      datalist.replaceChildren();
+      visibleList.replaceChildren();
+      if(!selectedId){visibleList.appendChild(node('p','muted','Choisissez une catégorie pour voir les activités déjà utilisées.'));return;}
+      const allowed=new Set([selectedId,...getDescendants(state.categories,selectedId).map(x=>x.id)]);
+      const seen=new Set();
+      const matches=[];
+      for(const a of state.activities){
+        const name=String(a.label||a.name||a.activity||'').trim();
+        const categoryId=a.categoryId??a.cat;
+        if(!name||!categoryId||!allowed.has(categoryId)||seen.has(name.toLowerCase()))continue;
+        seen.add(name.toLowerCase());
+        matches.push(name);
+      }
+      if(!matches.length){visibleList.appendChild(node('p','muted','Aucune activité enregistrée pour cette catégorie.'));return;}
+      for(const name of matches){
+        const option=document.createElement('option');option.value=name;datalist.appendChild(option);
+        const chip=button(name,'small secondary','activity-suggestion-select');
+        chip.type='button';
+        chip.onclick=()=>{activity.input.value=name;activity.input.focus();};
+        visibleList.appendChild(chip);
+      }
+    };
+    category.select.addEventListener('change',refresh);
+    refresh();
+  }
   function activitiesCard(){const c=card('Activités enregistrées');const add=button('Ajouter une activité','secondary','activity-add-open');add.onclick=()=>{state.modal={type:'activity'};state.error=null;rerender();};c.appendChild(add);for(const a of state.activities){const r=node('div','entry-row');r.appendChild(node('div',null,`${a.label||a.activity||''} · ${categoryPath(a.categoryId)}`));const go=button('Démarrer','small','activity-start');go.onclick=()=>{trackEvent('saved_activity_started');startTimer(a.label||a.activity,a.categoryId,today(),nowTime());};const del=button('×','small danger','activity-delete');del.onclick=async()=>{state.activities=state.activities.filter(x=>x.id!==a.id);await persist();trackEvent('saved_activity_deleted');rerender();};r.append(go,del);c.appendChild(r);}return c;}
   function entriesCard(){const c=card('Dernières entrées');if(!state.entries.length)c.appendChild(node('p','empty','Aucune entrée.'));for(const e of state.entries.slice(0,15)){const r=node('div','entry-row');const info=node('div');info.append(node('strong',null,e.activity),node('div','entry-meta',`${e.date} · ${e.start}–${e.end} · ${Math.round(e.mins)} min · ${categoryPath(e.categoryId)}`));const edit=button('Modifier','small','entry-edit');edit.onclick=()=>{state.editingEntryId=e.id;rerender();};const del=button('Supprimer','small danger','entry-delete');del.onclick=async()=>{state.entries=state.entries.filter(x=>x.id!==e.id);await persist();trackEvent('time_entry_deleted');rerender();};r.append(info,edit,del);c.appendChild(r);}return c;}
   function dashboardPage(){const f=document.createDocumentFragment(),periods=node('div','period-tabs');for(const p of ['7','14','30','90']){const b=button(`${p} jours`,state.period===p?'active':'secondary',`dashboard-period-${p}`);b.onclick=()=>{state.period=p;trackEvent('dashboard_period_changed',dashboardPeriodChangedPayload({period:p}));rerender();};periods.appendChild(b);}f.appendChild(periods);const data=dashboardEntries(),total=data.reduce((s,e)=>s+e.mins,0),metrics=node('div','metric-grid');metrics.append(metric('Temps total',`${Math.floor(total/60)}h ${Math.round(total%60)}m`),metric('Entrées',data.length),metric('Jours actifs',new Set(data.map(e=>e.date)).size));f.appendChild(metrics);const chart=card('Statistiques');chart.append(node('h3','chart-title','Temps par jour'));const dc=document.createElement('canvas');dc.id='day-chart';chart.appendChild(dc);chart.append(node('h3','chart-title','Répartition par heure'));const hc=document.createElement('canvas');hc.id='hour-chart';chart.appendChild(hc);chart.append(node('h3','chart-title','Répartition du temps par catégorie / sous-catégorie'));const cc=document.createElement('canvas');cc.id='category-chart';chart.appendChild(cc);f.appendChild(chart);f.appendChild(insightsCard());return f;}
