@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import type { Category, CategoryInput } from '../types/category';
-import { addCategory, deleteCategory, moveCategory, renameCategory } from '../state/category-actions.js';
+import { addCategory, deleteCategory, moveCategory, renameCategory, updateCategory } from '../state/category-actions.js';
 import { getAncestors, getChildren, getDescendants, getRoots, formatCategoryPath } from '../core/category-tree.js';
 import { loadPersistedCategories, persistCategories } from './category-persistence';
 import { trackEvent } from '../core/analytics/analytics.js';
@@ -45,6 +45,12 @@ export const useCategoriesStore = defineStore('categories', {
       this.categories = addCategory(this.categories, input) as Category[];
       await this.persist();
       trackEvent('category_created', categoryCreatedPayload({ depth: getAncestors(this.categories, input.id).length }));
+    },
+
+    async update(id: string, updates: { label?: string; color?: string | null; parentId?: string | null }) {
+      this.categories = updateCategory(this.categories, id, updates) as Category[];
+      await this.persist();
+      trackEvent('category_renamed');
     },
 
     async rename(id: string, label: string) {

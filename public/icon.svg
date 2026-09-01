@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2D342C"/>
+      <stop offset="100%" stop-color="#1A1E19"/>
+    </linearGradient>
+    <linearGradient id="brassGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#D4A757"/>
+      <stop offset="100%" stop-color="#8C6329"/>
+    </linearGradient>
+  </defs>
+  <!-- Background with subtle corner rounding -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  
+  <!-- Outer Brass Dial Ring -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="url(#brassGrad)" stroke-width="14" stroke-opacity="0.9"/>
+  <circle cx="256" cy="256" r="162" fill="#232821" fill-opacity="0.8"/>
+  
+  <!-- Color-coded Category Arc Marks -->
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#5C7A5E" stroke-width="10" stroke-dasharray="70 400" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#2980B9" stroke-width="10" stroke-dasharray="60 400" stroke-dashoffset="-90" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#C98A3D" stroke-width="10" stroke-dasharray="50 400" stroke-dashoffset="-180" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#B5697A" stroke-width="10" stroke-dasharray="60 400" stroke-dashoffset="-260" stroke-linecap="round"/>
+  
+  <!-- Clock Hands -->
+  <!-- Hour hand -->
+  <line x1="256" y1="256" x2="256" y2="150" stroke="#FBF8F1" stroke-width="14" stroke-linecap="round"/>
+  <!-- Minute hand -->
+  <line x1="256" y1="256" x2="336" y2="256" stroke="url(#brassGrad)" stroke-width="10" stroke-linecap="round"/>
+  
+  <!-- Center Pivot -->
+  <circle cx="256" cy="256" r="18" fill="url(#brassGrad)"/>
+  <circle cx="256" cy="256" r="8" fill="#FBF8F1"/>
+</svg>

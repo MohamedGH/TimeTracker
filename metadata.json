@@ -1,0 +1,8 @@
+{
+  "name": "Carnet du temps",
+  "description": "Application mobile de suivi du temps et de gestion des catégories et activités.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

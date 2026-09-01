@@ -19,6 +19,31 @@ export function renameCategory(categories, id, label) {
   return categories.map(category => category.id === id ? { ...category, label: label.trim() } : category);
 }
 
+export function updateCategory(categories, id, { label, color, parentId } = {}) {
+  const category = categories.find(item => item.id === id);
+  if (!category) throw new Error('Catégorie introuvable.');
+
+  const nextLabel = label !== undefined ? String(label).trim() : category.label;
+  if (!nextLabel) throw new Error('Le nom de la catégorie ne peut pas être vide.');
+
+  const nextParentId = parentId !== undefined ? (parentId || null) : category.parentId;
+  if (nextParentId && !categories.some(item => item.id === nextParentId)) {
+    throw new Error('Catégorie parente introuvable.');
+  }
+  if (nextParentId && nextParentId !== category.parentId && wouldCreateCycle(categories, id, nextParentId)) {
+    throw new Error('Déplacement impossible : il créerait une boucle.');
+  }
+
+  const nextColor = color !== undefined ? (color || null) : category.color;
+
+  return categories.map(item => item.id === id ? {
+    ...item,
+    label: nextLabel,
+    color: nextColor,
+    parentId: nextParentId,
+  } : item);
+}
+
 export function moveCategory(categories, id, parentId = null) {
   const category = categories.find(item => item.id === id);
   if (!category) throw new Error('Catégorie introuvable.');

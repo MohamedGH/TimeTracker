@@ -52,7 +52,7 @@ export async function createAppState() {
       await Promise.all([
         setValue(STORAGE_KEYS.entries, state.entries),
         setValue(STORAGE_KEYS.activities, state.activities),
-        setValue(STORAGE_KEYS.categories, state.categories.filter(c => !c.builtin)),
+        setValue(STORAGE_KEYS.categories, state.categories),
         setValue(STORAGE_KEYS.activeTimer, state.activeTimer),
       ]);
     },
@@ -61,9 +61,11 @@ export async function createAppState() {
 
 function mergeCategories(defaults, stored) {
   const result = [];
-  const ids = new Set();
-  for (const category of [...defaults, ...stored]) {
-    if (!category?.id || ids.has(category.id)) continue;
+  const seen = new Set();
+
+  // Load stored categories first so custom colors and edits are preserved
+  for (const category of (Array.isArray(stored) ? stored : [])) {
+    if (!category?.id || seen.has(category.id)) continue;
     result.push({
       id: category.id,
       label: String(category.label || '').trim(),
@@ -71,7 +73,21 @@ function mergeCategories(defaults, stored) {
       parentId: category.parentId ?? null,
       builtin: Boolean(category.builtin),
     });
-    ids.add(category.id);
+    seen.add(category.id);
   }
+
+  // Add any initial defaults if not yet present in storage
+  for (const category of (Array.isArray(defaults) ? defaults : [])) {
+    if (!category?.id || seen.has(category.id)) continue;
+    result.push({
+      id: category.id,
+      label: String(category.label || '').trim(),
+      color: category.color || null,
+      parentId: category.parentId ?? null,
+      builtin: Boolean(category.builtin),
+    });
+    seen.add(category.id);
+  }
+
   return result;
 }

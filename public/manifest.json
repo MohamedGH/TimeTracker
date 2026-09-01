@@ -1,0 +1,18 @@
+{
+  "name": "Carnet du temps",
+  "short_name": "Temps",
+  "description": "Application mobile de suivi du temps, chronomètre et gestion des catégories",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F5F0E4",
+  "theme_color": "#232821",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

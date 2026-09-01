@@ -35,7 +35,7 @@ export async function renderCharts({ dayCanvas, hourCanvas, categoryCanvas, entr
 
   const categories = mergeCategories(await getValue(STORAGE_KEYS.categories, []));
   const roots = categories.filter(c => !c.parentId);
-  const categoryMap = new Map(categories.map(c => [c.id, c]));
+  const _categoryMap = new Map(categories.map(c => [c.id, c]));
   const dayLabels = [...byDay.keys()].sort();
   const color = c => c.color || '#999999';
 
