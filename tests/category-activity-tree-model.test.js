@@ -5,6 +5,8 @@ import {
   filterTreeByQuery,
   collectNodeIds,
   computeTreeMetrics,
+  canDropTreeNode,
+  findTreeDropTarget,
 } from '../src/core/category-activity-tree-model.js';
 
 describe('category-activity-tree-model', () => {
@@ -95,4 +97,59 @@ describe('category-activity-tree-model', () => {
     expect(catIds.has('category:travail')).toBe(true);
     expect(catIds.has('category:dev')).toBe(true);
   });
+
+  it('validates drag-and-drop targets via canDropTreeNode and hit-tests with findTreeDropTarget', () => {
+    const root = buildCategoryActivityTree({ categories, activities, entries });
+    const travail = root.children.find(c => c.categoryId === 'travail');
+    const dev = travail.children.find(c => c.categoryId === 'dev');
+    const sport = root.children.find(c => c.categoryId === 'sport');
+    const uncat = root.children.find(c => c.categoryId === null);
+    const frontend = dev.children.find(a => a.label === 'Code Frontend');
+
+    // Category -> another Category: valid
+    expect(canDropTreeNode({ draggedNode: dev, targetNode: sport, categories }).valid).toBe(true);
+    // Subcategory -> Root: valid
+    expect(canDropTreeNode({ draggedNode: dev, targetNode: root, categories }).valid).toBe(true);
+    // Parent Category -> descendant: cycle prevented
+    const cycleCheck = canDropTreeNode({ draggedNode: travail, targetNode: dev, categories });
+    expect(cycleCheck.valid).toBe(false);
+    expect(cycleCheck.reason).toContain('boucle');
+    // Category -> current parent: rejected
+    expect(canDropTreeNode({ draggedNode: dev, targetNode: travail, categories }).valid).toBe(false);
+    // Root Category -> Root: rejected
+    expect(canDropTreeNode({ draggedNode: travail, targetNode: root, categories }).valid).toBe(false);
+    // Category -> Uncategorized: rejected
+    expect(canDropTreeNode({ draggedNode: dev, targetNode: uncat, categories }).valid).toBe(false);
+
+    // Activity -> another Category: valid
+    expect(canDropTreeNode({ draggedNode: frontend, targetNode: sport, categories }).valid).toBe(true);
+    // Activity -> Root / Uncategorized: valid
+    expect(canDropTreeNode({ draggedNode: frontend, targetNode: root, categories }).valid).toBe(true);
+    expect(canDropTreeNode({ draggedNode: frontend, targetNode: uncat, categories }).valid).toBe(true);
+    // Activity -> current Category: rejected
+    expect(canDropTreeNode({ draggedNode: frontend, targetNode: dev, categories }).valid).toBe(false);
+
+    // findTreeDropTarget matches node bounding box in horizontal D3 layout (y = X, x = Y)
+    const mockNodes = [
+      { data: root, x: 0, y: 0 },
+      { data: sport, x: 100, y: 286 },
+      { data: dev, x: -50, y: 572 },
+    ];
+    const dims = {
+      [TREE_NODE_TYPES.ROOT]: { width: 196, height: 46 },
+      [TREE_NODE_TYPES.CATEGORY]: { width: 226, height: 44 },
+    };
+
+    const hitSport = findTreeDropTarget({
+      pointX: 350,
+      pointY: 100,
+      nodes: mockNodes,
+      draggedNode: frontend,
+      categories,
+      nodeDimensions: dims,
+    });
+    expect(hitSport?.node.data.categoryId).toBe('sport');
+    expect(hitSport?.valid).toBe(true);
+  });
 });
+

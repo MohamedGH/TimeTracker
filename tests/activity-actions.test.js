@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { updateActivityAndEntries } from '../src/state/activity-actions.js';
+import { updateActivityAndEntries, moveActivity } from '../src/state/activity-actions.js';
 
-describe('activity-actions (updateActivityAndEntries)', () => {
+describe('activity-actions (updateActivityAndEntries & moveActivity)', () => {
   const baseActivities = [
     { id: 'act-1', label: 'Code Frontend', categoryId: 'dev', useCount: 4 },
     { id: 'act-2', label: 'Course à pied', categoryId: 'sport', useCount: 2 },
@@ -87,4 +87,38 @@ describe('activity-actions (updateActivityAndEntries)', () => {
       )
     ).toThrow('Le nom de l’activité ne peut pas être vide.');
   });
+
+  it('moves an activity cleanly to another category or to uncategorized via moveActivity', () => {
+    const moved = moveActivity(
+      { activities: baseActivities, entries: baseEntries, activeTimer: null },
+      {
+        activityId: 'act-1',
+        label: 'Code Frontend',
+        oldCategoryId: 'dev',
+        newCategoryId: 'travail',
+      }
+    );
+    expect(moved.activities.find(a => a.id === 'act-1').categoryId).toBe('travail');
+    expect(moved.entries[0].categoryId).toBe('travail');
+    expect(moved.entries[1].categoryId).toBe('travail');
+
+    const uncategorized = moveActivity(moved, {
+      activityId: 'act-1',
+      label: 'Code Frontend',
+      oldCategoryId: 'travail',
+      newCategoryId: null,
+    });
+    expect(uncategorized.activities.find(a => a.id === 'act-1').categoryId).toBeNull();
+    expect(uncategorized.entries[0].categoryId).toBeNull();
+
+    // No-op when source and target categories match
+    const noop = moveActivity(uncategorized, {
+      activityId: 'act-1',
+      label: 'Code Frontend',
+      oldCategoryId: null,
+      newCategoryId: null,
+    });
+    expect(noop.activities).toBe(uncategorized.activities);
+  });
 });
+

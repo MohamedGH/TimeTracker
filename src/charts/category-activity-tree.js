@@ -11,6 +11,7 @@ import {
   filterTreeByQuery,
   collectNodeIds,
   computeTreeMetrics,
+  findTreeDropTarget,
 } from '../core/category-activity-tree-model.js';
 
 const NODE_DIMENSIONS = Object.freeze({
@@ -57,6 +58,8 @@ export function renderCategoryActivityTree({
   onAddActivity = null,
   onEditCategory = null,
   onEditActivity = null,
+  onMoveCategory = null,
+  onMoveActivity = null,
 } = {}) {
   if (!container) return null;
 
@@ -67,6 +70,9 @@ export function renderCategoryActivityTree({
   let initializedDefaultCollapse = false;
   const collapsedIds = new Set();
   const canCreate = typeof onAddCategory === 'function' || typeof onAddActivity === 'function';
+  const canDragCategory = typeof onMoveCategory === 'function';
+  const canDragActivity = typeof onMoveActivity === 'function';
+  const canDragAny = canDragCategory || canDragActivity;
 
   // Build wrapper structure
   const wrapper = document.createElement('div');
@@ -237,8 +243,15 @@ export function renderCategoryActivityTree({
   const zoomLayer = svgSel.append('g').attr('class', 'cat-tree-zoom-layer');
   const linkGroup = zoomLayer.append('g').attr('class', 'cat-tree-links');
   const nodeGroup = zoomLayer.append('g').attr('class', 'cat-tree-nodes');
+  const dragLayer = zoomLayer.append('g').attr('class', 'cat-tree-drag-layer');
 
-  stage.append(emptyState, nodePopover);
+  const dragHint = document.createElement('div');
+  dragHint.className = 'cat-tree-drag-hint';
+  dragHint.hidden = true;
+  dragHint.setAttribute('role', 'status');
+  dragHint.setAttribute('aria-live', 'polite');
+
+  stage.append(emptyState, nodePopover, dragHint);
 
   // Legend row
   const legend = document.createElement('div');
@@ -248,7 +261,7 @@ export function renderCategoryActivityTree({
     <span class="cat-tree-legend-item" aria-hidden="true">·</span>
     <span class="cat-tree-legend-item"><span class="legend-swatch legend-swatch--act"></span>Activité (feuille)</span>
     <span class="cat-tree-legend-item" aria-hidden="true">·</span>
-    <span class="cat-tree-legend-item">Cliquez sur un nœud pour replier ou déplier</span>
+    <span class="cat-tree-legend-item">${canDragAny ? 'Cliquez pour replier · Glissez-déposez pour déplacer' : 'Cliquez sur un nœud pour replier ou déplier'}</span>
   `;
 
   wrapper.append(toolbar, summaryBar, stage, legend);
@@ -272,7 +285,175 @@ export function renderCategoryActivityTree({
   let lastRootTree = null;
   let lastRawTree = null;
 
-  const getDuration = () => (prefersReducedMotion() ? 0 : animationDuration);
+  const isNodeDraggable = (d) => {
+    if (!d?.data) return false;
+    if (d.data.type === TREE_NODE_TYPES.CATEGORY) {
+      return canDragCategory && d.data.categoryId !== null;
+    }
+    if (d.data.type === TREE_NODE_TYPES.ACTIVITY) {
+      return canDragActivity;
+    }
+    return false;
+  };
+
+  let dragSession = null;
+
+  function clearDragVisuals() {
+    dragLayer.selectAll('*').remove();
+    nodeGroup.selectAll('g.tree-node')
+      .classed('is-dragging', false)
+      .classed('is-drop-target', false)
+      .classed('is-drop-invalid', false);
+    dragHint.hidden = true;
+    dragHint.textContent = '';
+    dragHint.classList.remove('is-valid', 'is-invalid');
+    dragSession = null;
+  }
+
+  const nodeDragBehavior = d3
+    .drag()
+    .filter((event, d) => {
+      if (event.button && event.button !== 0) return false;
+      if (event.target?.closest?.('[data-action], .tree-node-toggle')) return false;
+      return isNodeDraggable(d);
+    })
+    .clickDistance(6)
+    .subject((_event, d) => ({ x: d.y, y: d.x }))
+    .on('start', function onDragStart(event, d) {
+      if (!isNodeDraggable(d)) return;
+      event.sourceEvent?.stopPropagation?.();
+      dragSession = {
+        node: d,
+        el: this,
+        startX: event.x,
+        startY: event.y,
+        hasMoved: false,
+        activeTarget: null,
+      };
+    })
+    .on('drag', function onDragMove(event, d) {
+      if (!dragSession || dragSession.node.data.id !== d.data.id) return;
+      const dx = event.x - dragSession.startX;
+      const dy = event.y - dragSession.startY;
+      if (!dragSession.hasMoved && Math.hypot(dx, dy) < 8) return;
+
+      if (!dragSession.hasMoved) {
+        dragSession.hasMoved = true;
+        closePopover();
+        d3.select(this).classed('is-dragging', true);
+
+        const dims = NODE_DIMENSIONS[d.data.type] || NODE_DIMENSIONS[TREE_NODE_TYPES.CATEGORY];
+        const ghost = dragLayer
+          .append('g')
+          .attr('class', 'tree-drag-ghost')
+          .style('pointer-events', 'none');
+
+        ghost
+          .append('rect')
+          .attr('x', 0)
+          .attr('y', -dims.height / 2)
+          .attr('width', dims.width)
+          .attr('height', dims.height)
+          .attr('rx', dims.rx)
+          .attr('fill', d.data.type === TREE_NODE_TYPES.ACTIVITY ? '#FCF9F2' : '#FFFFFF')
+          .attr('stroke', d.data.color || '#B3833C')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', d.data.type === TREE_NODE_TYPES.ACTIVITY ? '4 2.5' : null);
+
+        ghost
+          .append('text')
+          .attr('x', 14)
+          .attr('y', 4)
+          .attr('font-size', '12.5px')
+          .attr('font-weight', '600')
+          .attr('fill', '#232821')
+          .text(truncateLabel(d.data.label, 22));
+
+        dragLayer
+          .append('line')
+          .attr('class', 'tree-drag-guide')
+          .attr('stroke', d.data.color || '#B3833C')
+          .attr('stroke-width', 1.75)
+          .attr('stroke-dasharray', '4 3')
+          .style('display', 'none')
+          .style('pointer-events', 'none');
+      }
+
+      const dims = NODE_DIMENSIONS[d.data.type] || NODE_DIMENSIONS[TREE_NODE_TYPES.CATEGORY];
+      const curX = d.y + dx;
+      const curY = d.x + dy;
+
+      dragLayer.select('.tree-drag-ghost').attr('transform', `translate(${curX},${curY})`);
+
+      const match = findTreeDropTarget({
+        pointX: curX + dims.width / 2,
+        pointY: curY,
+        nodes: lastRootTree ? lastRootTree.descendants() : [],
+        draggedNode: d.data,
+        categories: currentData.categories,
+        nodeDimensions: NODE_DIMENSIONS,
+      });
+
+      dragSession.activeTarget = match;
+
+      nodeGroup.selectAll('g.tree-node')
+        .classed('is-drop-target', n => Boolean(match?.valid && n.data.id === match.node.data.id))
+        .classed('is-drop-invalid', n => Boolean(match && !match.valid && n.data.id === match.node.data.id));
+
+      const guide = dragLayer.select('.tree-drag-guide');
+      if (match?.valid) {
+        const targetDims = NODE_DIMENSIONS[match.node.data.type] || NODE_DIMENSIONS[TREE_NODE_TYPES.CATEGORY];
+        guide
+          .style('display', null)
+          .attr('x1', match.node.y + targetDims.width)
+          .attr('y1', match.node.x)
+          .attr('x2', curX)
+          .attr('y2', curY);
+      } else {
+        guide.style('display', 'none');
+      }
+
+      dragHint.hidden = false;
+      dragHint.classList.toggle('is-valid', Boolean(match?.valid));
+      dragHint.classList.toggle('is-invalid', Boolean(match && !match.valid));
+
+      if (match?.valid) {
+        const targetName = match.node.data.type === TREE_NODE_TYPES.ROOT
+          ? (d.data.type === TREE_NODE_TYPES.CATEGORY ? 'Catégorie racine' : 'Sans catégorie')
+          : match.node.data.label;
+        dragHint.textContent = `Déplacer « ${d.data.label} » → ${targetName}`;
+      } else if (match && match.reason) {
+        dragHint.textContent = match.reason;
+      } else {
+        dragHint.textContent = d.data.type === TREE_NODE_TYPES.CATEGORY
+          ? `Déposez « ${d.data.label} » sur une catégorie ou sur la racine`
+          : `Déposez « ${d.data.label} » sur une catégorie`;
+      }
+    })
+    .on('end', (_event, d) => {
+      const session = dragSession;
+      clearDragVisuals();
+      if (!session || !session.hasMoved || !session.activeTarget?.valid) return;
+
+      const targetData = session.activeTarget.node.data;
+      if (d.data.type === TREE_NODE_TYPES.CATEGORY && typeof onMoveCategory === 'function') {
+        const newParentId = targetData.type === TREE_NODE_TYPES.ROOT ? null : targetData.categoryId;
+        onMoveCategory(d.data.categoryId, newParentId);
+      } else if (d.data.type === TREE_NODE_TYPES.ACTIVITY && typeof onMoveActivity === 'function') {
+        const newCategoryId = targetData.type === TREE_NODE_TYPES.ROOT
+          ? null
+          : (targetData.categoryId ?? null);
+        onMoveActivity({
+          activityId: d.data.activityId || null,
+          label: d.data.label,
+          oldCategoryId: d.data.categoryId ?? null,
+          newCategoryId,
+        });
+      }
+    });
+
+  const canAnimateSvg = typeof svgSel.node()?.createSVGMatrix === 'function';
+  const getDuration = () => (prefersReducedMotion() || !canAnimateSvg ? 0 : animationDuration);
 
   function computeInitialCollapsed(rawTree) {
     if (initializedDefaultCollapse) return;
@@ -762,6 +943,9 @@ export function renderCategoryActivityTree({
     nodeMerge
       .attr('aria-expanded', d => (d.totalRawChildren > 0 ? String(!d.isCollapsed) : null))
       .classed('is-collapsed', d => d.isCollapsed)
+      .classed('is-draggable', d => isNodeDraggable(d))
+      .attr('data-draggable', d => (isNodeDraggable(d) ? 'true' : 'false'))
+      .call(nodeDragBehavior)
       .on('click', (event, d) => {
         if (event.defaultPrevented) return;
         if (d.totalRawChildren > 0) {
@@ -929,6 +1113,9 @@ export function renderCategoryActivityTree({
       zoomResetBtn.click();
     },
     destroy() {
+      svgSel.interrupt();
+      svgSel.selectAll('*').interrupt();
+      clearDragVisuals();
       closePopover();
       svgSel.on('.zoom', null);
       container.replaceChildren();

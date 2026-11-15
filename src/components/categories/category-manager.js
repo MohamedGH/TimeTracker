@@ -1,5 +1,5 @@
-import { getRoots, getChildren, getDescendants, formatCategoryPath } from '../../core/category-tree.js';
-import { addCategory, updateCategory, deleteCategory } from '../../state/category-actions.js';
+import { getRoots, getChildren, getDescendants, formatCategoryPath, wouldCreateCycle } from '../../core/category-tree.js';
+import { addCategory, updateCategory, moveCategory, deleteCategory } from '../../state/category-actions.js';
 import { CATEGORY_PALETTE, DEFAULT_CATEGORY_COLOR, createCategoryBadge } from '../../core/category-palette.js';
 import { trackEvent } from '../../core/analytics/analytics.js';
 import { categoryCreatedPayload, categoryDeletedPayload } from '../../core/analytics/events.js';
@@ -8,17 +8,29 @@ import { renderCategoryActivityTree } from '../../charts/category-activity-tree.
 
 export function createCategoryManager({
   state,
-  persist: _persist,
+  persist,
   rerender,
   onStartActivity = null,
   onAddActivity = null,
   onEditActivity = null,
+  onMoveCategory = null,
+  onMoveActivity = null,
 }) {
   let searchQuery = '';
   let activeFilter = 'all'; // 'all' | 'roots' | 'children'
   let activeColorFilter = null;
   let treeController = null;
+  let draggedCategoryId = null;
   const collapsedNodes = new Set();
+
+  async function handleMoveCategory(categoryId, newParentId) {
+    if (typeof onMoveCategory === 'function') {
+      return onMoveCategory(categoryId, newParentId);
+    }
+    state.categories = moveCategory(state.categories, categoryId, newParentId ?? null);
+    await persist?.();
+    rerender();
+  }
 
   function destroy() {
     treeController?.destroy();
@@ -69,6 +81,8 @@ export function createCategoryManager({
       onAddActivity,
       onEditCategory: (categoryId) => openCategoryModal({ mode: 'edit', categoryId }),
       onEditActivity,
+      onMoveCategory: handleMoveCategory,
+      onMoveActivity,
     });
 
     return card;
@@ -315,6 +329,32 @@ export function createCategoryManager({
       return;
     }
 
+    // Root dropzone (visible while dragging a subcategory)
+    const rootDropzone = document.createElement('div');
+    rootDropzone.className = 'category-root-dropzone';
+    rootDropzone.hidden = true;
+    rootDropzone.textContent = 'Déposer ici pour placer en catégorie racine';
+    rootDropzone.addEventListener('dragover', (e) => {
+      if (!draggedCategoryId) return;
+      const dragged = state.categories.find(c => c.id === draggedCategoryId);
+      if (!dragged || dragged.parentId === null) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      rootDropzone.classList.add('is-drop-target');
+    });
+    rootDropzone.addEventListener('dragleave', () => {
+      rootDropzone.classList.remove('is-drop-target');
+    });
+    rootDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      rootDropzone.classList.remove('is-drop-target');
+      const sourceId = draggedCategoryId || e.dataTransfer?.getData('text/plain');
+      draggedCategoryId = null;
+      rootDropzone.hidden = true;
+      if (sourceId) handleMoveCategory(sourceId, null);
+    });
+    container.appendChild(rootDropzone);
+
     // Otherwise render hierarchical tree
     const rootCategories = getRoots(allCategories);
     const tree = document.createElement('div');
@@ -364,10 +404,75 @@ export function createCategoryManager({
     const row = document.createElement('div');
     row.className = 'category-item-row';
     row.dataset.categoryId = category.id;
+    row.draggable = true;
+
+    row.addEventListener('dragstart', (e) => {
+      draggedCategoryId = category.id;
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', category.id);
+      }
+      row.classList.add('is-dragging');
+      const dropzone = row.closest('.category-tree-container')?.querySelector('.category-root-dropzone');
+      if (dropzone && category.parentId !== null) {
+        dropzone.hidden = false;
+      }
+    });
+
+    row.addEventListener('dragover', (e) => {
+      const sourceId = draggedCategoryId || e.dataTransfer?.getData('text/plain');
+      if (!sourceId || sourceId === category.id) return;
+      const source = state.categories.find(c => c.id === sourceId);
+      const isAlreadyChild = (source?.parentId ?? null) === category.id;
+      const createsCycle = wouldCreateCycle(state.categories, sourceId, category.id);
+      if (isAlreadyChild || createsCycle) {
+        row.classList.add('is-drop-invalid');
+        row.classList.remove('is-drop-target');
+        return;
+      }
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      row.classList.add('is-drop-target');
+      row.classList.remove('is-drop-invalid');
+    });
+
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('is-drop-target', 'is-drop-invalid');
+    });
+
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.classList.remove('is-drop-target', 'is-drop-invalid');
+      const sourceId = draggedCategoryId || e.dataTransfer?.getData('text/plain');
+      draggedCategoryId = null;
+      const dropzone = row.closest('.category-tree-container')?.querySelector('.category-root-dropzone');
+      if (dropzone) dropzone.hidden = true;
+      if (!sourceId || sourceId === category.id) return;
+      if (wouldCreateCycle(state.categories, sourceId, category.id)) return;
+      handleMoveCategory(sourceId, category.id);
+    });
+
+    row.addEventListener('dragend', () => {
+      draggedCategoryId = null;
+      row.classList.remove('is-dragging');
+      const treeRoot = row.closest('.category-tree-container');
+      treeRoot?.querySelectorAll('.is-drop-target, .is-drop-invalid').forEach(el => {
+        el.classList.remove('is-drop-target', 'is-drop-invalid');
+      });
+      const dropzone = treeRoot?.querySelector('.category-root-dropzone');
+      if (dropzone) dropzone.hidden = true;
+    });
 
     // Left info
     const left = document.createElement('div');
     left.className = 'category-item-row__left';
+
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'category-drag-handle';
+    dragHandle.setAttribute('aria-hidden', 'true');
+    dragHandle.title = 'Glisser pour déplacer';
+    dragHandle.textContent = '⋮⋮';
+    left.appendChild(dragHandle);
 
     // Expand/Collapse chevron if children exist
     if (hasChildren && onToggle) {

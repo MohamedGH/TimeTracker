@@ -2161,4 +2161,122 @@ canvas {
   text-overflow: ellipsis;
 }
 
+/* =========================================================================
+   DRAG & DROP STATES (D3 TREE & CATEGORY MANAGEMENT LIST)
+   ========================================================================= */
 
+.tree-node.is-draggable {
+  cursor: grab;
+}
+
+.tree-node.is-draggable:active {
+  cursor: grabbing;
+}
+
+.tree-node.is-dragging {
+  opacity: 0.35 !important;
+}
+
+.tree-node.is-drop-target .tree-node-card {
+  stroke: var(--moss) !important;
+  stroke-width: 2.5px !important;
+  filter: drop-shadow(0 0 8px rgba(92, 122, 94, 0.32));
+}
+
+.tree-node.is-drop-invalid .tree-node-card {
+  stroke: var(--danger) !important;
+  stroke-width: 2px !important;
+  stroke-dasharray: 4 2;
+}
+
+.tree-drag-ghost {
+  opacity: 0.92;
+  filter: drop-shadow(0 8px 18px rgba(35, 40, 33, 0.22));
+}
+
+.cat-tree-drag-hint {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  z-index: 12;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(35, 40, 33, 0.92);
+  color: #FBF8F1;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(35, 40, 33, 0.18);
+}
+
+.cat-tree-drag-hint.is-valid {
+  background: #2D4C31;
+}
+
+.cat-tree-drag-hint.is-invalid {
+  background: var(--danger);
+}
+
+.cat-tree-drag-hint[hidden] {
+  display: none;
+}
+
+.category-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  min-height: 28px;
+  color: var(--ink-subtle);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: -1px;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.category-item-row[draggable="true"] {
+  cursor: grab;
+}
+
+.category-item-row.is-dragging {
+  opacity: 0.48;
+  border-style: dashed;
+}
+
+.category-item-row.is-drop-target {
+  border-color: var(--moss);
+  background: var(--moss-light);
+  box-shadow: 0 0 0 2px rgba(92, 122, 94, 0.2);
+}
+
+.category-item-row.is-drop-invalid {
+  border-color: var(--danger);
+  background: var(--danger-light);
+}
+
+.category-root-dropzone {
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: 2px dashed var(--brass);
+  border-radius: var(--radius-sm);
+  background: rgba(179, 131, 60, 0.08);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.category-root-dropzone.is-drop-target {
+  border-color: var(--moss);
+  background: var(--moss-light);
+  color: #2D4C31;
+}
+
+.category-root-dropzone[hidden] {
+  display: none;
+}

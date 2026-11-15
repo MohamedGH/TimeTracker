@@ -4,6 +4,7 @@
  */
 
 import { formatDuration } from './statistics.js';
+import { wouldCreateCycle } from './category-tree.js';
 
 export const TREE_NODE_TYPES = Object.freeze({
   ROOT: 'root',
@@ -163,6 +164,7 @@ export function buildCategoryActivityTree({
     return {
       id: `category:${cat.id}`,
       categoryId: cat.id,
+      parentId: cat.parentId ?? null,
       type: TREE_NODE_TYPES.CATEGORY,
       label: cat.label,
       color: catColor,
@@ -205,6 +207,7 @@ export function buildCategoryActivityTree({
     rootChildren.push({
       id: 'category:__uncategorized__',
       categoryId: null,
+      parentId: null,
       type: TREE_NODE_TYPES.CATEGORY,
       label: 'Sans catégorie',
       color: uncatColor,
@@ -311,3 +314,108 @@ export function computeTreeMetrics(root) {
     totalMins: root?.totalMins || 0,
   };
 }
+
+/**
+ * Checks whether a dragged tree node can be dropped onto a target node.
+ * Pure function: ({ draggedNode, targetNode, categories }) -> { valid: boolean, reason: string | null }
+ */
+export function canDropTreeNode({ draggedNode, targetNode, categories = [] } = {}) {
+  if (!draggedNode || !targetNode) {
+    return { valid: false, reason: null };
+  }
+  if (draggedNode.id === targetNode.id) {
+    return { valid: false, reason: null };
+  }
+  if (targetNode.type === TREE_NODE_TYPES.SESSION || targetNode.type === TREE_NODE_TYPES.ACTIVITY) {
+    return { valid: false, reason: null };
+  }
+
+  if (draggedNode.type === TREE_NODE_TYPES.CATEGORY) {
+    if (!draggedNode.categoryId) {
+      return { valid: false, reason: null };
+    }
+    if (targetNode.type === TREE_NODE_TYPES.ROOT) {
+      if ((draggedNode.parentId ?? null) === null) {
+        return { valid: false, reason: 'Déjà en catégorie racine' };
+      }
+      return { valid: true, reason: null };
+    }
+    if (targetNode.type === TREE_NODE_TYPES.CATEGORY) {
+      if (targetNode.categoryId === null) {
+        return { valid: false, reason: 'Impossible de déposer une catégorie dans Sans catégorie' };
+      }
+      if ((draggedNode.parentId ?? null) === targetNode.categoryId) {
+        return { valid: false, reason: 'Déjà dans cette catégorie' };
+      }
+      if (wouldCreateCycle(categories, draggedNode.categoryId, targetNode.categoryId)) {
+        return { valid: false, reason: 'Déplacement impossible : créerait une boucle' };
+      }
+      return { valid: true, reason: null };
+    }
+  }
+
+  if (draggedNode.type === TREE_NODE_TYPES.ACTIVITY) {
+    const sourceCatId = draggedNode.categoryId ?? null;
+    if (targetNode.type === TREE_NODE_TYPES.ROOT) {
+      if (sourceCatId === null) {
+        return { valid: false, reason: 'Déjà sans catégorie' };
+      }
+      return { valid: true, reason: null };
+    }
+    if (targetNode.type === TREE_NODE_TYPES.CATEGORY) {
+      const targetCatId = targetNode.categoryId ?? null;
+      if (sourceCatId === targetCatId) {
+        return { valid: false, reason: 'Déjà dans cette catégorie' };
+      }
+      return { valid: true, reason: null };
+    }
+  }
+
+  return { valid: false, reason: null };
+}
+
+/**
+ * Finds the tree drop target node intersecting `(pointX, pointY)` in horizontal D3 tree coordinates
+ * where horizontal screen X = `node.y` and vertical screen Y = `node.x`.
+ * Pure function: ({ pointX, pointY, nodes, draggedNode, categories, nodeDimensions, padding }) -> { node, valid, reason } | null
+ */
+export function findTreeDropTarget({
+  pointX,
+  pointY,
+  nodes = [],
+  draggedNode,
+  categories = [],
+  nodeDimensions = {},
+  padding = 12,
+} = {}) {
+  if (!draggedNode || !Number.isFinite(pointX) || !Number.isFinite(pointY)) return null;
+
+  let bestMatch = null;
+  let bestDist = Infinity;
+
+  for (const hNode of nodes) {
+    const data = hNode?.data;
+    if (!data || data.id === draggedNode.id) continue;
+    if (data.type !== TREE_NODE_TYPES.ROOT && data.type !== TREE_NODE_TYPES.CATEGORY) continue;
+
+    const dims = nodeDimensions[data.type] || { width: 220, height: 44 };
+    const left = hNode.y - padding;
+    const right = hNode.y + dims.width + padding;
+    const top = hNode.x - dims.height / 2 - padding;
+    const bottom = hNode.x + dims.height / 2 + padding;
+
+    if (pointX >= left && pointX <= right && pointY >= top && pointY <= bottom) {
+      const cx = hNode.y + dims.width / 2;
+      const cy = hNode.x;
+      const dist = Math.hypot(pointX - cx, pointY - cy);
+      const check = canDropTreeNode({ draggedNode, targetNode: data, categories });
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestMatch = { node: hNode, valid: check.valid, reason: check.reason };
+      }
+    }
+  }
+
+  return bestMatch;
+}
+

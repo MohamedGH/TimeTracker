@@ -25,6 +25,8 @@ export async function renderCategoryHierarchy(container, entries = [], options =
     onAddActivity: options.onAddActivity || null,
     onEditCategory: options.onEditCategory || null,
     onEditActivity: options.onEditActivity || null,
+    onMoveCategory: options.onMoveCategory || null,
+    onMoveActivity: options.onMoveActivity || null,
   });
 }
 

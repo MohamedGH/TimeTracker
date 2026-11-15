@@ -27,6 +27,8 @@ export async function renderCharts({
   onAddActivity = null,
   onEditCategory = null,
   onEditActivity = null,
+  onMoveCategory = null,
+  onMoveActivity = null,
 }) {
   destroyCharts();
 
@@ -121,6 +123,8 @@ export async function renderCharts({
       onAddActivity,
       onEditCategory,
       onEditActivity,
+      onMoveCategory,
+      onMoveActivity,
     });
   }
 }

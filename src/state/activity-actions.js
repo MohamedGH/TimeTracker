@@ -103,3 +103,36 @@ export function updateActivityAndEntries(
     activeTimer: nextActiveTimer,
   };
 }
+
+/**
+ * Moves an activity (and its matching entries / active timer) to another category.
+ * Pure function: (stateSlice, movePayload) -> nextStateSlice
+ */
+export function moveActivity(
+  stateSlice = {},
+  {
+    activityId = null,
+    label = '',
+    oldCategoryId = null,
+    newCategoryId = null,
+  } = {}
+) {
+  const sourceCat = oldCategoryId || null;
+  const targetCat = newCategoryId || null;
+  if (sourceCat === targetCat) {
+    return {
+      activities: Array.isArray(stateSlice.activities) ? stateSlice.activities : [],
+      entries: Array.isArray(stateSlice.entries) ? stateSlice.entries : [],
+      activeTimer: stateSlice.activeTimer ?? null,
+    };
+  }
+
+  return updateActivityAndEntries(stateSlice, {
+    activityId,
+    oldLabel: label,
+    oldCategoryId: sourceCat,
+    newLabel: label,
+    newCategoryId: targetCat,
+  });
+}
+

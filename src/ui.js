@@ -30,7 +30,8 @@ import {
   generatePersonalizedSuggestions,
 } from './core/suggestions-engine.js';
 import { installCategorySelectors } from './category-selector.js';
-import { updateActivityAndEntries } from './state/activity-actions.js';
+import { moveCategory } from './state/category-actions.js';
+import { updateActivityAndEntries, moveActivity } from './state/activity-actions.js';
 
 export function createUI({ root, state, stateManager: _stateManager, persist }) {
   let ticker;
@@ -117,6 +118,55 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
     rerender();
   }
 
+  async function handleMoveCategory(categoryId, newParentId = null) {
+    try {
+      const movedCat = state.categories.find(c => c.id === categoryId);
+      const targetParent = newParentId ? state.categories.find(c => c.id === newParentId) : null;
+      state.categories = moveCategory(state.categories, categoryId, newParentId ?? null);
+      await persist();
+      trackEvent('category_moved');
+      errorManager.notifySuccess(
+        targetParent
+          ? `« ${movedCat?.label || 'Catégorie'} » déplacée dans « ${targetParent.label} ».`
+          : `« ${movedCat?.label || 'Catégorie'} » placée en catégorie racine.`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'category');
+      rerender();
+    }
+  }
+
+  async function handleMoveActivity(payload) {
+    try {
+      const nextSlice = moveActivity(
+        {
+          activities: state.activities,
+          entries: state.entries,
+          activeTimer: state.activeTimer,
+        },
+        payload
+      );
+      state.activities = nextSlice.activities;
+      state.entries = nextSlice.entries;
+      state.activeTimer = nextSlice.activeTimer;
+      await persist();
+      trackEvent('saved_activity_moved');
+      const targetCat = payload?.newCategoryId
+        ? state.categories.find(c => c.id === payload.newCategoryId)
+        : null;
+      errorManager.notifySuccess(
+        targetCat
+          ? `« ${payload.label} » déplacée dans « ${targetCat.label} ».`
+          : `« ${payload.label} » placée dans Sans catégorie.`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'activity');
+      rerender();
+    }
+  }
+
   const categoryManager = createCategoryManager({
     state,
     persist,
@@ -126,6 +176,8 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
     },
     onAddActivity: (categoryId) => openActivityCreateModal(categoryId),
     onEditActivity: (payload) => openActivityEditModal(payload),
+    onMoveCategory: handleMoveCategory,
+    onMoveActivity: handleMoveActivity,
   });
 
   function render() {
@@ -1238,6 +1290,8 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
         onAddActivity: (categoryId) => openActivityCreateModal(categoryId),
         onEditCategory: (categoryId) => openCategoryEditModal(categoryId),
         onEditActivity: (payload) => openActivityEditModal(payload),
+        onMoveCategory: handleMoveCategory,
+        onMoveActivity: handleMoveActivity,
       });
     }
   }

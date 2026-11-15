@@ -175,4 +175,78 @@ describe('Category Palette & Color Helpers', () => {
     cleanup();
     container.remove();
   });
+
+  it('supports drag-and-drop of category rows in createCategoryManager and prevents cycles', async () => {
+    const { createCategoryManager } = await import('../src/components/categories/category-manager.js');
+    const state = {
+      categories: [
+        { id: 'work', label: 'Travail', color: '#4A5A75', parentId: null, builtin: true },
+        { id: 'dev', label: 'Développement', color: '#2980B9', parentId: 'work', builtin: false },
+        { id: 'life', label: 'Personnel', color: '#5C7A5E', parentId: null, builtin: true },
+      ],
+      activities: [],
+      entries: [],
+    };
+    const persist = async () => {};
+    let manager;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+
+    const rerender = () => {
+      host.replaceChildren(manager.render());
+    };
+    manager = createCategoryManager({ state, persist, rerender });
+    rerender();
+
+    const makeDragEvent = (type) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      ev.dataTransfer = {
+        effectAllowed: 'move',
+        dropEffect: 'move',
+        data: {},
+        setData(k, v) { this.data[k] = v; },
+        getData(k) { return this.data[k] || ''; },
+      };
+      return ev;
+    };
+
+    const devRow = host.querySelector('.category-item-row[data-category-id="dev"]');
+    const lifeRow = host.querySelector('.category-item-row[data-category-id="life"]');
+    expect(devRow.draggable).toBe(true);
+
+    // Drag 'dev' onto 'life'
+    devRow.dispatchEvent(makeDragEvent('dragstart'));
+    const rootDropzone = host.querySelector('.category-root-dropzone');
+    expect(rootDropzone.hidden).toBe(false);
+
+    lifeRow.dispatchEvent(makeDragEvent('dragover'));
+    expect(lifeRow.classList.contains('is-drop-target')).toBe(true);
+
+    lifeRow.dispatchEvent(makeDragEvent('drop'));
+    await Promise.resolve();
+    expect(state.categories.find(c => c.id === 'dev').parentId).toBe('life');
+
+    // Prevent cyclic drop: 'life' onto its child 'dev'
+    const nextLifeRow = host.querySelector('.category-item-row[data-category-id="life"]');
+    const nextDevRow = host.querySelector('.category-item-row[data-category-id="dev"]');
+    nextLifeRow.dispatchEvent(makeDragEvent('dragstart'));
+    nextDevRow.dispatchEvent(makeDragEvent('dragover'));
+    expect(nextDevRow.classList.contains('is-drop-invalid')).toBe(true);
+    nextDevRow.dispatchEvent(makeDragEvent('drop'));
+    await Promise.resolve();
+    expect(state.categories.find(c => c.id === 'life').parentId).toBeNull();
+
+    // Drag 'dev' onto root dropzone -> promotes to root
+    const devRowBeforeRoot = host.querySelector('.category-item-row[data-category-id="dev"]');
+    const dropzone = host.querySelector('.category-root-dropzone');
+    devRowBeforeRoot.dispatchEvent(makeDragEvent('dragstart'));
+    dropzone.dispatchEvent(makeDragEvent('dragover'));
+    dropzone.dispatchEvent(makeDragEvent('drop'));
+    await Promise.resolve();
+    expect(state.categories.find(c => c.id === 'dev').parentId).toBeNull();
+
+    manager.destroy();
+    host.remove();
+  });
 });
+

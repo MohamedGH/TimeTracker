@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as d3 from 'd3';
 import { renderCategoryActivityTree } from '../src/charts/category-activity-tree.js';
 
 describe('category-activity-tree (D3 animated collapsible tree)', () => {
@@ -318,6 +319,92 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
 
     tree.destroy();
   });
+
+  function simulateD3Drag(sourceEl, targetEl) {
+    const win = sourceEl.ownerDocument.defaultView;
+    const sourceDatum = d3.select(sourceEl).datum();
+    const targetDatum = d3.select(targetEl).datum();
+    const widthByType = { root: 196, category: 226, activity: 236 };
+    const srcW = widthByType[sourceDatum.data.type] || 226;
+    const tgtW = widthByType[targetDatum.data.type] || 226;
+
+    const deltaX = (targetDatum.y + tgtW / 2) - (sourceDatum.y + srcW / 2);
+    const deltaY = targetDatum.x - sourceDatum.x;
+
+    sourceEl.dispatchEvent(new MouseEvent('mousedown', {
+      bubbles: true,
+      cancelable: true,
+      view: win,
+      clientX: 100,
+      clientY: 100,
+    }));
+    win.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true,
+      cancelable: true,
+      view: win,
+      clientX: 100 + deltaX,
+      clientY: 100 + deltaY,
+    }));
+    win.dispatchEvent(new MouseEvent('mouseup', {
+      bubbles: true,
+      cancelable: true,
+      view: win,
+      clientX: 100 + deltaX,
+      clientY: 100 + deltaY,
+    }));
+  }
+
+  it('supports drag-and-drop of categories and activities directly in the D3 tree', () => {
+    const onMoveCategory = vi.fn();
+    const onMoveActivity = vi.fn();
+
+    const tree = renderCategoryActivityTree({
+      container,
+      categories,
+      activities,
+      entries,
+      animationDuration: 0,
+      onMoveCategory,
+      onMoveActivity,
+    });
+
+    const devNode = container.querySelector('g.tree-node[data-node-id="category:dev"]');
+    const sportNode = container.querySelector('g.tree-node[data-node-id="category:sport"]');
+    const travailNode = container.querySelector('g.tree-node[data-node-id="category:travail"]');
+    const rootNode = container.querySelector('g.tree-node[data-node-id="__root__"]');
+    const frontendNode = container.querySelector('g.tree-node[data-node-id="activity:act-1"]');
+
+    expect(devNode.dataset.draggable).toBe('true');
+    expect(frontendNode.dataset.draggable).toBe('true');
+    expect(rootNode.dataset.draggable).toBe('false');
+
+    // 1. Drag category 'dev' onto 'sport'
+    simulateD3Drag(devNode, sportNode);
+    expect(onMoveCategory).toHaveBeenCalledTimes(1);
+    expect(onMoveCategory).toHaveBeenCalledWith('dev', 'sport');
+
+    // 2. Drag subcategory 'dev' onto Root -> promotes to root (null)
+    simulateD3Drag(devNode, rootNode);
+    expect(onMoveCategory).toHaveBeenCalledTimes(2);
+    expect(onMoveCategory).toHaveBeenLastCalledWith('dev', null);
+
+    // 3. Prevent cyclic drag: dragging 'travail' onto its child 'dev' does NOT invoke onMoveCategory
+    simulateD3Drag(travailNode, devNode);
+    expect(onMoveCategory).toHaveBeenCalledTimes(2);
+
+    // 4. Drag activity 'Code Frontend' onto 'sport'
+    simulateD3Drag(frontendNode, sportNode);
+    expect(onMoveActivity).toHaveBeenCalledTimes(1);
+    expect(onMoveActivity).toHaveBeenCalledWith({
+      activityId: 'act-1',
+      label: 'Code Frontend',
+      oldCategoryId: 'dev',
+      newCategoryId: 'sport',
+    });
+
+    tree.destroy();
+  });
 });
+
 
 
