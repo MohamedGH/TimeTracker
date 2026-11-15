@@ -79,7 +79,7 @@ export function resetBehaviorTracking() {
  * bridge between "the graph exists" and "something actually looked for
  * patterns in it" — still no AI step, just data prepared for one.
  */
-export async function runPatternDetection({ minSupportUsers = 2, sequenceLengths = [2, 3] } = {}) {
+export async function runPatternDetection({ minSupportUsers = 1, sequenceLengths = [2, 3] } = {}) {
   if (!instance) return null;
   await instance.ready;
 

@@ -2,6 +2,7 @@ import { getValue, setValue, STORAGE_KEYS } from './core/storage.js';
 import { migratePersistedData } from './core/persistence-migration.js';
 import { DEFAULT_CATEGORIES, normalizeEntries } from './core/model.js';
 import { migrateCategoryTree } from './core/category-tree.js';
+import { createStateManager } from './core/state-manager.js';
 
 export async function createAppState() {
   await migratePersistedData();
@@ -18,21 +19,30 @@ export async function createAppState() {
   const categoryLabels = new Set(categories.map(category => String(category.label || '').trim().toLowerCase()).filter(Boolean));
 
   // Repair data produced by older migration builds. Categories must never be
-  // displayed as saved activities. Some legacy builds persisted category
-  // records as activities and could also create label-only records such as
-  // "Islam", "Code", "Maman" or "Sans catégorie".
+  // displayed as saved activities.
   const normalizedActivities = Array.isArray(activities)
-    ? activities.filter(activity => {
-        if (!activity?.id || !String(activity.name || '').trim()) return false;
-        if (categoryIds.has(activity.id)) return false;
-        const name = String(activity.name).trim().toLowerCase();
-        if (name === 'sans catégorie') return false;
-        if (categoryLabels.has(name)) return false;
-        return true;
-      })
+    ? activities
+        .filter(activity => {
+          if (!activity?.id) return false;
+          const label = String(activity.label || activity.name || activity.activity || '').trim();
+          if (!label) return false;
+          if (categoryIds.has(activity.id)) return false;
+          const name = label.toLowerCase();
+          if (name === 'sans catégorie') return false;
+          if (categoryLabels.has(name)) return false;
+          return true;
+        })
+        .map(a => ({
+          id: a.id,
+          label: String(a.label || a.name || a.activity || '').trim(),
+          categoryId: a.categoryId ?? a.cat ?? null,
+          useCount: Number.isFinite(a.useCount) ? Math.max(0, a.useCount) : 1,
+          lastUsedAt: a.lastUsedAt || null,
+          avgDurationMins: Number.isFinite(a.avgDurationMins) ? Math.max(0, a.avgDurationMins) : null,
+        }))
     : [];
 
-  const state = {
+  const initialRawState = {
     entries: normalizeEntries(entries, categories, []),
     activities: normalizedActivities,
     categories,
@@ -44,18 +54,28 @@ export async function createAppState() {
     editingEntryId: null,
     modal: null,
     error: null,
+    notice: null,
   };
 
+  async function persist(targetState) {
+    const s = targetState || initialRawState;
+    await Promise.all([
+      setValue(STORAGE_KEYS.entries, s.entries),
+      setValue(STORAGE_KEYS.activities, s.activities),
+      setValue(STORAGE_KEYS.categories, s.categories),
+      setValue(STORAGE_KEYS.activeTimer, s.activeTimer),
+    ]);
+  }
+
+  const stateManager = createStateManager({
+    initialState: initialRawState,
+    persistFn: persist,
+  });
+
   return {
-    state,
-    async persist() {
-      await Promise.all([
-        setValue(STORAGE_KEYS.entries, state.entries),
-        setValue(STORAGE_KEYS.activities, state.activities),
-        setValue(STORAGE_KEYS.categories, state.categories),
-        setValue(STORAGE_KEYS.activeTimer, state.activeTimer),
-      ]);
-    },
+    stateManager,
+    state: stateManager.getState(),
+    persist: () => persist(stateManager.getState()),
   };
 }
 

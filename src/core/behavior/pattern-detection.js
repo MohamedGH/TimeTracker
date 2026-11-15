@@ -11,7 +11,7 @@
 import { NODE_TYPES, RELATIONSHIPS } from './event-graph.js';
 
 const DEFAULT_SEQUENCE_LENGTHS = [2, 3];
-const DEFAULT_MIN_SUPPORT_USERS = 2;
+const DEFAULT_MIN_SUPPORT_USERS = 1;
 const REPETITION_WINDOW_MS = 4000;
 const DEFAULT_MIN_REPETITIONS = 3;
 const ABANDONMENT_TIMEOUT_MS = 60_000;
@@ -221,9 +221,13 @@ export function applyAbandonmentToGraph(graph, abandonments, { minOccurrences = 
     graph.upsertEdge(RELATIONSHIPS.INDICATES, actionNode, problemNode);
 
     const featureCandidateId = `reduce_friction_${problemId}`;
-    const description = `${aggregate.userIds.size} utilisateurs abandonnent après "${aggregate.action}"`
-      + (aggregate.context ? ` dans "${aggregate.context}"` : '')
-      + `. Cela peut indiquer un point de friction à examiner.`;
+    const description = aggregate.userIds.size === 1
+      ? `Abandon fréquent observé après "${aggregate.action}"`
+        + (aggregate.context ? ` dans "${aggregate.context}"` : '')
+        + `. Cela peut indiquer un point de friction à examiner.`
+      : `${aggregate.userIds.size} utilisateurs abandonnent après "${aggregate.action}"`
+        + (aggregate.context ? ` dans "${aggregate.context}"` : '')
+        + `. Cela peut indiquer un point de friction à examiner.`;
     const featureNode = graph.upsertNode(NODE_TYPES.FEATURE_CANDIDATE, featureCandidateId, {
       description,
       supportUsers: aggregate.userIds.size,
@@ -239,6 +243,9 @@ export function applyAbandonmentToGraph(graph, abandonments, { minOccurrences = 
 /** Human-readable hypothesis text, e.g. the "Search → Filter → Export" example from the design brief. */
 export function describeFeatureCandidate(pattern) {
   const steps = pattern.sequence.join(' → ');
+  if (pattern.supportUsers === 1) {
+    return `Vous répétez fréquemment ce workflow : ${steps}. Une action rapide combinant ces étapes pourrait simplifier ce comportement.`;
+  }
   return `${pattern.supportUsers} utilisateurs répètent ce workflow : ${steps}. `
     + `Une fonctionnalité combinant ces étapes pourrait simplifier ce comportement.`;
 }

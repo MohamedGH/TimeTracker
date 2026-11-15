@@ -4,23 +4,71 @@ import { CATEGORY_PALETTE, DEFAULT_CATEGORY_COLOR, createCategoryBadge } from '.
 import { trackEvent } from '../../core/analytics/analytics.js';
 import { categoryCreatedPayload, categoryDeletedPayload } from '../../core/analytics/events.js';
 import { getBehaviorTracking } from '../../core/behavior/index.js';
+import { renderCategoryActivityTree } from '../../charts/category-activity-tree.js';
 
-export function createCategoryManager({ state, persist: _persist, rerender }) {
+export function createCategoryManager({
+  state,
+  persist: _persist,
+  rerender,
+  onStartActivity = null,
+  onAddActivity = null,
+}) {
   let searchQuery = '';
   let activeFilter = 'all'; // 'all' | 'roots' | 'children'
   let activeColorFilter = null;
+  let treeController = null;
   const collapsedNodes = new Set();
 
+  function destroy() {
+    treeController?.destroy();
+    treeController = null;
+  }
+
   function render() {
+    destroy();
     const fragment = document.createDocumentFragment();
 
     // 1. Header Card with Title & Quick Stats
     fragment.appendChild(renderHeaderCard());
 
-    // 2. Main Tree & List Card
+    // 2. Interactive Animated Tree Card (Categories <-> Activities)
+    fragment.appendChild(renderVisualTreeCard());
+
+    // 3. Management Tree & List Card (CRUD)
     fragment.appendChild(renderTreeCard());
 
     return fragment;
+  }
+
+  function renderVisualTreeCard() {
+    const card = document.createElement('section');
+    card.className = 'card category-visual-tree-card';
+
+    const title = document.createElement('h3');
+    title.className = 'card-title';
+    title.textContent = 'Arbre des catégories et activités';
+
+    const subtitle = document.createElement('p');
+    subtitle.className = 'muted';
+    subtitle.style.margin = '0 0 12px';
+    subtitle.textContent = 'Explorez la hiérarchie complète. Cliquez sur un nœud pour replier ou déplier ses branches et feuilles d’activités.';
+
+    const host = document.createElement('div');
+    host.className = 'category-visual-tree-host';
+
+    card.append(title, subtitle, host);
+
+    treeController = renderCategoryActivityTree({
+      container: host,
+      categories: state.categories,
+      activities: state.activities,
+      entries: state.entries,
+      onStartActivity,
+      onAddCategory: (parentId) => openCategoryModal({ mode: 'create', parentId: parentId || null }),
+      onAddActivity,
+    });
+
+    return card;
   }
 
   function renderHeaderCard() {
@@ -448,6 +496,7 @@ export function createCategoryManager({ state, persist: _persist, rerender }) {
 
   return {
     render,
+    destroy,
     openCategoryModal,
     openDeleteConfirmModal,
   };

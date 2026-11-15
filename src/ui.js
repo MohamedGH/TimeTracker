@@ -1,7 +1,7 @@
 import { formatCategoryPath, getDescendants } from './core/category-tree.js';
 import { createTimeEntry } from './core/time-entry.js';
 import { createActiveTimer, elapsedSeconds, elapsedMinutes } from './core/timer.js';
-import { today, splitEntryByDay } from './core/time.js';
+import { today } from './core/time.js';
 import { buildExportPayload, parseImportPayload } from './core/import-export.js';
 import { renderCharts, destroyCharts } from './charts/dashboard.js';
 import { clearAllData } from './core/storage.js';
@@ -20,15 +20,85 @@ import {
   renderCategoryEditorModal,
   renderCategoryDeleteConfirmModal,
 } from './components/categories/category-manager.js';
+import { createRouteManager } from './core/route-manager.js';
+import { createErrorManager } from './core/error-manager.js';
+import { calculateDashboardStats, filterEntriesByPeriod, formatDuration } from './core/statistics.js';
+import {
+  getUsualCategoryForActivity,
+  getRecentActivities,
+  getFrequentActivities,
+  generatePersonalizedSuggestions,
+} from './core/suggestions-engine.js';
+import { installCategorySelectors } from './category-selector.js';
 
-export function createUI({ root, state, persist }) {
+export function createUI({ root, state, stateManager: _stateManager, persist }) {
   let ticker;
   let lastTrackedTab = null;
   let lastInsightsRefresh = 0;
+  let entryFormMode = state.editingEntryId ? 'manual' : 'timer'; // 'timer' | 'manual'
+
+  // Route Manager (Hash Routing & History)
+  const routeManager = createRouteManager({
+    onRouteChanged: (route) => {
+      if (state.tab !== route) {
+        state.tab = route;
+        state.modal = null;
+        state.editingEntryId = null;
+        state.error = null;
+        rerender();
+      }
+    },
+    defaultRoute: state.tab || 'entry',
+  });
+  routeManager.start();
+
+  // Error & Notice Manager
+  const errorManager = createErrorManager({
+    onErrorChanged: ({ error, notice }) => {
+      state.error = error?.message || null;
+      state.notice = notice;
+      renderNoticeBanner();
+    },
+  });
+
   const rerender = () => render();
+
+  function openCategoryCreateModal(parentId = null) {
+    const parentCategory = parentId ? state.categories.find(c => c.id === parentId) : null;
+    state.modal = {
+      type: 'custom-category-editor',
+      mode: 'create',
+      categoryId: null,
+      parentId: parentId || null,
+      label: '',
+      color: parentCategory?.color || null,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  function openActivityCreateModal(categoryId = null) {
+    state.modal = {
+      type: 'activity',
+      categoryId: categoryId || state.categories[0]?.id || null,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  const categoryManager = createCategoryManager({
+    state,
+    persist,
+    rerender,
+    onStartActivity: (activityName, categoryId) => {
+      startTimer(activityName, categoryId || state.categories[0]?.id, today(), nowTime());
+    },
+    onAddActivity: (categoryId) => openActivityCreateModal(categoryId),
+  });
 
   function render() {
     destroyCharts();
+    categoryManager.destroy();
     if (!hasConsentDecision()) {
       root.replaceChildren(consentBanner());
     } else {
@@ -53,7 +123,7 @@ export function createUI({ root, state, persist }) {
     root.appendChild(bottomTabBar());
 
     if (state.modal) root.appendChild(modal());
-    if (state.error) root.appendChild(node('div', 'error', state.error));
+    renderNoticeBanner();
 
     if (state.activeTimer) {
       clearInterval(ticker);
@@ -66,6 +136,39 @@ export function createUI({ root, state, persist }) {
     }
 
     if (state.tab === 'dashboard') requestAnimationFrame(drawCharts);
+    installCategorySelectors(root);
+  }
+
+  function renderNoticeBanner() {
+    const existingToast = root.querySelector('.app-notice-toast');
+    existingToast?.remove();
+
+    if (state.error) {
+      const toast = node('div', 'app-notice-toast error', state.error);
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'toast-close-btn';
+      closeBtn.textContent = '×';
+      closeBtn.onclick = () => {
+        errorManager.clearError();
+        toast.remove();
+      };
+      toast.appendChild(closeBtn);
+      root.appendChild(toast);
+      return;
+    }
+
+    if (state.notice) {
+      const toast = node('div', `app-notice-toast ${state.notice.type}`, state.notice.message);
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'toast-close-btn';
+      closeBtn.textContent = '×';
+      closeBtn.onclick = () => {
+        errorManager.clearNotice();
+        toast.remove();
+      };
+      toast.appendChild(closeBtn);
+      root.appendChild(toast);
+    }
   }
 
   function trackTabView() {
@@ -98,11 +201,9 @@ export function createUI({ root, state, persist }) {
 
   function header() {
     const h = node('header', 'app-header mobile-header');
-    
     const brandRow = node('div', 'header-brand-row');
     const brandLeft = node('div', 'header-brand-left');
-    
-    // Pocket watch app icon badge
+
     const iconWrap = node('div', 'header-app-icon');
     iconWrap.innerHTML = `<svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="13" r="8"/>
@@ -110,7 +211,7 @@ export function createUI({ root, state, persist }) {
       <path d="M12 5V2"/>
       <path d="M10 2h4"/>
     </svg>`;
-    
+
     const titleGroup = node('div', 'header-title-group');
     const title = node('h1', 'lt-title mobile-title', 'Carnet du temps');
     const subtitle = node('span', 'mobile-subtitle', getFormattedCurrentDate());
@@ -122,15 +223,13 @@ export function createUI({ root, state, persist }) {
       const activeBadge = node('div', 'header-active-timer-badge');
       activeBadge.innerHTML = `<span class="pulse-dot"></span><span>Chrono en cours</span>`;
       activeBadge.onclick = () => {
-        state.tab = 'entry';
-        rerender();
+        routeManager.navigate('entry');
       };
       brandRight.appendChild(activeBadge);
     }
-    
+
     brandRow.append(brandLeft, brandRight);
     h.appendChild(brandRow);
-
     return h;
   }
 
@@ -191,11 +290,7 @@ export function createUI({ root, state, persist }) {
       b.append(iconWrap, labelSpan);
 
       b.onclick = () => {
-        state.tab = id;
-        state.modal = null;
-        state.editingEntryId = null;
-        state.error = null;
-        rerender();
+        routeManager.navigate(id);
       };
       nav.appendChild(b);
     });
@@ -209,7 +304,7 @@ export function createUI({ root, state, persist }) {
 
     const bar = node('div', 'floating-timer-bar');
     const info = node('div', 'floating-timer-info');
-    
+
     const dot = node('span', 'pulse-dot');
     const act = node('strong', 'floating-timer-activity', t.activity);
     const cat = createCategoryBadge(t.categoryId ?? t.cat, state.categories, { showPath: false, size: 'small' });
@@ -229,8 +324,7 @@ export function createUI({ root, state, persist }) {
     bar.append(info, actions);
 
     bar.onclick = () => {
-      state.tab = 'entry';
-      rerender();
+      routeManager.navigate('entry');
     };
 
     return bar;
@@ -247,14 +341,21 @@ export function createUI({ root, state, persist }) {
 
   function entryPage() {
     const f = document.createDocumentFragment();
-    f.append(timerCard(), entryCard(), activitiesCard(), entriesCard(), dataCard());
+    f.append(
+      timerCard(),
+      quickStartCard(),
+      entryCard(),
+      activitiesCard(),
+      entriesCard(),
+      dataCard()
+    );
     return f;
   }
 
   function timerCard() {
-    const c = card('Timer');
+    const c = card('Chronomètre');
     if (!state.activeTimer) {
-      c.appendChild(node('p', 'muted', 'Aucun timer actif.'));
+      c.appendChild(node('p', 'muted', 'Aucun chronomètre actif. Lancez une activité en 1 clic ou configurez-la ci-dessous.'));
       return c;
     }
     const t = state.activeTimer;
@@ -269,7 +370,7 @@ export function createUI({ root, state, persist }) {
     const clockNode = node('div', 't-clock', clock(elapsedSeconds(t)));
     clockNode.dataset.timerClock = '1';
 
-    const stop = button('Arrêter le timer', 'danger', 'timer-stop');
+    const stop = button('Arrêter le chronomètre', 'danger', 'timer-stop');
     stop.onclick = stopTimer;
 
     box.append(metaRow, clockNode, stop);
@@ -277,32 +378,145 @@ export function createUI({ root, state, persist }) {
     return c;
   }
 
+  /**
+   * Priorité UX 1 & 2: Démarrer rapidement une activité & proposer les activités récentes/fréquentes.
+   */
+  function quickStartCard() {
+    const recent = getRecentActivities(state.entries, state.activities, 4);
+    const frequent = getFrequentActivities(state.entries, state.activities, 4);
+
+    // Merge recent and frequent into unique suggestions
+    const seen = new Set();
+    const suggestions = [];
+    for (const item of [...recent, ...frequent]) {
+      const key = item.name.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        suggestions.push(item);
+      }
+      if (suggestions.length >= 6) break;
+    }
+
+    if (!suggestions.length) return document.createDocumentFragment();
+
+    const c = node('section', 'quick-start-card');
+    const title = node('div', 'quick-start-title');
+    title.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>Démarrage rapide (1 clic)</span>`;
+    c.appendChild(title);
+
+    const chips = node('div', 'quick-chips-grid');
+    for (const item of suggestions) {
+      const cat = state.categories.find(k => k.id === item.categoryId);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'quick-chip';
+      chip.setAttribute('aria-label', `Démarrer ${item.name}`);
+
+      chip.innerHTML = `
+        <span class="quick-chip-icon">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+        </span>
+        <span class="quick-chip-name">${escapeHtml(item.name)}</span>
+        ${cat ? `<span class="quick-chip-category" style="background:${cat.color || '#948C7E'}">${escapeHtml(cat.label)}</span>` : ''}
+      `;
+
+      chip.onclick = () => {
+        trackEvent('saved_activity_started');
+        startTimer(item.name, item.categoryId || state.categories[0]?.id, today(), nowTime());
+      };
+      chips.appendChild(chip);
+    }
+    c.appendChild(chips);
+    return c;
+  }
+
+  /**
+   * Priorité UX 3, 4 & 5:
+   * - Mémorisation automatique de la catégorie habituelle
+   * - Réduction des champs et clics inutiles
+   * - Saisie manuelle secondaire mais toujours disponible
+   */
   function entryCard() {
-    const c = card(state.editingEntryId ? 'Modifier une entrée' : 'Nouvelle entrée');
+    const isEditing = Boolean(state.editingEntryId);
     const old = state.entries.find(e => e.id === state.editingEntryId);
+    const c = card(isEditing ? 'Modifier une entrée' : 'Nouvelle session');
+
+    // Mode Toggle: Chronomètre direct vs Saisie manuelle différée
+    if (!isEditing) {
+      const toggleRow = node('div', 'entry-mode-toggle');
+      const chronoModeBtn = document.createElement('button');
+      chronoModeBtn.type = 'button';
+      chronoModeBtn.className = `mode-toggle-btn ${entryFormMode === 'timer' ? 'active' : ''}`;
+      chronoModeBtn.textContent = '⏱️ Démarrer un chrono';
+      chronoModeBtn.onclick = () => {
+        entryFormMode = 'timer';
+        rerender();
+      };
+
+      const manualModeBtn = document.createElement('button');
+      manualModeBtn.type = 'button';
+      manualModeBtn.className = `mode-toggle-btn ${entryFormMode === 'manual' ? 'active' : ''}`;
+      manualModeBtn.textContent = '📝 Saisie manuelle';
+      manualModeBtn.onclick = () => {
+        entryFormMode = 'manual';
+        rerender();
+      };
+
+      toggleRow.append(chronoModeBtn, manualModeBtn);
+      c.appendChild(toggleRow);
+    }
+
     const form = node('form', 'entry-form');
     form.dataset.behaviorForm = 'entry-form';
 
     const activity = input('Activité', 'text', old?.activity || '', true, 'activity');
     const category = selectCategory(old?.categoryId);
+
+    // Auto-memorization: when typing an activity, automatically discover and select the usual category!
+    activity.input.addEventListener('input', () => {
+      const val = activity.input.value.trim();
+      if (!val) return;
+      const usualCatId = getUsualCategoryForActivity(val, state.entries, state.activities);
+      if (usualCatId && category.select.value !== usualCatId) {
+        category.select.value = usualCatId;
+        category.select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+
     attachActivitySuggestions(activity, category);
 
+    form.append(activity.wrap, category.wrap);
+
+    // Manual fields (date, start, end)
+    const manualFieldsWrap = node('div', `manual-entry-fields ${!isEditing && entryFormMode === 'timer' ? 'is-collapsed' : ''}`);
     const date = input('Date', 'date', old?.date || today(), true, 'date');
-    const start = input('Début', 'time', old?.start || '09:00', true, 'start');
-    const end = input('Fin', 'time', old?.end || '10:00', true, 'end');
+    const start = input('Début', 'time', old?.start || defaultStartTime(), true, 'start');
+    const end = input('Fin', 'time', old?.end || nowTime(), true, 'end');
 
     const row = node('div', 'row');
     row.append(date.wrap, start.wrap, end.wrap);
+    manualFieldsWrap.appendChild(row);
+    form.appendChild(manualFieldsWrap);
 
-    form.append(activity.wrap, category.wrap, row);
-
-    const save = button(old ? 'Enregistrer les modifications' : 'Enregistrer', undefined, 'entry-save');
-    save.type = 'submit';
-    form.appendChild(save);
-
-    const timer = button('Démarrer le timer', 'secondary', 'timer-start');
-    timer.onclick = () => startTimer(activity.input.value.trim(), category.select.value, date.input.value, start.input.value);
-    form.appendChild(timer);
+    // Action buttons based on active mode
+    if (!isEditing && entryFormMode === 'timer') {
+      const timerBtn = button('▶ Démarrer le chronomètre', 'primary', 'timer-start');
+      timerBtn.type = 'button';
+      timerBtn.onclick = () => {
+        const actName = activity.input.value.trim();
+        const catId = category.select.value;
+        if (!actName) {
+          errorManager.handleError(new Error('Veuillez saisir un nom d’activité.'), 'entry');
+          return;
+        }
+        startTimer(actName, catId || state.categories[0]?.id, today(), nowTime());
+      };
+      form.appendChild(timerBtn);
+    } else {
+      const saveBtn = button(old ? 'Enregistrer les modifications' : 'Enregistrer la session', 'primary', 'entry-save');
+      saveBtn.type = 'submit';
+      form.appendChild(saveBtn);
+    }
 
     if (old) {
       const cancel = button('Annuler', 'secondary', 'entry-cancel');
@@ -313,7 +527,7 @@ export function createUI({ root, state, persist }) {
       form.appendChild(cancel);
     }
 
-    form.onsubmit = async e => {
+    form.onsubmit = async (e) => {
       e.preventDefault();
       const value = createTimeEntry({
         id: old?.id || crypto.randomUUID(),
@@ -325,7 +539,7 @@ export function createUI({ root, state, persist }) {
       });
 
       if (!value.activity || value.mins <= 0) {
-        showError(c, 'Vérifiez l’activité et les horaires.');
+        errorManager.handleError(new Error('Vérifiez l’activité et les horaires.'), 'entry');
         getBehaviorTracking()?.tracker.trackFormResult('entry-form', 'error', { object: 'time_entry', code: 'invalid-entry' });
         return;
       }
@@ -340,11 +554,18 @@ export function createUI({ root, state, persist }) {
               timeEntryCreatedPayload({ durationMinutes: value.mins, hasCategory: Boolean(value.categoryId) })
       );
       getBehaviorTracking()?.tracker.trackFormResult('entry-form', 'success', { object: 'time_entry' });
+      errorManager.notifySuccess(old ? 'Modifications enregistrées.' : 'Session enregistrée !');
       rerender();
     };
 
     c.appendChild(form);
     return c;
+  }
+
+  function defaultStartTime() {
+    const d = new Date();
+    d.setHours(d.getHours() - 1);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
 
   function attachActivitySuggestions(activity, category) {
@@ -363,7 +584,7 @@ export function createUI({ root, state, persist }) {
       visibleList.replaceChildren();
 
       if (!selectedId) {
-        visibleList.appendChild(node('p', 'muted', 'Choisissez une catégorie pour voir les activités déjà utilisées.'));
+        visibleList.appendChild(node('p', 'muted', 'Choisissez une catégorie pour voir les activités habituelles.'));
         return;
       }
 
@@ -379,12 +600,20 @@ export function createUI({ root, state, persist }) {
         matches.push(name);
       }
 
+      // Also include any activity from entries belonging to this category
+      for (const e of state.entries) {
+        const name = String(e.activity || '').trim();
+        if (!name || !e.categoryId || !allowed.has(e.categoryId) || seen.has(name.toLowerCase())) continue;
+        seen.add(name.toLowerCase());
+        matches.push(name);
+      }
+
       if (!matches.length) {
         visibleList.appendChild(node('p', 'muted', 'Aucune activité enregistrée pour cette catégorie.'));
         return;
       }
 
-      for (const name of matches) {
+      for (const name of matches.slice(0, 5)) {
         const option = document.createElement('option');
         option.value = name;
         datalist.appendChild(option);
@@ -394,6 +623,11 @@ export function createUI({ root, state, persist }) {
         chip.onclick = () => {
           activity.input.value = name;
           activity.input.focus();
+          const catId = getUsualCategoryForActivity(name, state.entries, state.activities);
+          if (catId && category.select.value !== catId) {
+            category.select.value = catId;
+            category.select.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         };
         visibleList.appendChild(chip);
       }
@@ -443,7 +677,7 @@ export function createUI({ root, state, persist }) {
   function entriesCard() {
     const c = card('Dernières entrées');
     if (!state.entries.length) {
-      c.appendChild(node('p', 'empty', 'Aucune entrée.'));
+      c.appendChild(node('p', 'empty', 'Aucune session enregistrée.'));
       return c;
     }
 
@@ -456,13 +690,15 @@ export function createUI({ root, state, persist }) {
       headerRow.appendChild(createCategoryBadge(e.categoryId, state.categories, { showPath: true, size: 'small' }));
       info.appendChild(headerRow);
 
-      const meta = node('div', 'entry-meta', `${e.date} · ${e.start}–${e.end} · ${Math.round(e.mins)} min`);
+      const meta = node('div', 'entry-meta', `${e.date} · ${e.start}–${e.end} · ${formatDuration(e.mins)}`);
       info.appendChild(meta);
 
       const edit = button('Modifier', 'small', 'entry-edit');
       edit.onclick = () => {
         state.editingEntryId = e.id;
+        entryFormMode = 'manual';
         rerender();
+        root.querySelector('.entry-form')?.scrollIntoView({ behavior: 'smooth' });
       };
 
       const del = button('Supprimer', 'small danger', 'entry-delete');
@@ -470,6 +706,7 @@ export function createUI({ root, state, persist }) {
         state.entries = state.entries.filter(x => x.id !== e.id);
         await persist();
         trackEvent('time_entry_deleted');
+        errorManager.notifySuccess('Entrée supprimée.');
         rerender();
       };
 
@@ -479,93 +716,221 @@ export function createUI({ root, state, persist }) {
     return c;
   }
 
+  /**
+   * Priorité UX 7 & 8: Dashboard répondant directement à:
+   * 1. Combien de temps aujourd'hui ?
+   * 2. Où ai-je passé mon temps ?
+   * 3. Quelles catégories prennent le plus de temps ?
+   * 4. Quelles activités reviennent le plus souvent ?
+   */
   function dashboardPage() {
     const f = document.createDocumentFragment();
+
+    // Period selectors
     const periods = node('div', 'period-tabs');
-    for (const p of ['7', '14', '30', '90']) {
-      const b = button(`${p} jours`, state.period === p ? 'active' : 'secondary', `dashboard-period-${p}`);
+    const periodDefs = [
+      { id: 'today', label: 'Aujourd’hui' },
+      { id: '7', label: '7 jours' },
+      { id: '30', label: '30 jours' },
+      { id: 'month', label: 'Ce mois' },
+      { id: 'all', label: 'Tout' },
+    ];
+
+    for (const p of periodDefs) {
+      const b = button(p.label, state.period === p.id ? 'active' : 'secondary', `dashboard-period-${p.id}`);
       b.onclick = () => {
-        state.period = p;
-        trackEvent('dashboard_period_changed', dashboardPeriodChangedPayload({ period: p }));
+        state.period = p.id;
+        trackEvent('dashboard_period_changed', dashboardPeriodChangedPayload({ period: p.id }));
         rerender();
       };
       periods.appendChild(b);
     }
     f.appendChild(periods);
 
-    const data = dashboardEntries();
-    const total = data.reduce((s, e) => s + e.mins, 0);
-    const metrics = node('div', 'metric-grid');
-    metrics.append(
-      metric('Temps total', `${Math.floor(total / 60)}h ${Math.round(total % 60)}m`),
-      metric('Entrées', data.length),
-      metric('Jours actifs', new Set(data.map(e => e.date)).size)
-    );
-    f.appendChild(metrics);
+    // Calculate core statistics
+    const stats = calculateDashboardStats(state.entries, state.categories, state.period);
 
-    const chart = card('Statistiques');
+    // KPI Cards: Answering "Combien de temps aujourd'hui ?" and "Où passe mon temps ?"
+    const kpiGrid = node('div', 'dashboard-kpi-grid');
+    kpiGrid.append(
+      kpiCard('Aujourd’hui', stats.formattedToday, 'Temps de la journée', true),
+      kpiCard('Total période', stats.formattedTotal, `${stats.entryCount} session${stats.entryCount > 1 ? 's' : ''}`),
+      kpiCard('Jours actifs', String(stats.activeDaysCount), 'Jours suivis'),
+      kpiCard('Moyenne / jour', stats.formattedDailyAverage, 'Par jour actif')
+    );
+    f.appendChild(kpiGrid);
+
+    // Section 1: Où ai-je passé mon temps & Quelles catégories prennent le plus de temps ?
+    const categoryCard = card('Répartition par catégorie');
+    if (!stats.categoryBreakdown.length) {
+      categoryCard.appendChild(node('p', 'muted', 'Aucune donnée sur cette période.'));
+    } else {
+      const list = node('div', 'category-breakdown-list');
+      for (const item of stats.categoryBreakdown.slice(0, 8)) {
+        const itemWrap = node('div', 'category-breakdown-item');
+        const header = node('div', 'category-item-header');
+
+        const left = node('div', 'category-item-left');
+        const dot = node('span', 'category-color-dot');
+        dot.style.background = item.color;
+        const name = node('strong', null, item.label);
+        left.append(dot, name);
+
+        const right = node('div', 'category-item-right');
+        const time = node('span', 'category-item-time', item.formattedTotal);
+        const pct = node('span', 'category-item-pct', item.percentageFormatted);
+        right.append(time, pct);
+
+        header.append(left, right);
+
+        const track = node('div', 'category-bar-track');
+        const fill = node('div', 'category-bar-fill');
+        fill.style.width = `${Math.min(100, Math.max(2, item.percentage))}%`;
+        fill.style.background = item.color;
+        track.appendChild(fill);
+
+        itemWrap.append(header, track);
+        list.appendChild(itemWrap);
+      }
+      categoryCard.appendChild(list);
+    }
+    f.appendChild(categoryCard);
+
+    // Section 2: Quelles activités reviennent le plus souvent ?
+    const topActivitiesCard = card('Activités fréquentes');
+    if (!stats.topActivities.length) {
+      topActivitiesCard.appendChild(node('p', 'muted', 'Aucune activité fréquente répertoriée.'));
+    } else {
+      const list = node('div', 'top-activities-list');
+      for (const item of stats.topActivities) {
+        const row = node('div', 'top-activity-item');
+
+        const info = node('div', 'top-activity-info');
+        const titleRow = node('div', 'top-activity-title-row');
+        titleRow.appendChild(node('strong', null, item.name));
+        titleRow.appendChild(createCategoryBadge(item.categoryId, state.categories, { showPath: false, size: 'small' }));
+        info.appendChild(titleRow);
+
+        const meta = node('div', 'top-activity-meta', `${item.count} session${item.count > 1 ? 's' : ''} · ${item.formattedTotal} (moy. ${item.formattedAvg})`);
+        info.appendChild(meta);
+
+        const action = node('div', 'top-activity-action');
+        const launchBtn = button('Relancer', 'small', 'top-activity-launch');
+        launchBtn.onclick = () => {
+          startTimer(item.name, item.categoryId || state.categories[0]?.id, today(), nowTime());
+        };
+        action.appendChild(launchBtn);
+
+        row.append(info, action);
+        list.appendChild(row);
+      }
+      topActivitiesCard.appendChild(list);
+    }
+    f.appendChild(topActivitiesCard);
+
+    // Section 3: Visual Charts
+    const chart = card('Graphiques détaillés');
     chart.append(node('h3', 'chart-title', 'Temps par jour'));
     const dc = document.createElement('canvas');
     dc.id = 'day-chart';
     chart.appendChild(dc);
 
-    chart.append(node('h3', 'chart-title', 'Répartition par heure'));
+    chart.append(node('h3', 'chart-title', 'Répartition par heure de la journée'));
     const hc = document.createElement('canvas');
     hc.id = 'hour-chart';
     chart.appendChild(hc);
 
-    chart.append(node('h3', 'chart-title', 'Répartition du temps par catégorie / sous-catégorie'));
-    const cc = document.createElement('canvas');
-    cc.id = 'category-chart';
+    chart.append(node('h3', 'chart-title', 'Arborescence interactive Catégories & Activités'));
+    const cc = document.createElement('div');
+    cc.id = 'category-tree-chart';
     chart.appendChild(cc);
 
     f.appendChild(chart);
+
+    // Section 4: Suggestions personnalisées (Observations & Hypothèses)
     f.appendChild(insightsCard());
+
     return f;
   }
 
+  function kpiCard(title, value, subtext, highlight = false) {
+    const cardNode = node('div', `kpi-card ${highlight ? 'highlight' : ''}`);
+    cardNode.append(
+      node('span', 'kpi-label', title),
+      node('span', 'kpi-value', value),
+      node('span', 'kpi-subtext', subtext)
+    );
+    return cardNode;
+  }
+
+  /**
+   * Priorité 3: Suggestions personnalisées présentées comme observations ou hypothèses.
+   */
   function insightsCard() {
-    const c = card('Suggestions détectées (bêta)');
-    const behavior = getBehaviorTracking();
-    if (!behavior) {
-      c.appendChild(node('p', 'muted', 'Activez le suivi (bandeau de consentement) pour voir apparaître ici des suggestions basées sur votre propre usage.'));
-      return c;
+    const c = card('Observations & Suggestions personnalisées');
+    const list = node('div', 'suggestions-list');
+
+    // 1. Suggestions calculated from the local user's real entries
+    const personalSuggestions = generatePersonalizedSuggestions({
+      entries: state.entries,
+      activities: state.activities,
+      categories: state.categories,
+      currentHour: new Date().getHours(),
+    });
+
+    for (const item of personalSuggestions) {
+      const box = node('div', 'suggestion-box');
+
+      const badgeRow = node('div', 'suggestion-badge-row');
+      const badge = node('span', `suggestion-badge ${item.type}`, item.badge);
+      const title = node('span', 'suggestion-title', item.title);
+      badgeRow.append(badge, title);
+      box.appendChild(badgeRow);
+
+      const message = node('p', 'suggestion-message', item.message);
+      box.appendChild(message);
+
+      if (item.action) {
+        const actionRow = node('div', 'suggestion-action-row');
+        const startBtn = button(item.action.label, 'small primary');
+        startBtn.onclick = () => {
+          startTimer(item.action.activity, item.action.categoryId || state.categories[0]?.id, today(), nowTime());
+        };
+        actionRow.appendChild(startBtn);
+        box.appendChild(actionRow);
+      }
+
+      list.appendChild(box);
     }
-    const list = node('div', 'insights-list');
-    list.appendChild(node('p', 'muted', 'Analyse en cours…'));
+
+    // 2. Behavioral hypotheses from Pattern Detection
+    const candidates = getFeatureCandidates({ limit: 4 });
+    for (const candidate of candidates) {
+      const box = node('div', 'suggestion-box');
+      const badgeRow = node('div', 'suggestion-badge-row');
+      const badge = node('span', 'suggestion-badge hypothesis', 'Hypothèse comportementale');
+      badgeRow.appendChild(badge);
+      box.appendChild(badgeRow);
+
+      const message = node('p', 'suggestion-message', candidate.description);
+      box.appendChild(message);
+      list.appendChild(box);
+    }
+
     c.appendChild(list);
-    refreshInsights(list);
+
+    // Refresh background pattern detection if due
+    const now = Date.now();
+    if (now - lastInsightsRefresh > 15000 && hasConsentDecision()) {
+      lastInsightsRefresh = now;
+      runPatternDetection({ minSupportUsers: 1 }).catch(() => {});
+    }
+
     return c;
   }
 
-  function refreshInsights(list) {
-    const now = Date.now();
-    const shouldRun = now - lastInsightsRefresh > 10000;
-    const paint = () => {
-      const candidates = getFeatureCandidates({ limit: 5 });
-      list.replaceChildren();
-      if (!candidates.length) {
-        list.appendChild(node('p', 'muted', 'Pas encore assez de données pour détecter un schéma récurrent.'));
-        return;
-      }
-      for (const candidate of candidates) {
-        const item = node('div', 'insight-item');
-        item.appendChild(node('p', null, candidate.description));
-        item.appendChild(node('span', 'muted', `Support : ${candidate.supportUsers} utilisateur${candidate.supportUsers > 1 ? 's' : ''} · hypothèse non appliquée automatiquement`));
-        list.appendChild(item);
-      }
-    };
-    if (shouldRun) {
-      lastInsightsRefresh = now;
-      runPatternDetection().then(paint).catch(paint);
-    } else {
-      paint();
-    }
-  }
-
   function categoriesPage() {
-    const manager = createCategoryManager({ state, persist, rerender });
-    return manager.render();
+    return categoryManager.render();
   }
 
   function modal() {
@@ -606,7 +971,7 @@ export function createUI({ root, state, persist }) {
 
     const box = node('div', 'modal-box');
     const head = node('div', 'modal-head');
-    const titleText = 'Activité enregistrée';
+    const titleText = 'Nouvelle activité';
     const title = node('h2', 'card-title', titleText);
     const close = button('×', 'modal-close', 'modal-close');
     close.onclick = () => {
@@ -619,7 +984,7 @@ export function createUI({ root, state, persist }) {
     const form = node('form');
     form.dataset.behaviorForm = 'activity-form';
     const a = input('Nom', 'text', '', true, 'label');
-    const c = selectCategory(state.categories[0]?.id);
+    const c = selectCategory(m.categoryId || state.categories[0]?.id);
     const save = button('Enregistrer', undefined, 'activity-save');
     save.type = 'submit';
 
@@ -628,14 +993,22 @@ export function createUI({ root, state, persist }) {
       e.preventDefault();
       const label = a.input.value.trim();
       if (!label) {
+        errorManager.handleError(new Error('Veuillez donner un nom à l’activité.'), 'activity');
         getBehaviorTracking()?.tracker.trackFormResult('activity-form', 'error', { object: 'saved_activity', code: 'invalid-label' });
         return;
       }
-      state.activities.push({ id: crypto.randomUUID(), label, categoryId: c.select.value });
+      state.activities.push({
+        id: crypto.randomUUID(),
+        label,
+        categoryId: c.select.value,
+        useCount: 1,
+        lastUsedAt: new Date().toISOString(),
+      });
       state.modal = null;
       await persist();
       trackEvent('saved_activity_created', savedActivityCreatedPayload({ hasCategory: Boolean(c.select.value) }));
       getBehaviorTracking()?.tracker.trackFormResult('activity-form', 'success', { object: 'saved_activity' });
+      errorManager.notifySuccess(`Activité « ${label} » ajoutée !`);
       rerender();
     };
 
@@ -645,10 +1018,10 @@ export function createUI({ root, state, persist }) {
   }
 
   function dataCard() {
-    const c = card('Données');
+    const c = card('Gestion des données');
     const row = node('div', 'action-row');
-    const exp = button('Exporter', undefined, 'data-export');
-    const imp = button('Importer', undefined, 'data-import');
+    const exp = button('Exporter les données', undefined, 'data-export');
+    const imp = button('Importer un fichier', undefined, 'data-import');
     const clear = button('Effacer toutes les données', 'danger', 'data-clear');
 
     exp.onclick = exportData;
@@ -675,16 +1048,16 @@ export function createUI({ root, state, persist }) {
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `time-tracker-${today()}.json`;
+    a.download = `carnet-du-temps-${today()}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 0);
     trackEvent('data_exported', dataExportedPayload({ entryCount: state.entries.length, categoryCount: state.categories.length }));
+    errorManager.notifySuccess('Sauvegarde exportée avec succès.');
   }
 
   async function importData(input) {
     const file = input.files?.[0];
     if (!file) return;
-    state.error = null;
     try {
       const data = parseImportPayload(await file.text());
       const builtins = state.categories.filter(c => c.builtin);
@@ -695,9 +1068,10 @@ export function createUI({ root, state, persist }) {
       await persist();
       trackEvent('data_imported', dataImportedPayload({ entryCount: state.entries.length, categoryCount: state.categories.length }));
       getBehaviorTracking()?.tracker.trackFormResult('data-import', 'success', { object: 'data' });
+      errorManager.notifySuccess('Données importées avec succès !');
       rerender();
     } catch (e) {
-      state.error = e?.message || 'Impossible d’importer ce fichier JSON.';
+      errorManager.handleError(e, 'import');
       getBehaviorTracking()?.tracker.trackFormResult('data-import', 'error', { object: 'data', code: 'invalid-json' });
       rerender();
     }
@@ -717,25 +1091,30 @@ export function createUI({ root, state, persist }) {
       state.tab = 'entry';
       await persist();
       trackEvent('data_cleared');
+      errorManager.notifyInfo('Toutes les données ont été réinitialisées.');
       rerender();
     } catch (e) {
-      state.error = e?.message || 'Impossible d’effacer toutes les données.';
+      errorManager.handleError(e, 'storage');
       getBehaviorTracking()?.tracker.trackError(e, { context: 'data' });
       rerender();
     }
   }
 
   async function startTimer(activity, categoryId, date, startTime) {
-    if (!activity || !categoryId) return;
+    if (!activity || !categoryId) {
+      errorManager.handleError(new Error('Activité ou catégorie manquante.'), 'timer');
+      return;
+    }
     state.activeTimer = createActiveTimer({
       activity,
       categoryId,
       startTs: Date.now(),
-      startTime,
-      date,
+      startTime: startTime || nowTime(),
+      date: date || today(),
     });
     await persist();
     trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(categoryId) }));
+    errorManager.notifySuccess(`Chronomètre lancé pour « ${activity} »`);
     rerender();
   }
 
@@ -758,27 +1137,44 @@ export function createUI({ root, state, persist }) {
     });
     state.entries = [entry, ...state.entries];
     state.activeTimer = null;
+
+    // Update usage on saved activities if found
+    const actIdx = state.activities.findIndex(a => (a.label || a.activity) === t.activity);
+    if (actIdx >= 0) {
+      state.activities[actIdx].useCount = (state.activities[actIdx].useCount || 0) + 1;
+      state.activities[actIdx].lastUsedAt = new Date().toISOString();
+    }
+
     await persist();
     trackEvent('timer_stopped', timerStoppedPayload({ durationMinutes, hasCategory }));
     trackEvent('time_entry_created', timeEntryCreatedPayload({ durationMinutes, hasCategory, viaTimer: true }));
+    errorManager.notifySuccess(`Session « ${t.activity} » enregistrée (${formatDuration(durationMinutes)})`);
     rerender();
   }
 
   function dashboardEntries() {
-    const end = new Date();
-    const days = Number(state.period) || 7;
-    const start = new Date(end);
-    start.setDate(start.getDate() - days + 1);
-    const min = start.toISOString().slice(0, 10);
-    const max = end.toISOString().slice(0, 10);
-    return state.entries.flatMap(splitEntryByDay).filter(e => e.date >= min && e.date <= max);
+    return filterEntriesByPeriod(state.entries, state.period);
   }
 
   function drawCharts() {
     const d = root.querySelector('#day-chart');
     const h = root.querySelector('#hour-chart');
-    const c = root.querySelector('#category-chart');
-    if (d && h) renderCharts({ dayCanvas: d, hourCanvas: h, categoryCanvas: c, entries: dashboardEntries() });
+    const c = root.querySelector('#category-tree-chart');
+    if (d && h || c) {
+      renderCharts({
+        dayCanvas: d,
+        hourCanvas: h,
+        categoryTreeContainer: c,
+        entries: dashboardEntries(),
+        categories: state.categories,
+        activities: state.activities,
+        onStartActivity: (activityName, categoryId) => {
+          startTimer(activityName, categoryId || state.categories[0]?.id, today(), nowTime());
+        },
+        onAddCategory: (parentId) => openCategoryCreateModal(parentId),
+        onAddActivity: (categoryId) => openActivityCreateModal(categoryId),
+      });
+    }
   }
 
   function selectCategory(selected) {
@@ -809,10 +1205,6 @@ export function createUI({ root, state, persist }) {
     return { wrap, input: inp };
   }
 
-  function metric(labelText, value) {
-    return node('div', 'metric', `${labelText}: ${value}`);
-  }
-
   function card(title) {
     const c = node('section', 'card');
     c.appendChild(node('h2', 'card-title', title));
@@ -839,12 +1231,6 @@ export function createUI({ root, state, persist }) {
     return n;
   }
 
-  function showError(parent, message) {
-    const old = parent.querySelector('.error');
-    old?.remove();
-    parent.prepend(node('div', 'error', message));
-  }
-
   function nowTime() {
     const d = new Date();
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -854,11 +1240,19 @@ export function createUI({ root, state, persist }) {
     return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   }
 
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
   render();
   return {
     render,
     destroy: () => {
       clearInterval(ticker);
+      routeManager.destroy();
+      categoryManager.destroy();
       destroyCharts();
     },
   };
