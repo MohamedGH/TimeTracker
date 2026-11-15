@@ -28,6 +28,8 @@ export const ACTION_TYPES = Object.freeze({
   CLEAR_NOTICE: 'CLEAR_NOTICE',
   RESTORE_DATA: 'RESTORE_DATA',
   CLEAR_ALL: 'CLEAR_ALL',
+  SET_AUTH_USER: 'SET_AUTH_USER',
+  CLEAR_AUTH_USER: 'CLEAR_AUTH_USER',
 });
 
 /**
@@ -229,6 +231,20 @@ export function appReducer(state, action) {
         tab: 'entry',
       };
 
+    case ACTION_TYPES.SET_AUTH_USER:
+      return {
+        ...state,
+        authUser: action.payload || null,
+        error: null,
+      };
+
+    case ACTION_TYPES.CLEAR_AUTH_USER:
+      return {
+        ...state,
+        authUser: null,
+        error: null,
+      };
+
     default:
       return state;
   }
@@ -293,6 +309,7 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     modal: null,
     error: null,
     notice: null,
+    authUser: null,
     ...initialState,
   };
 
@@ -385,6 +402,12 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       clearNotice() {
         return this.dispatch({ type: ACTION_TYPES.CLEAR_NOTICE });
+      },
+      setAuthUser(user) {
+        return this.dispatch({ type: ACTION_TYPES.SET_AUTH_USER, payload: user });
+      },
+      clearAuthUser() {
+        return this.dispatch({ type: ACTION_TYPES.CLEAR_AUTH_USER });
       },
     },
   };

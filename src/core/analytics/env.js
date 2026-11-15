@@ -29,10 +29,9 @@ export function getGa4MeasurementId() {
 
 function readFromImportMetaEnv() {
   try {
-    // Guarded behind try/catch: referencing `import.meta` is safe in ES
-    // modules, but `import.meta.env` only exists once a bundler injects it.
-    const env = import.meta?.env;
-    const value = env?.VITE_GA4_MEASUREMENT_ID;
+    const value = typeof import.meta !== 'undefined' && import.meta.env
+      ? import.meta.env.VITE_GA4_MEASUREMENT_ID
+      : null;
     return typeof value === 'string' && value.trim() ? value.trim() : null;
   } catch {
     return null;

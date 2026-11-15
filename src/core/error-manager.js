@@ -8,6 +8,7 @@ export const ERROR_CODES = Object.freeze({
   STORAGE: 'storage_error',
   IMPORT: 'import_error',
   TIMER: 'timer_error',
+  AUTH: 'auth_error',
   RUNTIME: 'runtime_error',
 });
 
@@ -21,7 +22,10 @@ export function normalizeError(error, context = 'general') {
   let code = ERROR_CODES.RUNTIME;
   let userMessage = rawMessage;
 
-  if (context === 'timer' || rawMessage.toLowerCase().includes('timer')) {
+  if (context === 'auth') {
+    code = ERROR_CODES.AUTH;
+    userMessage = rawMessage || 'Erreur lors de l’authentification Google.';
+  } else if (context === 'timer' || rawMessage.toLowerCase().includes('timer')) {
     code = ERROR_CODES.TIMER;
     userMessage = rawMessage.includes('invalide')
       ? 'Veuillez renseigner une activité et une catégorie pour démarrer le chrono.'

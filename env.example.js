@@ -11,4 +11,5 @@
  */
 window.__TIME_TRACKER_ENV__ = {
   GA4_MEASUREMENT_ID: '', // e.g. "G-XXXXXXXXXX"
+  GOOGLE_CLIENT_ID: '', // e.g. "1234567890-abc.apps.googleusercontent.com"
 };

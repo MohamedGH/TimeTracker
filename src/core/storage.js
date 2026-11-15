@@ -82,6 +82,7 @@ export const STORAGE_KEYS = Object.freeze({
   // Legacy key kept readable for one-way migration.
   subcategories: 'time-subcategories',
   activeTimer: 'time-active-timer',
+  authSession: 'time-auth-session',
   schemaVersion: 'time-schema-version',
 });
 

@@ -9,9 +9,11 @@ import { DEFAULT_CATEGORIES } from './core/model.js';
 import { trackEvent, trackPageView, initAnalytics } from './core/analytics/analytics.js';
 import { hasConsentDecision, setConsentStatus } from './core/analytics/consent.js';
 import {
+  ANALYTICS_EVENTS,
   timerStartedPayload, timerStoppedPayload, timeEntryCreatedPayload, timeEntryUpdatedPayload,
   savedActivityCreatedPayload,
   dashboardPeriodChangedPayload, dataExportedPayload, dataImportedPayload,
+  authEventPayload,
 } from './core/analytics/events.js';
 import { initBehaviorTracking, getBehaviorTracking, runPatternDetection, getFeatureCandidates } from './core/behavior/index.js';
 import { createCategoryBadge } from './core/category-palette.js';
@@ -32,12 +34,22 @@ import {
 import { installCategorySelectors } from './category-selector.js';
 import { moveCategory } from './state/category-actions.js';
 import { updateActivityAndEntries, moveActivity } from './state/activity-actions.js';
+import { createGoogleOidcAuth } from './core/auth/index.js';
 
-export function createUI({ root, state, stateManager: _stateManager, persist }) {
+export function createUI({
+  root,
+  state,
+  stateManager: _stateManager,
+  persist,
+  saveAuthSession = async () => {},
+  clearAuthSession = async () => {},
+  authClient = createGoogleOidcAuth(),
+}) {
   let ticker;
   let lastTrackedTab = null;
   let lastInsightsRefresh = 0;
   let entryFormMode = state.editingEntryId ? 'manual' : 'timer'; // 'timer' | 'manual'
+  let authBusy = false;
 
   // Route Manager (Hash Routing & History)
   const routeManager = createRouteManager({
@@ -312,6 +324,36 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
       brandRight.appendChild(activeBadge);
     }
 
+    const accountBtn = document.createElement('button');
+    accountBtn.type = 'button';
+    accountBtn.className = `header-account-btn ${state.authUser ? 'is-signed-in' : ''}`.trim();
+    accountBtn.dataset.behaviorTarget = 'account-open';
+    accountBtn.setAttribute(
+      'aria-label',
+      state.authUser ? `Compte connecté : ${state.authUser.name || state.authUser.email}` : 'Se connecter avec Google'
+    );
+    if (state.authUser) {
+      const shortName = String(state.authUser.givenName || state.authUser.name || 'Compte').split(/\s+/)[0];
+      accountBtn.append(
+        createAvatarNode(state.authUser, 'auth-avatar--xs'),
+        node('span', 'header-account-label', shortName)
+      );
+    } else {
+      const icon = node('span', 'header-account-icon');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21a8 8 0 0 0-16 0"/>
+        <circle cx="12" cy="8" r="4"/>
+      </svg>`;
+      accountBtn.append(icon, node('span', 'header-account-label', 'Connexion'));
+    }
+    accountBtn.onclick = () => {
+      state.modal = { type: 'account' };
+      state.error = null;
+      rerender();
+    };
+    brandRight.appendChild(accountBtn);
+
     brandRow.append(brandLeft, brandRight);
     h.appendChild(brandRow);
     return h;
@@ -431,7 +473,8 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
       entryCard(),
       activitiesCard(),
       entriesCard(),
-      dataCard()
+      dataCard(),
+      accountCard()
     );
     return f;
   }
@@ -1053,6 +1096,22 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
       }
     });
 
+    if (m.type === 'account') {
+      const box = node('div', 'modal-box');
+      const head = node('div', 'modal-head');
+      const title = node('h2', 'card-title', 'Compte Google (OIDC)');
+      const close = button('×', 'modal-close', 'modal-close');
+      close.onclick = () => {
+        state.modal = null;
+        rerender();
+      };
+      head.append(title, close);
+      box.appendChild(head);
+      box.appendChild(accountSectionContent());
+      overlay.appendChild(box);
+      return overlay;
+    }
+
     const isEditActivity = m.mode === 'edit';
     const box = node('div', 'modal-box');
     const head = node('div', 'modal-head');
@@ -1154,6 +1213,160 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
     return c;
   }
 
+  function accountCard() {
+    const c = card('Compte & Authentification');
+    c.appendChild(accountSectionContent());
+    return c;
+  }
+
+  function accountSectionContent() {
+    const wrap = node('div', 'auth-account-panel');
+    if (state.authUser) {
+      const profile = node('div', 'auth-profile-row');
+      profile.appendChild(createAvatarNode(state.authUser, 'auth-avatar--lg'));
+
+      const details = node('div', 'auth-profile-details');
+      details.appendChild(node('strong', 'auth-profile-name', state.authUser.name || 'Utilisateur Google'));
+      if (state.authUser.email) {
+        details.appendChild(node('span', 'auth-profile-email', state.authUser.email));
+      }
+      const badges = node('div', 'auth-profile-badges');
+      badges.appendChild(node('span', 'auth-protocol-badge', 'OAuth 2.0 / OIDC'));
+      if (state.authUser.emailVerified) {
+        badges.appendChild(node('span', 'auth-verified-badge', 'Email vérifié'));
+      }
+      details.appendChild(badges);
+      profile.appendChild(details);
+      wrap.appendChild(profile);
+
+      wrap.appendChild(
+        node(
+          'p',
+          'muted auth-note',
+          'Session vérifiée directement via Google OpenID Connect. Vos activités et saisies restent stockées localement (local-first).'
+        )
+      );
+
+      const signOutBtn = button(
+        authBusy ? 'Déconnexion…' : 'Se déconnecter',
+        'secondary auth-signout-btn',
+        'auth-google-signout'
+      );
+      signOutBtn.disabled = authBusy;
+      signOutBtn.onclick = handleGoogleSignOut;
+      wrap.appendChild(signOutBtn);
+      return wrap;
+    }
+
+    wrap.appendChild(
+      node(
+        'p',
+        'muted auth-note',
+        'Identifiez-vous directement avec Google (OAuth 2.0 / OIDC), sans intermédiaire. L’application reste entièrement utilisable hors ligne.'
+      )
+    );
+    wrap.appendChild(createGoogleSignInButton());
+
+    if (!authClient.isConfigured()) {
+      wrap.appendChild(
+        node(
+          'p',
+          'muted auth-config-hint',
+          'Client OAuth non configuré dans cet environnement (VITE_GOOGLE_CLIENT_ID / GOOGLE_CLIENT_ID).'
+        )
+      );
+    }
+    return wrap;
+  }
+
+  function createGoogleSignInButton() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'google-signin-btn';
+    btn.dataset.behaviorTarget = 'auth-google-signin';
+    btn.disabled = authBusy;
+
+    const icon = document.createElement('span');
+    icon.className = 'google-signin-btn__icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18">
+      <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"/>
+      <path fill="#34A853" d="M12 24c3.3 0 6.08-1.09 8.1-2.96l-3.88-3.05c-1.1.74-2.51 1.18-4.22 1.18-3.24 0-5.99-2.19-6.97-5.13H1.03v3.14C3.04 21.18 7.21 24 12 24Z"/>
+      <path fill="#FBBC05" d="M5.03 14.04A7.2 7.2 0 0 1 4.65 12c0-.71.13-1.4.38-2.04V6.82H1.03A11.98 11.98 0 0 0 0 12c0 1.94.46 3.77 1.03 5.18l4-3.14Z"/>
+      <path fill="#EA4335" d="M12 4.75c1.79 0 3.4.62 4.67 1.83l3.5-3.5C18.07 1.19 15.3 0 12 0 7.21 0 3.04 2.82 1.03 6.82l4 3.14c.98-2.94 3.73-5.21 6.97-5.21Z"/>
+    </svg>`;
+
+    btn.append(icon, node('span', 'google-signin-btn__label', authBusy ? 'Connexion en cours…' : 'Se connecter avec Google'));
+    btn.onclick = handleGoogleSignIn;
+    return btn;
+  }
+
+  function createAvatarNode(user, sizeClass = '') {
+    const wrap = node('span', `auth-avatar ${sizeClass}`.trim());
+    if (user?.picture) {
+      const img = document.createElement('img');
+      img.src = user.picture;
+      img.alt = user.name || 'Profil Google';
+      img.referrerPolicy = 'no-referrer';
+      img.onerror = () => {
+        wrap.replaceChildren(document.createTextNode(getUserInitials(user)));
+      };
+      wrap.appendChild(img);
+    } else {
+      wrap.textContent = getUserInitials(user);
+    }
+    return wrap;
+  }
+
+  function getUserInitials(user) {
+    const source = String(user?.name || user?.email || 'U').trim();
+    const parts = source.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    return source.slice(0, 2).toUpperCase();
+  }
+
+  async function handleGoogleSignIn() {
+    if (authBusy) return;
+    authBusy = true;
+    rerender();
+    try {
+      const session = await authClient.signIn();
+      state.authUser = session.user;
+      await saveAuthSession(session);
+      if (state.modal?.type === 'account') {
+        state.modal = null;
+      }
+      trackEvent(ANALYTICS_EVENTS.AUTH_SIGNED_IN, authEventPayload());
+      errorManager.notifySuccess(`Connecté en tant que ${session.user.name || session.user.email}.`);
+    } catch (err) {
+      errorManager.handleError(err, 'auth');
+    } finally {
+      authBusy = false;
+      rerender();
+    }
+  }
+
+  async function handleGoogleSignOut() {
+    if (authBusy) return;
+    authBusy = true;
+    rerender();
+    try {
+      await authClient.signOut();
+      await clearAuthSession();
+      state.authUser = null;
+      if (state.modal?.type === 'account') {
+        state.modal = null;
+      }
+      trackEvent(ANALYTICS_EVENTS.AUTH_SIGNED_OUT, authEventPayload());
+      errorManager.notifyInfo('Session Google déconnectée.');
+    } catch (err) {
+      errorManager.handleError(err, 'auth');
+    } finally {
+      authBusy = false;
+      rerender();
+    }
+  }
+
   function exportData() {
     const payload = buildExportPayload({
       entries: state.entries,
@@ -1196,10 +1409,12 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
     if (!window.confirm('Effacer toutes les données locales ? Cette action est irréversible.')) return;
     try {
       await clearAllData();
+      await authClient.signOut();
       state.entries = [];
       state.activities = [];
       state.categories = DEFAULT_CATEGORIES.map(c => ({ ...c }));
       state.activeTimer = null;
+      state.authUser = null;
       state.modal = null;
       state.editingEntryId = null;
       state.error = null;

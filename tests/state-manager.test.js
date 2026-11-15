@@ -92,6 +92,15 @@ describe('appReducer', () => {
     expect(next.entries).toHaveLength(0);
     expect(next.editingEntryId).toBeNull();
   });
+
+  it('handles SET_AUTH_USER and CLEAR_AUTH_USER', () => {
+    const user = { id: 'oidc-1', name: 'Camille', email: 'camille@example.com' };
+    const signedIn = appReducer(baseState, { type: ACTION_TYPES.SET_AUTH_USER, payload: user });
+    expect(signedIn.authUser).toEqual(user);
+
+    const signedOut = appReducer(signedIn, { type: ACTION_TYPES.CLEAR_AUTH_USER });
+    expect(signedOut.authUser).toBeNull();
+  });
 });
 
 describe('createStateManager', () => {

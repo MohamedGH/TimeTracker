@@ -321,7 +321,7 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
   });
 
   function simulateD3Drag(sourceEl, targetEl) {
-    const win = sourceEl.ownerDocument.defaultView;
+    const win = sourceEl.ownerDocument.defaultView || window;
     const sourceDatum = d3.select(sourceEl).datum();
     const targetDatum = d3.select(targetEl).datum();
     const widthByType = { root: 196, category: 226, activity: 236 };
@@ -331,27 +331,20 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
     const deltaX = (targetDatum.y + tgtW / 2) - (sourceDatum.y + srcW / 2);
     const deltaY = targetDatum.x - sourceDatum.x;
 
-    sourceEl.dispatchEvent(new MouseEvent('mousedown', {
-      bubbles: true,
-      cancelable: true,
-      view: win,
-      clientX: 100,
-      clientY: 100,
-    }));
-    win.dispatchEvent(new MouseEvent('mousemove', {
-      bubbles: true,
-      cancelable: true,
-      view: win,
-      clientX: 100 + deltaX,
-      clientY: 100 + deltaY,
-    }));
-    win.dispatchEvent(new MouseEvent('mouseup', {
-      bubbles: true,
-      cancelable: true,
-      view: win,
-      clientX: 100 + deltaX,
-      clientY: 100 + deltaY,
-    }));
+    const makeMouseEvent = (type, clientX, clientY) => {
+      const ev = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY,
+      });
+      Object.defineProperty(ev, 'view', { value: win, configurable: true });
+      return ev;
+    };
+
+    sourceEl.dispatchEvent(makeMouseEvent('mousedown', 100, 100));
+    win.dispatchEvent(makeMouseEvent('mousemove', 100 + deltaX, 100 + deltaY));
+    win.dispatchEvent(makeMouseEvent('mouseup', 100 + deltaX, 100 + deltaY));
   }
 
   it('supports drag-and-drop of categories and activities directly in the D3 tree', () => {

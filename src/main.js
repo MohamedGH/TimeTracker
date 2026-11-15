@@ -15,8 +15,8 @@ async function bootstrap() {
     // initBehaviorTracking() itself once the person responds.
     if (hasConsentDecision()) initBehaviorTracking({ root });
     if (hasConsentDecision()) initAnalytics();
-    const { state, stateManager, persist } = await createAppState();
-    createUI({ root, state, stateManager, persist });
+    const { state, stateManager, persist, saveAuthSession, clearAuthSession } = await createAppState();
+    createUI({ root, state, stateManager, persist, saveAuthSession, clearAuthSession });
     installCategorySelectors(root);
   } catch (error) {
     root.replaceChildren();

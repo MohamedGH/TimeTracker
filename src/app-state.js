@@ -1,17 +1,19 @@
-import { getValue, setValue, STORAGE_KEYS } from './core/storage.js';
+import { getValue, setValue, removeValue, STORAGE_KEYS } from './core/storage.js';
 import { migratePersistedData } from './core/persistence-migration.js';
 import { DEFAULT_CATEGORIES, normalizeEntries } from './core/model.js';
 import { migrateCategoryTree } from './core/category-tree.js';
 import { createStateManager } from './core/state-manager.js';
+import { isSessionValid } from './core/auth/oidc.js';
 
 export async function createAppState() {
   await migratePersistedData();
 
-  const [entries, activities, storedCategories, activeTimer] = await Promise.all([
+  const [entries, activities, storedCategories, activeTimer, storedAuthSession] = await Promise.all([
     getValue(STORAGE_KEYS.entries, []),
     getValue(STORAGE_KEYS.activities, []),
     getValue(STORAGE_KEYS.categories, []),
     getValue(STORAGE_KEYS.activeTimer, null),
+    getValue(STORAGE_KEYS.authSession, null),
   ]);
 
   const categories = mergeCategories(DEFAULT_CATEGORIES, migrateCategoryTree(storedCategories, []));
@@ -42,11 +44,14 @@ export async function createAppState() {
         }))
     : [];
 
+  const restoredAuthUser = isSessionValid(storedAuthSession) ? storedAuthSession.user : null;
+
   const initialRawState = {
     entries: normalizeEntries(entries, categories, []),
     activities: normalizedActivities,
     categories,
     activeTimer: activeTimer || null,
+    authUser: restoredAuthUser,
     tab: 'entry',
     period: '7',
     customStart: null,
@@ -67,6 +72,23 @@ export async function createAppState() {
     ]);
   }
 
+  async function saveAuthSession({ user, expiresAt = null } = {}) {
+    if (!user?.id) {
+      await removeValue(STORAGE_KEYS.authSession);
+      return null;
+    }
+    const safeSession = {
+      user,
+      expiresAt: Number.isFinite(Number(expiresAt)) ? Number(expiresAt) : null,
+    };
+    await setValue(STORAGE_KEYS.authSession, safeSession);
+    return safeSession;
+  }
+
+  async function clearAuthSession() {
+    await removeValue(STORAGE_KEYS.authSession);
+  }
+
   const stateManager = createStateManager({
     initialState: initialRawState,
     persistFn: persist,
@@ -76,6 +98,8 @@ export async function createAppState() {
     stateManager,
     state: stateManager.getState(),
     persist: () => persist(stateManager.getState()),
+    saveAuthSession,
+    clearAuthSession,
   };
 }
 

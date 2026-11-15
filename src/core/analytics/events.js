@@ -30,6 +30,8 @@ export const ANALYTICS_EVENTS = Object.freeze({
   DATA_EXPORTED: 'data_exported',
   DATA_IMPORTED: 'data_imported',
   DATA_CLEARED: 'data_cleared',
+  AUTH_SIGNED_IN: 'auth_signed_in',
+  AUTH_SIGNED_OUT: 'auth_signed_out',
 });
 
 const VALID_TABS = new Set(['entry', 'dashboard', 'categories']);
@@ -100,6 +102,10 @@ export function dataImportedPayload({ entryCount, categoryCount }) {
     entry_count: safeNonNegativeInt(entryCount),
     category_count: safeNonNegativeInt(categoryCount),
   };
+}
+
+export function authEventPayload() {
+  return { provider: 'google_oidc' };
 }
 
 function safeNonNegativeInt(value) {
