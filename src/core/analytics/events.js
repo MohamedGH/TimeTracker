@@ -34,6 +34,7 @@ export const ANALYTICS_EVENTS = Object.freeze({
   AUTH_SIGNED_OUT: 'auth_signed_out',
   SYNC_DRIVE_COMPLETED: 'sync_drive_completed',
   SYNC_P2P_COMPLETED: 'sync_p2p_completed',
+  PWA_INSTALLED: 'pwa_installed',
 });
 
 const VALID_TABS = new Set(['entry', 'dashboard', 'categories']);

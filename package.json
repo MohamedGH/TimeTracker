@@ -8,6 +8,11 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "build": "vite build",
+    "build:mobile": "CAPACITOR_BUILD=true vite build",
+    "cap:sync": "npm run build:mobile && npx cap sync",
+    "cap:android": "npx cap open android",
+    "cap:ios": "npx cap open ios",
+    "icons:generate": "node scripts/generate-pwa-icons.mjs",
     "deploy": "gh-pages -d dist",
     "preview": "vite preview --host 0.0.0.0 --port 3000"
   },
@@ -26,6 +31,11 @@
     "vue-eslint-parser": "^9.4.3"
   },
   "dependencies": {
-    "d3": "^7.9.2"
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/cli": "^6.2.1",
+    "@capacitor/core": "^6.2.1",
+    "@capacitor/ios": "^6.2.1",
+    "d3": "^7.9.2",
+    "vite-plugin-pwa": "^0.21.1"
   }
 }

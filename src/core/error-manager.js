@@ -29,6 +29,9 @@ export function normalizeError(error, context = 'general') {
   } else if (context === 'sync') {
     code = ERROR_CODES.SYNC;
     userMessage = rawMessage || 'Erreur lors de la synchronisation multi-appareils.';
+  } else if (context === 'mobile') {
+    code = ERROR_CODES.RUNTIME;
+    userMessage = rawMessage || 'Impossible d’installer ou de mettre à jour l’application mobile.';
   } else if (context === 'timer' || rawMessage.toLowerCase().includes('timer')) {
     code = ERROR_CODES.TIMER;
     userMessage = rawMessage.includes('invalide')

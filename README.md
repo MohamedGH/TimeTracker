@@ -59,6 +59,19 @@ npm run deploy
 
 The `deploy` script publishes the `dist/` directory to the `gh-pages` branch.
 
+## Mobile App (PWA & Capacitor)
+
+The app supports both **installable PWA** (with offline Service Worker, PNG icons, iOS install guide, and in-app install prompt) and **native Android / iOS packaging via Capacitor**:
+
+```bash
+# Build web bundle for Capacitor (base './') and sync native projects
+npm run cap:sync
+
+# Open native IDEs
+npm run cap:android
+npm run cap:ios
+```
+
 ## Project
 
 Repository: https://github.com/MohamedGH/TimeTracker

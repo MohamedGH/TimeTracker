@@ -4,11 +4,15 @@ import { createUI } from './ui.js';
 import { installCategorySelectors } from './category-selector.js';
 import { initAnalytics, hasConsentDecision } from './core/analytics/index.js';
 import { initBehaviorTracking } from './core/behavior/index.js';
+import { registerAppServiceWorker } from './core/mobile/index.js';
 
 async function bootstrap() {
   const root = document.getElementById('app');
   if (!root) throw new Error('Conteneur #app introuvable.');
   try {
+    registerAppServiceWorker({
+      importer: () => import('virtual:pwa-register'),
+    }).catch(() => {});
     // Consent-gated and safe even if GA4 is unconfigured (see
     // core/analytics/analytics.js). If no consent decision exists yet,
     // createUI() shows a consent banner and calls initAnalytics() /

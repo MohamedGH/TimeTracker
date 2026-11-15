@@ -2583,4 +2583,96 @@ canvas {
   outline-offset: 1px;
 }
 
+/* =========================================================================
+   MOBILE / PWA INSTALL PROMPT & OFFLINE INDICATOR
+   ========================================================================= */
+
+.header-install-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 36px;
+  padding: 4px 10px;
+  margin: 0;
+  border-radius: 20px;
+  border: 1px solid var(--brass);
+  background: rgba(179, 131, 60, 0.14);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.12s ease;
+}
+
+.header-install-btn:hover {
+  background: rgba(179, 131, 60, 0.24);
+}
+
+.header-install-btn:active {
+  transform: scale(0.96);
+}
+
+.header-install-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--brass-dark, var(--brass));
+}
+
+.offline-indicator-banner {
+  position: fixed;
+  left: 12px;
+  bottom: calc(var(--nav-height, 64px) + 12px + env(safe-area-inset-bottom, 0px));
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: #A65241;
+  color: #FBF8F1;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 6px 18px rgba(35, 40, 33, 0.24);
+  max-width: calc(100vw - 24px);
+}
+
+.offline-indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #FBF8F1;
+  flex-shrink: 0;
+  animation: pulse-anim 1.4s infinite ease-in-out;
+}
+
+.mobile-app-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mobile-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-guide-steps {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+.mobile-guide-close {
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+}
+
 

@@ -1,5 +1,6 @@
-﻿node_modules/
+node_modules/
 .env
 public/env.js
 dist/
+dev-dist/
 coverage/

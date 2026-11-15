@@ -7,12 +7,12 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: ['node_modules/**', 'coverage/**', 'dist/**'],
+    ignores: ['node_modules/**', 'coverage/**', 'dist/**', 'dev-dist/**', 'android/**', 'ios/**'],
   },
 
   // Plain JS (domain modules, ui.js, main.js, analytics, tests, config files).
   {
-    files: ['**/*.js'],
+    files: ['**/*.js', 'scripts/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
@@ -44,9 +44,9 @@ export default [
     },
   },
 
-  // Vite/Node config files run under Node, not the browser.
+  // Vite/Node config files and build scripts run under Node, not the browser.
   {
-    files: ['vite.config.js', 'vitest.config.js', 'eslint.config.js'],
+    files: ['vite.config.js', 'vitest.config.js', 'eslint.config.js', 'scripts/**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node },
     },

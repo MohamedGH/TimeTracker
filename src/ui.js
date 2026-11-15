@@ -37,6 +37,7 @@ import { moveCategory } from './state/category-actions.js';
 import { updateActivityAndEntries, moveActivity } from './state/activity-actions.js';
 import { createGoogleOidcAuth, DRIVE_APPDATA_SCOPE, DRIVE_SYNC_SCOPES } from './core/auth/index.js';
 import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js';
+import { createPwaInstallController } from './core/mobile/index.js';
 
 export function createUI({
   root,
@@ -63,6 +64,7 @@ export function createUI({
   authClient = createGoogleOidcAuth(),
   driveSyncFn = syncWithGoogleDrive,
   p2pManagerFactory = createP2PSyncManager,
+  pwaControllerFactory = createPwaInstallController,
 }) {
   let ticker;
   let lastTrackedTab = null;
@@ -74,6 +76,17 @@ export function createUI({
   let p2pRole = 'offer'; // 'offer' | 'join'
   let p2pOfferInput = '';
   let p2pAnswerInput = '';
+
+  const pwaController = pwaControllerFactory({
+    onChange: () => {
+      rerender();
+    },
+    onInstalled: () => {
+      trackEvent(ANALYTICS_EVENTS.PWA_INSTALLED);
+      errorManager.notifySuccess('Application installée sur votre appareil !');
+      rerender();
+    },
+  });
 
   const p2pManager = p2pManagerFactory({
     getLocalPayload: getSyncPayload,
@@ -256,6 +269,11 @@ export function createUI({
     root.appendChild(main);
     root.appendChild(bottomTabBar());
 
+    const mobileSnap = pwaController.getSnapshot();
+    if (!mobileSnap.isOnline) {
+      root.appendChild(offlineIndicatorBanner());
+    }
+
     if (state.modal) root.appendChild(modal());
     renderNoticeBanner();
 
@@ -360,6 +378,25 @@ export function createUI({
         routeManager.navigate('entry');
       };
       brandRight.appendChild(activeBadge);
+    }
+
+    const mobileSnap = pwaController.getSnapshot();
+    if (mobileSnap.shouldShowHeaderInstall) {
+      const installBtn = document.createElement('button');
+      installBtn.type = 'button';
+      installBtn.className = 'header-install-btn';
+      installBtn.dataset.behaviorTarget = 'pwa-install-header';
+      installBtn.setAttribute('aria-label', 'Installer l’application mobile');
+      const dlIcon = node('span', 'header-install-icon');
+      dlIcon.setAttribute('aria-hidden', 'true');
+      dlIcon.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>`;
+      installBtn.append(dlIcon, node('span', 'header-install-label', 'Installer'));
+      installBtn.onclick = handlePwaInstallClick;
+      brandRight.appendChild(installBtn);
     }
 
     const accountBtn = document.createElement('button');
@@ -513,7 +550,8 @@ export function createUI({
       entriesCard(),
       dataCard(),
       syncCard(),
-      accountCard()
+      accountCard(),
+      mobileAppCard()
     );
     return f;
   }
@@ -1151,6 +1189,51 @@ export function createUI({
       return overlay;
     }
 
+    if (m.type === 'pwa-ios-guide' || m.type === 'pwa-install-guide') {
+      const isIos = m.type === 'pwa-ios-guide';
+      const box = node('div', 'modal-box');
+      const head = node('div', 'modal-head');
+      const title = node(
+        'h2',
+        'card-title',
+        isIos ? 'Installer sur iPhone / iPad' : 'Installer l’application mobile'
+      );
+      const close = button('×', 'modal-close', 'modal-close');
+      close.onclick = () => {
+        state.modal = null;
+        pwaController.closeIOSGuide();
+        rerender();
+      };
+      head.append(title, close);
+      box.appendChild(head);
+
+      const list = node('ol', 'mobile-guide-steps');
+      if (isIos) {
+        list.append(
+          node('li', null, 'Ouvrez cette page dans Safari sur votre iPhone ou iPad.'),
+          node('li', null, 'Appuyez sur le bouton Partager (carré avec une flèche vers le haut).'),
+          node('li', null, 'Faites défiler vers le bas puis appuyez sur « Sur l’écran d’accueil ».')
+        );
+      } else {
+        list.append(
+          node('li', null, 'Ouvrez le menu de votre navigateur (⋮ sur Android Chrome/Edge).'),
+          node('li', null, 'Sélectionnez « Installer l’application » ou « Ajouter à l’écran d’accueil ».'),
+          node('li', null, 'L’application fonctionnera hors ligne avec toutes vos données locales.')
+        );
+      }
+      box.appendChild(list);
+
+      const okBtn = button('Compris', 'primary mobile-guide-close', 'pwa-guide-close');
+      okBtn.onclick = () => {
+        state.modal = null;
+        pwaController.closeIOSGuide();
+        rerender();
+      };
+      box.appendChild(okBtn);
+      overlay.appendChild(box);
+      return overlay;
+    }
+
     const isEditActivity = m.mode === 'edit';
     const box = node('div', 'modal-box');
     const head = node('div', 'modal-head');
@@ -1582,6 +1665,87 @@ export function createUI({
     return c;
   }
 
+  function offlineIndicatorBanner() {
+    const banner = node('div', 'offline-indicator-banner');
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    const dot = node('span', 'offline-indicator-dot');
+    const text = node('span', null, 'Hors ligne — Données locales sauvegardées');
+    banner.append(dot, text);
+    return banner;
+  }
+
+  async function handlePwaInstallClick() {
+    const snap = pwaController.getSnapshot();
+    if (snap.canPromptInstall) {
+      try {
+        const res = await pwaController.promptInstall();
+        if (res.outcome === 'dismissed') {
+          errorManager.notifyInfo('Installation annulée. Vous pourrez l’installer plus tard.');
+        }
+      } catch (err) {
+        errorManager.handleError(err, 'mobile');
+      }
+      return;
+    }
+    if (snap.installMode === 'ios-guide') {
+      pwaController.openIOSGuide();
+      state.modal = { type: 'pwa-ios-guide' };
+      rerender();
+      return;
+    }
+    state.modal = { type: 'pwa-install-guide' };
+    rerender();
+  }
+
+  function mobileAppCard() {
+    const c = card('Application mobile');
+    const snap = pwaController.getSnapshot();
+    const wrap = node('div', 'mobile-app-panel');
+
+    const statusRow = node('div', 'mobile-status-row');
+    const envLabel = snap.isNative
+      ? `App native Capacitor (${snap.nativePlatform})`
+      : snap.isInstalled
+        ? 'Application installée (PWA)'
+        : 'Navigateur Web (PWA prête)';
+    statusRow.appendChild(
+      node('span', `sync-status-pill ${snap.isNative || snap.isInstalled ? 'is-ok' : ''}`.trim(), envLabel)
+    );
+    statusRow.appendChild(
+      node(
+        'span',
+        `sync-status-pill ${snap.isOnline ? 'is-ok' : 'is-err'}`,
+        snap.isOnline ? 'En ligne' : 'Hors ligne'
+      )
+    );
+    wrap.appendChild(statusRow);
+
+    wrap.appendChild(
+      node(
+        'p',
+        'muted sync-desc',
+        snap.isNative
+          ? 'Application exécutée dans le conteneur natif Capacitor avec stockage local persistant.'
+          : 'Installez Carnet du temps sur votre téléphone (PWA hors ligne) ou empaquetez-le en natif Android / iOS avec Capacitor.'
+      )
+    );
+
+    if (!snap.isNative && !snap.isInstalled) {
+      const btnLabel = snap.canPromptInstall
+        ? 'Installer l’application'
+        : snap.installMode === 'ios-guide'
+          ? 'Installer sur iPhone / iPad'
+          : 'Installer sur l’écran d’accueil';
+      const installBtn = button(btnLabel, 'primary sync-action-btn', 'pwa-install-card');
+      installBtn.onclick = handlePwaInstallClick;
+      wrap.appendChild(installBtn);
+    }
+
+    c.appendChild(wrap);
+    return c;
+  }
+
   function accountSectionContent() {
     const wrap = node('div', 'auth-account-panel');
     if (state.authUser) {
@@ -1968,6 +2132,7 @@ export function createUI({
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnlineSync);
       }
+      pwaController.destroy();
       p2pManager.disconnect();
       routeManager.destroy();
       categoryManager.destroy();
