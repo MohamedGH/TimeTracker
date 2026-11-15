@@ -14,6 +14,7 @@ import {
   savedActivityCreatedPayload,
   dashboardPeriodChangedPayload, dataExportedPayload, dataImportedPayload,
   authEventPayload,
+  syncEventPayload,
 } from './core/analytics/events.js';
 import { initBehaviorTracking, getBehaviorTracking, runPatternDetection, getFeatureCandidates } from './core/behavior/index.js';
 import { createCategoryBadge } from './core/category-palette.js';
@@ -34,7 +35,8 @@ import {
 import { installCategorySelectors } from './category-selector.js';
 import { moveCategory } from './state/category-actions.js';
 import { updateActivityAndEntries, moveActivity } from './state/activity-actions.js';
-import { createGoogleOidcAuth } from './core/auth/index.js';
+import { createGoogleOidcAuth, DRIVE_APPDATA_SCOPE, DRIVE_SYNC_SCOPES } from './core/auth/index.js';
+import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js';
 
 export function createUI({
   root,
@@ -43,13 +45,49 @@ export function createUI({
   persist,
   saveAuthSession = async () => {},
   clearAuthSession = async () => {},
+  getSyncPayload = () => ({
+    entries: state.entries,
+    activities: state.activities,
+    categories: state.categories,
+    tombstones: {},
+    deviceId: 'local',
+  }),
+  applyMergedSyncState = async (merged) => {
+    state.entries = merged.entries;
+    state.activities = merged.activities;
+    state.categories = merged.categories;
+    await persist();
+  },
+  getSyncMeta = () => ({ deviceId: 'local', lastDriveSyncAt: null, driveAutoSync: false, lastP2pSyncAt: null }),
+  saveSyncMeta = async (patch) => ({ ...getSyncMeta(), ...patch }),
   authClient = createGoogleOidcAuth(),
+  driveSyncFn = syncWithGoogleDrive,
+  p2pManagerFactory = createP2PSyncManager,
 }) {
   let ticker;
   let lastTrackedTab = null;
   let lastInsightsRefresh = 0;
   let entryFormMode = state.editingEntryId ? 'manual' : 'timer'; // 'timer' | 'manual'
   let authBusy = false;
+  let driveSyncBusy = false;
+  let syncPanelTab = 'drive'; // 'drive' | 'p2p'
+  let p2pRole = 'offer'; // 'offer' | 'join'
+  let p2pOfferInput = '';
+  let p2pAnswerInput = '';
+
+  const p2pManager = p2pManagerFactory({
+    getLocalPayload: getSyncPayload,
+    applyMergedPayload: async (merged) => {
+      await applyMergedSyncState(merged);
+      await saveSyncMeta({ lastP2pSyncAt: new Date().toISOString() });
+      trackEvent(ANALYTICS_EVENTS.SYNC_P2P_COMPLETED, syncEventPayload('webrtc_p2p'));
+      errorManager.notifySuccess('Synchronisation P2P fusionnée avec succès !');
+      rerender();
+    },
+    onStateChange: () => {
+      rerender();
+    },
+  });
 
   // Route Manager (Hash Routing & History)
   const routeManager = createRouteManager({
@@ -474,6 +512,7 @@ export function createUI({
       activitiesCard(),
       entriesCard(),
       dataCard(),
+      syncCard(),
       accountCard()
     );
     return f;
@@ -1213,6 +1252,330 @@ export function createUI({
     return c;
   }
 
+  function syncCard() {
+    const c = card('Synchronisation multi-appareils');
+    const meta = getSyncMeta();
+    const p2pSnap = p2pManager.getSnapshot();
+
+    const tabs = node('div', 'entry-mode-toggle sync-mode-tabs');
+    const driveTabBtn = document.createElement('button');
+    driveTabBtn.type = 'button';
+    driveTabBtn.className = `mode-toggle-btn ${syncPanelTab === 'drive' ? 'active' : ''}`.trim();
+    driveTabBtn.dataset.behaviorTarget = 'sync-tab-drive';
+    driveTabBtn.textContent = '☁️ Google Drive';
+    driveTabBtn.onclick = () => {
+      syncPanelTab = 'drive';
+      rerender();
+    };
+
+    const p2pTabBtn = document.createElement('button');
+    p2pTabBtn.type = 'button';
+    p2pTabBtn.className = `mode-toggle-btn ${syncPanelTab === 'p2p' ? 'active' : ''}`.trim();
+    p2pTabBtn.dataset.behaviorTarget = 'sync-tab-p2p';
+    p2pTabBtn.textContent = p2pSnap.isConnected ? '🔗 P2P (Connecté)' : '🔗 P2P Direct';
+    p2pTabBtn.onclick = () => {
+      syncPanelTab = 'p2p';
+      rerender();
+    };
+
+    tabs.append(driveTabBtn, p2pTabBtn);
+    c.appendChild(tabs);
+
+    if (syncPanelTab === 'drive') {
+      c.appendChild(renderDriveSyncPanel(meta));
+    } else {
+      c.appendChild(renderP2PSyncPanel(meta, p2pSnap));
+    }
+
+    return c;
+  }
+
+  function renderDriveSyncPanel(meta) {
+    const panel = node('div', 'sync-panel');
+    panel.appendChild(
+      node(
+        'p',
+        'muted sync-desc',
+        'Sauvegarde et fusion CRDT sans perte dans le dossier privé appDataFolder de votre Google Drive, sans serveur backend.'
+      )
+    );
+
+    const statusRow = node('div', 'sync-status-row');
+    statusRow.appendChild(
+      node('span', `sync-status-pill ${meta.lastDriveSyncAt ? 'is-ok' : ''}`.trim(),
+        meta.lastDriveSyncAt
+          ? `Dernière synchro : ${formatSyncTimestamp(meta.lastDriveSyncAt)}`
+          : 'Jamais synchronisé')
+    );
+    panel.appendChild(statusRow);
+
+    const syncBtn = button(
+      driveSyncBusy ? 'Synchronisation Drive…' : 'Synchroniser avec Google Drive',
+      'primary sync-action-btn',
+      'sync-drive-run'
+    );
+    syncBtn.disabled = driveSyncBusy;
+    syncBtn.onclick = () => handleDriveSync({ silent: false });
+    panel.appendChild(syncBtn);
+
+    const autoLabel = document.createElement('label');
+    autoLabel.className = 'sync-auto-toggle';
+    const autoCheck = document.createElement('input');
+    autoCheck.type = 'checkbox';
+    autoCheck.checked = Boolean(meta.driveAutoSync);
+    autoCheck.onchange = async () => {
+      await saveSyncMeta({ driveAutoSync: autoCheck.checked });
+      errorManager.notifyInfo(
+        autoCheck.checked
+          ? 'Synchronisation automatique Drive activée au retour en ligne.'
+          : 'Synchronisation automatique Drive désactivée.'
+      );
+      rerender();
+    };
+    autoLabel.append(autoCheck, document.createTextNode(' Synchroniser automatiquement au retour en ligne'));
+    panel.appendChild(autoLabel);
+
+    if (!authClient.isConfigured()) {
+      panel.appendChild(
+        node('p', 'muted auth-config-hint', 'Définissez VITE_GOOGLE_CLIENT_ID / GOOGLE_CLIENT_ID pour activer Google Drive.')
+      );
+    }
+
+    return panel;
+  }
+
+  function renderP2PSyncPanel(meta, snap) {
+    const panel = node('div', 'sync-panel');
+    panel.appendChild(
+      node(
+        'p',
+        'muted sync-desc',
+        'Connexion directe navigateur à navigateur via WebRTC DataChannel (zéro cloud, fusion CRDT par identifiant et horodatage).'
+      )
+    );
+
+    const statusLabelMap = {
+      idle: 'Déconnecté',
+      creating_offer: 'Génération de l’invitation…',
+      awaiting_answer: 'En attente du code réponse',
+      awaiting_connection: 'Connexion WebRTC en cours…',
+      connected: 'Pair connecté en direct (WebRTC)',
+      error: 'Erreur de connexion P2P',
+    };
+
+    const statusRow = node('div', 'sync-status-row');
+    statusRow.appendChild(
+      node(
+        'span',
+        `sync-status-pill ${snap.isConnected ? 'is-ok' : snap.status === 'error' ? 'is-err' : ''}`.trim(),
+        statusLabelMap[snap.status] || 'Déconnecté'
+      )
+    );
+    if (meta.lastP2pSyncAt) {
+      statusRow.appendChild(node('span', 'sync-last-time', `Dernière fusion : ${formatSyncTimestamp(meta.lastP2pSyncAt)}`));
+    }
+    panel.appendChild(statusRow);
+
+    if (snap.lastError) {
+      panel.appendChild(node('p', 'error', snap.lastError));
+    }
+
+    if (snap.isConnected) {
+      const actionRow = node('div', 'action-row');
+      const nowBtn = button('Synchroniser maintenant', 'primary', 'p2p-sync-now');
+      nowBtn.onclick = () => {
+        try {
+          p2pManager.syncNow();
+          errorManager.notifyInfo('État local envoyé au pair WebRTC.');
+        } catch (err) {
+          errorManager.handleError(err, 'sync');
+        }
+      };
+      const discBtn = button('Déconnecter P2P', 'danger', 'p2p-disconnect');
+      discBtn.onclick = () => {
+        p2pManager.disconnect();
+        p2pOfferInput = '';
+        p2pAnswerInput = '';
+        rerender();
+      };
+      actionRow.append(nowBtn, discBtn);
+      panel.appendChild(actionRow);
+      return panel;
+    }
+
+    const roleTabs = node('div', 'entry-mode-toggle sync-role-tabs');
+    const offerRoleBtn = document.createElement('button');
+    offerRoleBtn.type = 'button';
+    offerRoleBtn.className = `mode-toggle-btn ${p2pRole === 'offer' ? 'active' : ''}`.trim();
+    offerRoleBtn.dataset.behaviorTarget = 'p2p-role-offer';
+    offerRoleBtn.textContent = '1. Inviter (Appareil A)';
+    offerRoleBtn.onclick = () => {
+      p2pRole = 'offer';
+      rerender();
+    };
+
+    const joinRoleBtn = document.createElement('button');
+    joinRoleBtn.type = 'button';
+    joinRoleBtn.className = `mode-toggle-btn ${p2pRole === 'join' ? 'active' : ''}`.trim();
+    joinRoleBtn.dataset.behaviorTarget = 'p2p-role-join';
+    joinRoleBtn.textContent = '2. Rejoindre (Appareil B)';
+    joinRoleBtn.onclick = () => {
+      p2pRole = 'join';
+      rerender();
+    };
+    roleTabs.append(offerRoleBtn, joinRoleBtn);
+    panel.appendChild(roleTabs);
+
+    if (p2pRole === 'offer') {
+      const createBtn = button(
+        snap.status === 'creating_offer' ? 'Création du code…' : 'Créer un code d’invitation',
+        'secondary sync-action-btn',
+        'p2p-create-offer'
+      );
+      createBtn.disabled = snap.status === 'creating_offer';
+      createBtn.onclick = async () => {
+        try {
+          await p2pManager.createOffer();
+          errorManager.notifyInfo('Code d’invitation P2P prêt à être copié.');
+        } catch (err) {
+          errorManager.handleError(err, 'sync');
+        }
+      };
+      panel.appendChild(createBtn);
+
+      if (snap.offerCode) {
+        panel.appendChild(createTokenOutputBlock('Code d’invitation à copier sur l’Appareil B', snap.offerCode, 'p2p-copy-offer'));
+
+        const ansField = node('div', 'field sync-token-field');
+        ansField.appendChild(label('Coller le code réponse reçu de l’Appareil B'));
+        const ansArea = document.createElement('textarea');
+        ansArea.className = 'sync-token-textarea';
+        ansArea.rows = 2;
+        ansArea.placeholder = 'TT1:...';
+        ansArea.value = p2pAnswerInput;
+        ansArea.dataset.behaviorField = 'p2p-answer-input';
+        ansArea.oninput = () => {
+          p2pAnswerInput = ansArea.value;
+        };
+        ansField.appendChild(ansArea);
+        panel.appendChild(ansField);
+
+        const connectBtn = button('Connecter l’appareil', 'primary sync-action-btn', 'p2p-accept-answer');
+        connectBtn.onclick = async () => {
+          try {
+            await p2pManager.acceptAnswer(p2pAnswerInput);
+            errorManager.notifyInfo('Réponse P2P appliquée, ouverture du canal…');
+          } catch (err) {
+            errorManager.handleError(err, 'sync');
+          }
+        };
+        panel.appendChild(connectBtn);
+      }
+    } else {
+      const offField = node('div', 'field sync-token-field');
+      offField.appendChild(label('Coller le code d’invitation (TT1:...) de l’Appareil A'));
+      const offArea = document.createElement('textarea');
+      offArea.className = 'sync-token-textarea';
+      offArea.rows = 2;
+      offArea.placeholder = 'TT1:...';
+      offArea.value = p2pOfferInput;
+      offArea.dataset.behaviorField = 'p2p-offer-input';
+      offArea.oninput = () => {
+        p2pOfferInput = offArea.value;
+      };
+      offField.appendChild(offArea);
+      panel.appendChild(offField);
+
+      const acceptOfferBtn = button('Générer le code réponse', 'primary sync-action-btn', 'p2p-accept-offer');
+      acceptOfferBtn.onclick = async () => {
+        try {
+          await p2pManager.acceptOfferAndCreateAnswer(p2pOfferInput);
+          errorManager.notifyInfo('Code réponse P2P généré : renvoyez-le à l’Appareil A.');
+        } catch (err) {
+          errorManager.handleError(err, 'sync');
+        }
+      };
+      panel.appendChild(acceptOfferBtn);
+
+      if (snap.answerCode) {
+        panel.appendChild(createTokenOutputBlock('Code réponse à renvoyer à l’Appareil A', snap.answerCode, 'p2p-copy-answer'));
+      }
+    }
+
+    return panel;
+  }
+
+  function createTokenOutputBlock(titleText, tokenValue, behaviorTarget) {
+    const wrap = node('div', 'sync-token-output');
+    wrap.appendChild(label(titleText));
+    const ta = document.createElement('textarea');
+    ta.className = 'sync-token-textarea';
+    ta.rows = 2;
+    ta.readOnly = true;
+    ta.value = tokenValue;
+
+    const copyBtn = button('Copier le code', 'small secondary', behaviorTarget);
+    copyBtn.onclick = async () => {
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(tokenValue);
+        } else {
+          ta.select();
+          document.execCommand?.('copy');
+        }
+        errorManager.notifySuccess('Code P2P copié dans le presse-papiers.');
+      } catch {
+        ta.select();
+        errorManager.notifyInfo('Sélectionnez et copiez le code manuellement.');
+      }
+    };
+
+    wrap.append(ta, copyBtn);
+    return wrap;
+  }
+
+  function formatSyncTimestamp(isoStr) {
+    try {
+      const d = new Date(isoStr);
+      if (Number.isNaN(d.getTime())) return String(isoStr);
+      return d.toLocaleString('fr-FR', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return String(isoStr);
+    }
+  }
+
+  async function handleDriveSync({ silent = false } = {}) {
+    if (driveSyncBusy) return;
+    driveSyncBusy = true;
+    if (!silent) rerender();
+    try {
+      const result = await driveSyncFn({
+        authClient,
+        getLocalPayload: getSyncPayload,
+        applyMergedPayload: applyMergedSyncState,
+      });
+      await saveSyncMeta({ lastDriveSyncAt: result.syncedAt });
+      trackEvent(ANALYTICS_EVENTS.SYNC_DRIVE_COMPLETED, syncEventPayload('drive_appdata'));
+      if (!silent) {
+        errorManager.notifySuccess(
+          `Google Drive synchronisé (${result.counts.entries} session${result.counts.entries > 1 ? 's' : ''}).`
+        );
+      }
+    } catch (err) {
+      if (!silent) {
+        errorManager.handleError(err, 'sync');
+      }
+    } finally {
+      driveSyncBusy = false;
+      rerender();
+    }
+  }
+
   function accountCard() {
     const c = card('Compte & Authentification');
     c.appendChild(accountSectionContent());
@@ -1330,7 +1693,7 @@ export function createUI({
     authBusy = true;
     rerender();
     try {
-      const session = await authClient.signIn();
+      const session = await authClient.signIn({ scope: DRIVE_SYNC_SCOPES });
       state.authUser = session.user;
       await saveAuthSession(session);
       if (state.modal?.type === 'account') {
@@ -1587,11 +1950,25 @@ export function createUI({
     return div.innerHTML;
   }
 
+  const handleOnlineSync = () => {
+    const meta = getSyncMeta();
+    if (meta.driveAutoSync && state.authUser && authClient.hasScope?.(DRIVE_APPDATA_SCOPE)) {
+      handleDriveSync({ silent: true });
+    }
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', handleOnlineSync);
+  }
+
   render();
   return {
     render,
     destroy: () => {
       clearInterval(ticker);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnlineSync);
+      }
+      p2pManager.disconnect();
       routeManager.destroy();
       categoryManager.destroy();
       destroyCharts();

@@ -15,8 +15,29 @@ async function bootstrap() {
     // initBehaviorTracking() itself once the person responds.
     if (hasConsentDecision()) initBehaviorTracking({ root });
     if (hasConsentDecision()) initAnalytics();
-    const { state, stateManager, persist, saveAuthSession, clearAuthSession } = await createAppState();
-    createUI({ root, state, stateManager, persist, saveAuthSession, clearAuthSession });
+    const {
+      state,
+      stateManager,
+      persist,
+      saveAuthSession,
+      clearAuthSession,
+      getSyncPayload,
+      applyMergedSyncState,
+      getSyncMeta,
+      saveSyncMeta,
+    } = await createAppState();
+    createUI({
+      root,
+      state,
+      stateManager,
+      persist,
+      saveAuthSession,
+      clearAuthSession,
+      getSyncPayload,
+      applyMergedSyncState,
+      getSyncMeta,
+      saveSyncMeta,
+    });
     installCategorySelectors(root);
   } catch (error) {
     root.replaceChildren();

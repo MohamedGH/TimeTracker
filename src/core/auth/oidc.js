@@ -10,6 +10,8 @@ export const OIDC_ENDPOINTS = Object.freeze({
 });
 
 export const OIDC_SCOPES = 'openid email profile';
+export const DRIVE_APPDATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+export const DRIVE_SYNC_SCOPES = `${OIDC_SCOPES} ${DRIVE_APPDATA_SCOPE}`;
 
 /**
  * Decodes a base64url-encoded string into UTF-8 text.

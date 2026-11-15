@@ -157,4 +157,36 @@ describe('createGoogleOidcAuth', () => {
     );
     expect(disableAutoSelect).toHaveBeenCalledTimes(1);
   });
+
+  it('tracks granted scopes and reuses cached token in ensureAccessToken', async () => {
+    const initTokenClient = vi.fn((cfg) => ({
+      requestAccessToken: () => cfg.callback({
+        access_token: 'drive-tok-99',
+        expires_in: 3600,
+        scope: 'openid email profile https://www.googleapis.com/auth/drive.appdata',
+      }),
+    }));
+
+    const fakeGoogleApi = {
+      accounts: {
+        oauth2: { initTokenClient },
+      },
+    };
+
+    const auth = createGoogleOidcAuth({
+      getClientId: () => 'client-xyz',
+      loadScript: vi.fn().mockResolvedValue(fakeGoogleApi),
+      getGoogleApi: () => fakeGoogleApi,
+      nowFn: () => 10_000,
+    });
+
+    const tok1 = await auth.ensureAccessToken({ scope: 'https://www.googleapis.com/auth/drive.appdata' });
+    expect(tok1).toBe('drive-tok-99');
+    expect(auth.hasScope('https://www.googleapis.com/auth/drive.appdata')).toBe(true);
+
+    // Second call with already-granted scope reuses memory token without opening GIS again
+    const tok2 = await auth.ensureAccessToken({ scope: 'https://www.googleapis.com/auth/drive.appdata' });
+    expect(tok2).toBe('drive-tok-99');
+    expect(initTokenClient).toHaveBeenCalledTimes(1);
+  });
 });

@@ -2,6 +2,8 @@ export { getGoogleClientId, getGoogleRedirectUri } from './env.js';
 export {
   OIDC_ENDPOINTS,
   OIDC_SCOPES,
+  DRIVE_APPDATA_SCOPE,
+  DRIVE_SYNC_SCOPES,
   decodeBase64Url,
   parseJwtPayload,
   normalizeOidcUser,

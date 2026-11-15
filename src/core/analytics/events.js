@@ -32,6 +32,8 @@ export const ANALYTICS_EVENTS = Object.freeze({
   DATA_CLEARED: 'data_cleared',
   AUTH_SIGNED_IN: 'auth_signed_in',
   AUTH_SIGNED_OUT: 'auth_signed_out',
+  SYNC_DRIVE_COMPLETED: 'sync_drive_completed',
+  SYNC_P2P_COMPLETED: 'sync_p2p_completed',
 });
 
 const VALID_TABS = new Set(['entry', 'dashboard', 'categories']);
@@ -106,6 +108,11 @@ export function dataImportedPayload({ entryCount, categoryCount }) {
 
 export function authEventPayload() {
   return { provider: 'google_oidc' };
+}
+
+export function syncEventPayload(mode = 'unknown') {
+  const allowed = new Set(['drive_appdata', 'webrtc_p2p']);
+  return { mode: allowed.has(mode) ? mode : 'unknown' };
 }
 
 function safeNonNegativeInt(value) {

@@ -75,12 +75,30 @@ export function createGoogleOidcAuth({
   getGoogleApi = () => (typeof window !== 'undefined' ? window.google : null),
   nowFn = () => Date.now(),
 } = {}) {
-  // Access token is kept strictly in closure memory, never persisted to disk.
+  // Access token and granted scopes are kept strictly in closure memory, never persisted to disk.
   let accessToken = null;
   let tokenExpiresAt = 0;
+  let grantedScopes = new Set();
 
   function isConfigured() {
     return Boolean(getClientId());
+  }
+
+  function recordGrantedScopes(rawScope) {
+    const parts = String(rawScope || '')
+      .split(/\s+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    grantedScopes = new Set(parts);
+  }
+
+  function hasScope(requiredScope) {
+    if (!getAccessToken()) return false;
+    const needed = String(requiredScope || '')
+      .split(/\s+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    return needed.every(s => grantedScopes.has(s));
   }
 
   function getAccessToken() {
@@ -88,6 +106,7 @@ export function createGoogleOidcAuth({
     if (tokenExpiresAt > 0 && nowFn() >= tokenExpiresAt) {
       accessToken = null;
       tokenExpiresAt = 0;
+      grantedScopes = new Set();
       return null;
     }
     return accessToken;
@@ -120,12 +139,12 @@ export function createGoogleOidcAuth({
     return user;
   }
 
-  function requestPopupAccessToken(googleApi, clientId, prompt) {
+  function requestPopupAccessToken(googleApi, clientId, prompt, scope = OIDC_SCOPES) {
     return new Promise((resolve, reject) => {
       let settled = false;
       const tokenClient = googleApi.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        scope: OIDC_SCOPES,
+        scope,
         callback: (response) => {
           if (settled) return;
           settled = true;
@@ -154,11 +173,16 @@ export function createGoogleOidcAuth({
         },
       });
 
-      tokenClient.requestAccessToken({ prompt });
+      tokenClient.requestAccessToken(prompt ? { prompt } : {});
     });
   }
 
-  async function signIn({ prompt = 'select_account' } = {}) {
+  async function ensureAccessToken({ scope = OIDC_SCOPES, prompt = '' } = {}) {
+    const existing = getAccessToken();
+    if (existing && hasScope(scope)) {
+      return existing;
+    }
+
     const clientId = getClientId();
     if (!clientId) {
       throw new Error('Configuration OAuth Google manquante : définissez GOOGLE_CLIENT_ID.');
@@ -170,12 +194,40 @@ export function createGoogleOidcAuth({
       throw new Error('Google Identity Services OAuth 2.0 indisponible.');
     }
 
-    const tokenResponse = await requestPopupAccessToken(googleApi, clientId, prompt);
+    const mergedScope = Array.from(new Set([
+      ...String(OIDC_SCOPES).split(/\s+/),
+      ...String(scope || '').split(/\s+/),
+    ].filter(Boolean))).join(' ');
+
+    const tokenResponse = await requestPopupAccessToken(googleApi, clientId, prompt, mergedScope);
     const expiresInSec = Number(tokenResponse.expires_in) || 3600;
     const nextExpiresAt = nowFn() + expiresInSec * 1000;
 
     accessToken = tokenResponse.access_token;
     tokenExpiresAt = nextExpiresAt;
+    recordGrantedScopes(tokenResponse.scope || mergedScope);
+    return accessToken;
+  }
+
+  async function signIn({ prompt = 'select_account', scope = OIDC_SCOPES } = {}) {
+    const clientId = getClientId();
+    if (!clientId) {
+      throw new Error('Configuration OAuth Google manquante : définissez GOOGLE_CLIENT_ID.');
+    }
+
+    const loadedApi = await loadScript();
+    const googleApi = loadedApi || getGoogleApi();
+    if (!googleApi?.accounts?.oauth2?.initTokenClient) {
+      throw new Error('Google Identity Services OAuth 2.0 indisponible.');
+    }
+
+    const tokenResponse = await requestPopupAccessToken(googleApi, clientId, prompt, scope);
+    const expiresInSec = Number(tokenResponse.expires_in) || 3600;
+    const nextExpiresAt = nowFn() + expiresInSec * 1000;
+
+    accessToken = tokenResponse.access_token;
+    tokenExpiresAt = nextExpiresAt;
+    recordGrantedScopes(tokenResponse.scope || scope);
 
     try {
       const user = await fetchUserInfo(accessToken);
@@ -187,6 +239,7 @@ export function createGoogleOidcAuth({
     } catch (err) {
       accessToken = null;
       tokenExpiresAt = 0;
+      grantedScopes = new Set();
       throw err;
     }
   }
@@ -195,6 +248,7 @@ export function createGoogleOidcAuth({
     const tokenToRevoke = accessToken;
     accessToken = null;
     tokenExpiresAt = 0;
+    grantedScopes = new Set();
 
     if (tokenToRevoke && typeof fetchImpl === 'function') {
       try {
@@ -216,6 +270,8 @@ export function createGoogleOidcAuth({
   return {
     isConfigured,
     getAccessToken,
+    hasScope,
+    ensureAccessToken,
     fetchUserInfo,
     signIn,
     signOut,

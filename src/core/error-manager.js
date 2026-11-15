@@ -9,6 +9,7 @@ export const ERROR_CODES = Object.freeze({
   IMPORT: 'import_error',
   TIMER: 'timer_error',
   AUTH: 'auth_error',
+  SYNC: 'sync_error',
   RUNTIME: 'runtime_error',
 });
 
@@ -25,6 +26,9 @@ export function normalizeError(error, context = 'general') {
   if (context === 'auth') {
     code = ERROR_CODES.AUTH;
     userMessage = rawMessage || 'Erreur lors de l’authentification Google.';
+  } else if (context === 'sync') {
+    code = ERROR_CODES.SYNC;
+    userMessage = rawMessage || 'Erreur lors de la synchronisation multi-appareils.';
   } else if (context === 'timer' || rawMessage.toLowerCase().includes('timer')) {
     code = ERROR_CODES.TIMER;
     userMessage = rawMessage.includes('invalide')
