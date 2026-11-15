@@ -258,5 +258,66 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
 
     tree.destroy();
   });
+
+  it('allows editing categories and activities directly from tree nodes and popover', () => {
+    const onEditCategory = vi.fn();
+    const onEditActivity = vi.fn();
+    const onAddCategory = vi.fn();
+    const onAddActivity = vi.fn();
+
+    const tree = renderCategoryActivityTree({
+      container,
+      categories,
+      activities,
+      entries,
+      animationDuration: 0,
+      onAddCategory,
+      onAddActivity,
+      onEditCategory,
+      onEditActivity,
+    });
+
+    // 1. Direct edit button on Category node
+    const editCatBtn = container.querySelector('g.tree-node[data-node-id="category:dev"] [data-action="edit-category"]');
+    expect(editCatBtn).toBeTruthy();
+    editCatBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onEditCategory).toHaveBeenCalledWith('dev');
+    // Node must remain expanded
+    expect(activeNodes(container).some(n => n.dataset.nodeId === 'activity:act-1')).toBe(true);
+
+    // 2. Edit category from contextual popover
+    const devAddBtn = container.querySelector('g.tree-node[data-node-id="category:dev"] [data-action="node-add"]');
+    devAddBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const popover = container.querySelector('.cat-tree-node-popover');
+    popover.querySelector('[data-tree-popover-action="edit-category"]').click();
+    expect(onEditCategory).toHaveBeenCalledTimes(2);
+    expect(onEditCategory).toHaveBeenLastCalledWith('dev');
+    expect(popover.hidden).toBe(true);
+
+    // 3. Direct edit button on saved Activity leaf node
+    const editSavedActBtn = container.querySelector('g.tree-node[data-node-id="activity:act-1"] [data-action="edit-activity"]');
+    expect(editSavedActBtn).toBeTruthy();
+    editSavedActBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onEditActivity).toHaveBeenCalledWith({
+      activityId: 'act-1',
+      label: 'Code Frontend',
+      categoryId: 'dev',
+    });
+    // Session sub-leaves must stay collapsed
+    expect(activeNodes(container).some(n => n.dataset.nodeType === 'session')).toBe(false);
+
+    // 4. Direct edit button on entry-derived Activity leaf node
+    const editEntryActBtn = container.querySelector('g.tree-node[data-node-id="activity:travail:revue pr"] [data-action="edit-activity"]');
+    expect(editEntryActBtn).toBeTruthy();
+    editEntryActBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onEditActivity).toHaveBeenLastCalledWith({
+      activityId: null,
+      label: 'Revue PR',
+      categoryId: 'travail',
+    });
+
+    tree.destroy();
+  });
 });
+
 

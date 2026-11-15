@@ -30,6 +30,7 @@ import {
   generatePersonalizedSuggestions,
 } from './core/suggestions-engine.js';
 import { installCategorySelectors } from './category-selector.js';
+import { updateActivityAndEntries } from './state/activity-actions.js';
 
 export function createUI({ root, state, stateManager: _stateManager, persist }) {
   let ticker;
@@ -77,10 +78,40 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
     rerender();
   }
 
+  function openCategoryEditModal(categoryId) {
+    const existing = state.categories.find(c => c.id === categoryId);
+    if (!existing) return;
+    state.modal = {
+      type: 'custom-category-editor',
+      mode: 'edit',
+      categoryId: existing.id,
+      parentId: existing.parentId ?? null,
+      label: existing.label || '',
+      color: existing.color || null,
+    };
+    state.error = null;
+    rerender();
+  }
+
   function openActivityCreateModal(categoryId = null) {
     state.modal = {
       type: 'activity',
+      mode: 'create',
       categoryId: categoryId || state.categories[0]?.id || null,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  function openActivityEditModal({ activityId = null, label = '', categoryId = null } = {}) {
+    state.modal = {
+      type: 'activity',
+      mode: 'edit',
+      activityId,
+      oldLabel: label,
+      oldCategoryId: categoryId ?? null,
+      label,
+      categoryId: categoryId ?? null,
     };
     state.error = null;
     rerender();
@@ -94,6 +125,7 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
       startTimer(activityName, categoryId || state.categories[0]?.id, today(), nowTime());
     },
     onAddActivity: (categoryId) => openActivityCreateModal(categoryId),
+    onEditActivity: (payload) => openActivityEditModal(payload),
   });
 
   function render() {
@@ -969,9 +1001,10 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
       }
     });
 
+    const isEditActivity = m.mode === 'edit';
     const box = node('div', 'modal-box');
     const head = node('div', 'modal-head');
-    const titleText = 'Nouvelle activité';
+    const titleText = isEditActivity ? 'Modifier l’activité' : 'Nouvelle activité';
     const title = node('h2', 'card-title', titleText);
     const close = button('×', 'modal-close', 'modal-close');
     close.onclick = () => {
@@ -983,24 +1016,54 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
 
     const form = node('form');
     form.dataset.behaviorForm = 'activity-form';
-    const a = input('Nom', 'text', '', true, 'label');
-    const c = selectCategory(m.categoryId || state.categories[0]?.id);
-    const save = button('Enregistrer', undefined, 'activity-save');
+    const a = input('Nom', 'text', isEditActivity ? (m.label || '') : '', true, 'label');
+    const c = selectCategory(
+      isEditActivity ? (m.categoryId ?? null) : (m.categoryId || state.categories[0]?.id),
+      isEditActivity && m.categoryId === null
+    );
+    const save = button(isEditActivity ? 'Enregistrer les modifications' : 'Enregistrer', undefined, 'activity-save');
     save.type = 'submit';
 
     form.append(a.wrap, c.wrap, save);
     form.onsubmit = async e => {
       e.preventDefault();
-      const label = a.input.value.trim();
-      if (!label) {
+      const labelVal = a.input.value.trim();
+      if (!labelVal) {
         errorManager.handleError(new Error('Veuillez donner un nom à l’activité.'), 'activity');
         getBehaviorTracking()?.tracker.trackFormResult('activity-form', 'error', { object: 'saved_activity', code: 'invalid-label' });
         return;
       }
+
+      if (isEditActivity) {
+        const nextSlice = updateActivityAndEntries(
+          {
+            activities: state.activities,
+            entries: state.entries,
+            activeTimer: state.activeTimer,
+          },
+          {
+            activityId: m.activityId || null,
+            oldLabel: m.oldLabel || '',
+            oldCategoryId: m.oldCategoryId ?? null,
+            newLabel: labelVal,
+            newCategoryId: c.select.value || null,
+          }
+        );
+        state.activities = nextSlice.activities;
+        state.entries = nextSlice.entries;
+        state.activeTimer = nextSlice.activeTimer;
+        state.modal = null;
+        await persist();
+        getBehaviorTracking()?.tracker.trackFormResult('activity-form', 'success', { object: 'saved_activity' });
+        errorManager.notifySuccess(`Activité « ${labelVal} » modifiée !`);
+        rerender();
+        return;
+      }
+
       state.activities.push({
         id: crypto.randomUUID(),
-        label,
-        categoryId: c.select.value,
+        label: labelVal,
+        categoryId: c.select.value || null,
         useCount: 1,
         lastUsedAt: new Date().toISOString(),
       });
@@ -1008,7 +1071,7 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
       await persist();
       trackEvent('saved_activity_created', savedActivityCreatedPayload({ hasCategory: Boolean(c.select.value) }));
       getBehaviorTracking()?.tracker.trackFormResult('activity-form', 'success', { object: 'saved_activity' });
-      errorManager.notifySuccess(`Activité « ${label} » ajoutée !`);
+      errorManager.notifySuccess(`Activité « ${labelVal} » ajoutée !`);
       rerender();
     };
 
@@ -1173,15 +1236,24 @@ export function createUI({ root, state, stateManager: _stateManager, persist }) 
         },
         onAddCategory: (parentId) => openCategoryCreateModal(parentId),
         onAddActivity: (categoryId) => openActivityCreateModal(categoryId),
+        onEditCategory: (categoryId) => openCategoryEditModal(categoryId),
+        onEditActivity: (payload) => openActivityEditModal(payload),
       });
     }
   }
 
-  function selectCategory(selected) {
+  function selectCategory(selected, allowEmpty = false) {
     const wrap = node('div', 'field');
     wrap.appendChild(label('Catégorie'));
     const select = document.createElement('select');
     select.dataset.behaviorField = 'category';
+    if (allowEmpty) {
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = 'Sans catégorie';
+      emptyOpt.selected = selected === null || selected === '';
+      select.appendChild(emptyOpt);
+    }
     for (const c of state.categories) {
       const o = document.createElement('option');
       o.value = c.id;

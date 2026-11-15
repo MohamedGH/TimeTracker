@@ -138,6 +138,7 @@ export function buildCategoryActivityTree({
 
         return {
           id: act.id,
+          activityId: act.rawId || null,
           type: TREE_NODE_TYPES.ACTIVITY,
           label: act.label,
           categoryId: cat.id,
@@ -186,6 +187,7 @@ export function buildCategoryActivityTree({
       .sort((a, b) => b.totalMins - a.totalMins || a.label.localeCompare(b.label, 'fr'))
       .map(act => ({
         id: act.id,
+        activityId: act.rawId || null,
         type: TREE_NODE_TYPES.ACTIVITY,
         label: act.label,
         categoryId: null,

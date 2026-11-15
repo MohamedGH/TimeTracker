@@ -2069,12 +2069,17 @@ canvas {
   background: #333A30;
 }
 
-.tree-node-add-btn circle {
-  transition: fill-opacity 0.16s ease, transform 0.16s ease;
+.tree-node-add-btn circle,
+.tree-node-edit-btn circle {
+  transition: fill-opacity 0.16s ease, transform 0.16s ease, fill 0.16s ease;
 }
 
 .tree-node-add-btn:hover circle {
   fill-opacity: 0.34;
+}
+
+.tree-node-edit-btn:hover circle {
+  fill: var(--paper);
 }
 
 .cat-tree-node-popover {

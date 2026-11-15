@@ -23,6 +23,8 @@ export async function renderCategoryHierarchy(container, entries = [], options =
     onSelectCategory: options.onSelectCategory || null,
     onAddCategory: options.onAddCategory || null,
     onAddActivity: options.onAddActivity || null,
+    onEditCategory: options.onEditCategory || null,
+    onEditActivity: options.onEditActivity || null,
   });
 }
 

@@ -45,6 +45,7 @@ describe('category-activity-tree-model', () => {
     // Code Frontend deduplicates saved activity and case-variant entry
     const frontend = dev.children.find(a => a.type === TREE_NODE_TYPES.ACTIVITY && a.label === 'Code Frontend');
     expect(frontend).toBeTruthy();
+    expect(frontend.activityId).toBe('act-1');
     expect(frontend.totalMins).toBe(180);
     expect(frontend.sessionCount).toBe(2);
     expect(frontend.children).toHaveLength(2);
@@ -54,6 +55,7 @@ describe('category-activity-tree-model', () => {
     const uncat = root.children.find(c => c.label === 'Sans catégorie');
     expect(uncat).toBeTruthy();
     expect(uncat.children[0].label).toBe('Courses');
+    expect(uncat.children[0].activityId).toBeNull();
   });
 
   it('excludes empty categories when includeEmptyCategories is false', () => {

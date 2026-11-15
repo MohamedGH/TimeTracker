@@ -12,6 +12,7 @@ export function createCategoryManager({
   rerender,
   onStartActivity = null,
   onAddActivity = null,
+  onEditActivity = null,
 }) {
   let searchQuery = '';
   let activeFilter = 'all'; // 'all' | 'roots' | 'children'
@@ -66,6 +67,8 @@ export function createCategoryManager({
       onStartActivity,
       onAddCategory: (parentId) => openCategoryModal({ mode: 'create', parentId: parentId || null }),
       onAddActivity,
+      onEditCategory: (categoryId) => openCategoryModal({ mode: 'edit', categoryId }),
+      onEditActivity,
     });
 
     return card;

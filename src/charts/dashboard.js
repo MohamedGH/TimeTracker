@@ -25,6 +25,8 @@ export async function renderCharts({
   onStartActivity = null,
   onAddCategory = null,
   onAddActivity = null,
+  onEditCategory = null,
+  onEditActivity = null,
 }) {
   destroyCharts();
 
@@ -117,6 +119,8 @@ export async function renderCharts({
       onStartActivity,
       onAddCategory,
       onAddActivity,
+      onEditCategory,
+      onEditActivity,
     });
   }
 }

@@ -15,13 +15,13 @@ import {
 
 const NODE_DIMENSIONS = Object.freeze({
   [TREE_NODE_TYPES.ROOT]: { width: 196, height: 46, rx: 12 },
-  [TREE_NODE_TYPES.CATEGORY]: { width: 222, height: 44, rx: 10 },
-  [TREE_NODE_TYPES.ACTIVITY]: { width: 214, height: 42, rx: 10 },
+  [TREE_NODE_TYPES.CATEGORY]: { width: 226, height: 44, rx: 10 },
+  [TREE_NODE_TYPES.ACTIVITY]: { width: 236, height: 42, rx: 10 },
   [TREE_NODE_TYPES.SESSION]: { width: 196, height: 30, rx: 8 },
 });
 
 const ROW_SPACING_X = 56;
-const DEPTH_SPACING_Y = 276;
+const DEPTH_SPACING_Y = 286;
 
 /**
  * Truncates text cleanly for SVG labels.
@@ -55,6 +55,8 @@ export function renderCategoryActivityTree({
   onSelectCategory = null,
   onAddCategory = null,
   onAddActivity = null,
+  onEditCategory = null,
+  onEditActivity = null,
 } = {}) {
   if (!container) return null;
 
@@ -190,6 +192,19 @@ export function renderCategoryActivityTree({
         onAddActivity(parentCategoryId);
       };
       actions.appendChild(actBtn);
+    }
+
+    if (!isRoot && typeof onEditCategory === 'function' && parentCategoryId) {
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'btn small secondary cat-tree-popover-btn';
+      editBtn.dataset.treePopoverAction = 'edit-category';
+      editBtn.textContent = `Modifier « ${truncateLabel(d.data.label, 14)} »`;
+      editBtn.onclick = () => {
+        closePopover();
+        onEditCategory(parentCategoryId);
+      };
+      actions.appendChild(editBtn);
     }
 
     nodePopover.append(header, actions);
@@ -613,6 +628,81 @@ export function renderCategoryActivityTree({
           .attr('font-weight', '700')
           .attr('fill', isRoot ? '#FBF8F1' : '#232821')
           .text('+');
+      }
+
+      // Edit (✎) button on Category nodes (excluding uncategorized virtual group)
+      if (
+        d.data.type === TREE_NODE_TYPES.CATEGORY
+        && d.data.categoryId !== null
+        && typeof onEditCategory === 'function'
+      ) {
+        const editX = isCreatableNode ? dims.width - 54 : dims.width - 26;
+        const editCatGroup = g
+          .append('g')
+          .attr('class', 'tree-node-edit-btn')
+          .attr('data-action', 'edit-category')
+          .attr('transform', `translate(${editX}, 0)`)
+          .attr('role', 'button')
+          .attr('aria-label', `Modifier la catégorie ${d.data.label}`)
+          .style('cursor', 'pointer')
+          .on('click', (event) => {
+            event.stopPropagation();
+            closePopover();
+            onEditCategory(d.data.categoryId);
+          });
+
+        editCatGroup
+          .append('circle')
+          .attr('r', 11)
+          .attr('fill', '#FCF9F2')
+          .attr('stroke', d.data.color || '#948C7E')
+          .attr('stroke-width', 1);
+
+        editCatGroup
+          .append('text')
+          .attr('text-anchor', 'middle')
+          .attr('dy', '0.35em')
+          .attr('font-size', '11px')
+          .attr('fill', '#232821')
+          .text('✎');
+      }
+
+      // Edit (✎) button on Activity leaf nodes
+      if (d.data.type === TREE_NODE_TYPES.ACTIVITY && typeof onEditActivity === 'function') {
+        const hasPlay = typeof onStartActivity === 'function';
+        const editActX = hasPlay ? dims.width - 48 : dims.width - 22;
+        const editActGroup = g
+          .append('g')
+          .attr('class', 'tree-node-edit-btn')
+          .attr('data-action', 'edit-activity')
+          .attr('transform', `translate(${editActX}, 0)`)
+          .attr('role', 'button')
+          .attr('aria-label', `Modifier l’activité ${d.data.label}`)
+          .style('cursor', 'pointer')
+          .on('click', (event) => {
+            event.stopPropagation();
+            closePopover();
+            onEditActivity({
+              activityId: d.data.activityId || null,
+              label: d.data.label,
+              categoryId: d.data.categoryId ?? null,
+            });
+          });
+
+        editActGroup
+          .append('circle')
+          .attr('r', 11)
+          .attr('fill', '#FFFFFF')
+          .attr('stroke', d.data.color || '#948C7E')
+          .attr('stroke-width', 1);
+
+        editActGroup
+          .append('text')
+          .attr('text-anchor', 'middle')
+          .attr('dy', '0.35em')
+          .attr('font-size', '11px')
+          .attr('fill', '#232821')
+          .text('✎');
       }
 
       // Play button on Activity leaves
