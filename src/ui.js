@@ -46,6 +46,12 @@ import { updateActivityAndEntries, moveActivity } from './state/activity-actions
 import { createGoogleOidcAuth, DRIVE_APPDATA_SCOPE, DRIVE_SYNC_SCOPES } from './core/auth/index.js';
 import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js';
 import { createPwaInstallController } from './core/mobile/index.js';
+import {
+  NAV_LAYOUTS,
+  NAV_ROUTES,
+  createDeviceNavigationController,
+  resolveRouteShortcutKey,
+} from './core/device-navigation.js';
 
 export function createUI({
   root,
@@ -73,6 +79,7 @@ export function createUI({
   driveSyncFn = syncWithGoogleDrive,
   p2pManagerFactory = createP2PSyncManager,
   pwaControllerFactory = createPwaInstallController,
+  deviceNavControllerFactory = createDeviceNavigationController,
 }) {
   let ticker;
   let lastTrackedTab = null;
@@ -100,6 +107,15 @@ export function createUI({
       rerender();
     },
   });
+
+  const deviceNavController = deviceNavControllerFactory({
+    onChange: (profile) => {
+      state.deviceType = profile.deviceType;
+      _stateManager?.actions?.setDeviceType?.(profile.deviceType);
+      rerender();
+    },
+  });
+  state.deviceType = deviceNavController.getProfile().deviceType;
 
   const p2pManager = p2pManagerFactory({
     getLocalPayload: getSyncPayload,
@@ -259,6 +275,14 @@ export function createUI({
   function render() {
     destroyCharts();
     categoryManager.destroy();
+
+    const navProfile = deviceNavController.getProfile();
+    state.deviceType = navProfile.deviceType;
+    root.dataset.deviceType = navProfile.deviceType;
+    root.dataset.navLayout = navProfile.navLayout;
+    root.classList.remove('app-shell--mobile', 'app-shell--tablet', 'app-shell--desktop');
+    root.classList.add('app-shell', navProfile.shellClass);
+
     if (!hasConsentDecision()) {
       root.replaceChildren(consentBanner());
     } else {
@@ -274,13 +298,21 @@ export function createUI({
       categoriesPage()
     );
 
-    // If timer is running and user is on another tab, show floating mini-timer bar above bottom navigation
+    // If timer is running and user is on another tab, show floating mini-timer bar
     if (state.activeTimer && state.tab !== 'entry') {
       main.appendChild(floatingTimerBar());
     }
 
-    root.appendChild(main);
-    root.appendChild(bottomTabBar());
+    const navElement = navigationBar(navProfile);
+    if (navProfile.navLayout === NAV_LAYOUTS.TOP_BAR) {
+      root.append(navElement, main);
+    } else if (navProfile.navLayout === NAV_LAYOUTS.SIDE_RAIL) {
+      const workspace = node('div', 'desktop-workspace');
+      workspace.append(navElement, main);
+      root.appendChild(workspace);
+    } else {
+      root.append(main, navElement);
+    }
 
     const mobileSnap = pwaController.getSnapshot();
     if (!mobileSnap.isOnline) {
@@ -447,61 +479,56 @@ export function createUI({
     return h;
   }
 
-  function bottomTabBar() {
-    const nav = node('nav', 'mobile-bottom-nav');
-    const tabs = [
-      {
-        id: 'entry',
-        label: 'Chrono & Saisie',
-        shortLabel: 'Chrono',
-        icon: `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="9"/>
-          <polyline points="12 6 12 12 16 14"/>
-        </svg>`,
-        badge: Boolean(state.activeTimer),
-      },
-      {
-        id: 'dashboard',
-        label: 'Tableau de bord',
-        shortLabel: 'Stats',
-        icon: `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 20V10"/>
-          <path d="M12 20V4"/>
-          <path d="M6 20v-6"/>
-        </svg>`,
-        badge: false,
-      },
-      {
-        id: 'categories',
-        label: 'Catégories',
-        shortLabel: 'Catégories',
-        icon: `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 9h16"/>
-          <path d="M4 15h16"/>
-          <path d="M10 3L8 21"/>
-          <path d="M16 3l-2 18"/>
-        </svg>`,
-        badge: false,
-      },
-    ];
+  const NAV_ICONS = {
+    entry: `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/>
+      <polyline points="12 6 12 12 16 14"/>
+    </svg>`,
+    dashboard: `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 20V10"/>
+      <path d="M12 20V4"/>
+      <path d="M6 20v-6"/>
+    </svg>`,
+    categories: `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 9h16"/>
+      <path d="M4 15h16"/>
+      <path d="M10 3L8 21"/>
+      <path d="M16 3l-2 18"/>
+    </svg>`,
+  };
 
-    tabs.forEach(({ id, label, shortLabel, icon, badge }) => {
+  function navigationBar(navProfile) {
+    const nav = node('nav', navProfile.navClass);
+    nav.setAttribute('aria-label', 'Navigation principale');
+    nav.dataset.deviceType = navProfile.deviceType;
+    nav.dataset.navLayout = navProfile.navLayout;
+
+    NAV_ROUTES.forEach(({ id, label, shortLabel, shortcutHint }) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.id = `nav-${id}`;
-      b.className = `mobile-tab-item tab-btn ${state.tab === id ? 'active' : ''}`.trim();
+      const isActive = state.tab === id;
+      b.className = `mobile-tab-item app-nav-item tab-btn ${isActive ? 'active' : ''}`.trim();
       b.dataset.behaviorTarget = `nav-${id}`;
       b.setAttribute('aria-label', label);
+      if (isActive) b.setAttribute('aria-current', 'page');
 
       const iconWrap = node('span', 'mobile-tab-icon');
-      iconWrap.innerHTML = icon;
-      if (badge) {
-        const dot = node('span', 'tab-pulse-badge');
-        iconWrap.appendChild(dot);
+      iconWrap.innerHTML = NAV_ICONS[id] || '';
+      if (id === 'entry' && state.activeTimer) {
+        iconWrap.appendChild(node('span', 'tab-pulse-badge'));
       }
 
-      const labelSpan = node('span', 'mobile-tab-label', shortLabel);
+      const text = navProfile.showFullLabels ? label : shortLabel;
+      const labelSpan = node('span', 'mobile-tab-label', text);
       b.append(iconWrap, labelSpan);
+
+      if (navProfile.showKeyboardHints && shortcutHint) {
+        const kbd = document.createElement('kbd');
+        kbd.className = 'nav-kbd-hint';
+        kbd.textContent = shortcutHint;
+        b.appendChild(kbd);
+      }
 
       b.onclick = () => {
         routeManager.navigate(id);
@@ -2380,8 +2407,17 @@ export function createUI({
       handleDriveSync({ silent: true });
     }
   };
+  const handleDesktopShortcut = (e) => {
+    if (deviceNavController.getProfile().deviceType !== 'desktop') return;
+    const route = resolveRouteShortcutKey(e);
+    if (!route) return;
+    e.preventDefault();
+    routeManager.navigate(route);
+  };
+
   if (typeof window !== 'undefined') {
     window.addEventListener('online', handleOnlineSync);
+    window.addEventListener('keydown', handleDesktopShortcut);
   }
 
   render();
@@ -2391,7 +2427,9 @@ export function createUI({
       clearInterval(ticker);
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnlineSync);
+        window.removeEventListener('keydown', handleDesktopShortcut);
       }
+      deviceNavController.destroy();
       pwaController.destroy();
       p2pManager.disconnect();
       routeManager.destroy();

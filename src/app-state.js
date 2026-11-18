@@ -3,6 +3,7 @@ import { migratePersistedData } from './core/persistence-migration.js';
 import { DEFAULT_CATEGORIES, normalizeEntries } from './core/model.js';
 import { migrateCategoryTree } from './core/category-tree.js';
 import { createStateManager } from './core/state-manager.js';
+import { detectDeviceType } from './core/device-navigation.js';
 import { isSessionValid } from './core/auth/oidc.js';
 import {
   diffAndStampCollection,
@@ -82,6 +83,7 @@ export async function createAppState() {
     tab: 'entry',
     period: '7',
     shortcutCategoryFilter: 'all',
+    deviceType: detectDeviceType(),
     customStart: null,
     customEnd: null,
     editingEntryId: null,

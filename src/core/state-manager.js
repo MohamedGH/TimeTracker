@@ -12,6 +12,7 @@ export const ACTION_TYPES = Object.freeze({
   SET_TAB: 'SET_TAB',
   SET_PERIOD: 'SET_PERIOD',
   SET_SHORTCUT_CATEGORY_FILTER: 'SET_SHORTCUT_CATEGORY_FILTER',
+  SET_DEVICE_TYPE: 'SET_DEVICE_TYPE',
   SET_MODAL: 'SET_MODAL',
   CLOSE_MODAL: 'CLOSE_MODAL',
   SET_EDITING_ENTRY: 'SET_EDITING_ENTRY',
@@ -58,6 +59,12 @@ export function appReducer(state, action) {
       return {
         ...state,
         shortcutCategoryFilter: action.payload || 'all',
+      };
+
+    case ACTION_TYPES.SET_DEVICE_TYPE:
+      return {
+        ...state,
+        deviceType: action.payload || 'desktop',
       };
 
     case ACTION_TYPES.SET_MODAL:
@@ -312,6 +319,7 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     tab: 'entry',
     period: '7',
     shortcutCategoryFilter: 'all',
+    deviceType: 'mobile',
     customStart: null,
     customEnd: null,
     editingEntryId: null,
@@ -377,6 +385,9 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       setShortcutCategoryFilter(filterKey) {
         return dispatch({ type: ACTION_TYPES.SET_SHORTCUT_CATEGORY_FILTER, payload: filterKey });
+      },
+      setDeviceType(deviceType) {
+        return dispatch({ type: ACTION_TYPES.SET_DEVICE_TYPE, payload: deviceType });
       },
       startTimer(payload) {
         return dispatch({ type: ACTION_TYPES.START_TIMER, payload });
