@@ -4,3 +4,5 @@ public/env.js
 dist/
 dev-dist/
 coverage/
+android/
+ios/
