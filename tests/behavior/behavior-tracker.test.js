@@ -171,6 +171,25 @@ describe('createBehaviorTracker: graceful degradation', () => {
     await tracker.trackClick('export-button');
     expect(graph.received).toHaveLength(1);
   });
+
+  it('strips unexpected or sensitive keys from metadata before storage', async () => {
+    const eventStore = fakeEventStore();
+    const tracker = createBehaviorTracker({ eventStore });
+    await tracker.record({
+      action: 'form_submit_error',
+      target: 'entry-form',
+      metadata: {
+        field: 'activity',
+        code: 'invalid-entry',
+        value: 'Projet secret client X',
+        email: 'user@example.com',
+      },
+    });
+    const saved = eventStore.events[0];
+    expect(saved.metadata).toEqual({ field: 'activity', code: 'invalid-entry' });
+    expect(JSON.stringify(saved)).not.toContain('Projet secret client X');
+    expect(JSON.stringify(saved)).not.toContain('user@example.com');
+  });
 });
 
 function flush() {

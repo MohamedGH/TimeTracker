@@ -182,6 +182,39 @@ export function createEventGraph() {
     return type ? candidates.filter(edge => edge.type === type) : [...candidates];
   }
 
+  function removeNodesByTypes(types = []) {
+    const typeSet = new Set(types);
+    const removedIds = new Set();
+    for (const [key, node] of nodes.entries()) {
+      if (typeSet.has(node.type)) {
+        removedIds.add(key);
+        nodes.delete(key);
+      }
+    }
+    if (!removedIds.size) return 0;
+
+    for (const [eKey, edge] of edges.entries()) {
+      if (removedIds.has(edge.from) || removedIds.has(edge.to)) {
+        edges.delete(eKey);
+      }
+    }
+    for (const [fromId, list] of edgesByFrom.entries()) {
+      if (removedIds.has(fromId)) {
+        edgesByFrom.delete(fromId);
+      } else {
+        edgesByFrom.set(fromId, list.filter(edge => !removedIds.has(edge.to)));
+      }
+    }
+    for (const [toId, list] of edgesByTo.entries()) {
+      if (removedIds.has(toId)) {
+        edgesByTo.delete(toId);
+      } else {
+        edgesByTo.set(toId, list.filter(edge => !removedIds.has(edge.from)));
+      }
+    }
+    return removedIds.size;
+  }
+
   function toJSON() {
     return { nodes: [...nodes.values()], edges: [...edges.values()] };
   }
@@ -195,6 +228,7 @@ export function createEventGraph() {
     getNodesByType,
     getEdgesFrom,
     getEdgesTo,
+    removeNodesByTypes,
     toJSON,
     get nodeCount() { return nodes.size; },
     get edgeCount() { return edges.size; },

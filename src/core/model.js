@@ -20,14 +20,21 @@ export function slugify(value) {
 export function isValidEntry(entry) {
   return Boolean(entry && typeof entry.id === 'string' && typeof entry.activity === 'string' &&
     (entry.categoryId === null || typeof entry.categoryId === 'string') && typeof entry.date === 'string' &&
-    typeof entry.start === 'string' && typeof entry.end === 'string' && Number.isFinite(entry.mins));
+    typeof entry.start === 'string' && typeof entry.end === 'string' && Number.isFinite(entry.mins) &&
+    (entry.viaTimer === undefined || typeof entry.viaTimer === 'boolean'));
 }
 
 export function normalizeEntries(value, categories = [], legacySubCategories = []) {
   if (!Array.isArray(value)) return [];
   return migrateEntriesToCategoryId(value, categories, legacySubCategories)
     .filter(isValidEntry)
-    .map(entry => ({ ...entry, activity: entry.activity.trim(), categoryId: entry.categoryId ?? null, mins: Math.max(0, Number(entry.mins)) }));
+    .map(entry => ({
+      ...entry,
+      activity: entry.activity.trim(),
+      categoryId: entry.categoryId ?? null,
+      mins: Math.max(0, Number(entry.mins)),
+      ...(typeof entry.viaTimer === 'boolean' ? { viaTimer: entry.viaTimer } : {}),
+    }));
 }
 
 export function normalizeList(value) { return Array.isArray(value) ? value : []; }

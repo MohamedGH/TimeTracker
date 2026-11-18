@@ -7,7 +7,7 @@ import { renderCharts, destroyCharts } from './charts/dashboard.js';
 import { clearAllData } from './core/storage.js';
 import { DEFAULT_CATEGORIES } from './core/model.js';
 import { trackEvent, trackPageView, initAnalytics } from './core/analytics/analytics.js';
-import { hasConsentDecision, setConsentStatus } from './core/analytics/consent.js';
+import { hasConsentDecision, isConsentGranted, setConsentStatus } from './core/analytics/consent.js';
 import {
   ANALYTICS_EVENTS,
   timerStartedPayload, timerStoppedPayload, timeEntryCreatedPayload, timeEntryUpdatedPayload,
@@ -16,7 +16,13 @@ import {
   authEventPayload,
   syncEventPayload,
 } from './core/analytics/events.js';
-import { initBehaviorTracking, getBehaviorTracking, runPatternDetection, getFeatureCandidates } from './core/behavior/index.js';
+import {
+  initBehaviorTracking,
+  getBehaviorTracking,
+  runPatternDetection,
+  getFeatureCandidates,
+  getBehaviorDetectionMeta,
+} from './core/behavior/index.js';
 import { createCategoryBadge } from './core/category-palette.js';
 import {
   createCategoryManager,
@@ -28,10 +34,12 @@ import { createErrorManager } from './core/error-manager.js';
 import { calculateDashboardStats, filterEntriesByPeriod, formatDuration } from './core/statistics.js';
 import {
   getUsualCategoryForActivity,
-  getRecentActivities,
-  getFrequentActivities,
   generatePersonalizedSuggestions,
 } from './core/suggestions-engine.js';
+import {
+  collectCategoryShortcuts,
+  filterShortcutGroups,
+} from './core/shortcuts-by-category.js';
 import { installCategorySelectors } from './category-selector.js';
 import { moveCategory } from './state/category-actions.js';
 import { updateActivityAndEntries, moveActivity } from './state/activity-actions.js';
@@ -68,7 +76,12 @@ export function createUI({
 }) {
   let ticker;
   let lastTrackedTab = null;
-  let lastInsightsRefresh = 0;
+  const insightsState = {
+    running: false,
+    lastRunAt: 0,
+    lastSignature: null,
+    hasCompletedInitialRun: false,
+  };
   let entryFormMode = state.editingEntryId ? 'manual' : 'timer'; // 'timer' | 'manual'
   let authBusy = false;
   let driveSyncBusy = false;
@@ -583,54 +596,113 @@ export function createUI({
   }
 
   /**
-   * Priorité UX 1 & 2: Démarrer rapidement une activité & proposer les activités récentes/fréquentes.
+   * Priorité UX 1 & 2: Raccourcis de démarrage rapide classés selon la catégorie.
    */
   function quickStartCard() {
-    const recent = getRecentActivities(state.entries, state.activities, 4);
-    const frequent = getFrequentActivities(state.entries, state.activities, 4);
+    const { groups, totalShortcuts } = collectCategoryShortcuts({
+      entries: state.entries,
+      activities: state.activities,
+      categories: state.categories,
+    });
 
-    // Merge recent and frequent into unique suggestions
-    const seen = new Set();
-    const suggestions = [];
-    for (const item of [...recent, ...frequent]) {
-      const key = item.name.toLowerCase();
-      if (!seen.has(key)) {
-        seen.add(key);
-        suggestions.push(item);
-      }
-      if (suggestions.length >= 6) break;
-    }
+    if (!groups.length) return document.createDocumentFragment();
 
-    if (!suggestions.length) return document.createDocumentFragment();
+    const rawFilter = state.shortcutCategoryFilter || 'all';
+    const visibleGroups = filterShortcutGroups(groups, rawFilter);
+    const activeFilter = visibleGroups.length === groups.length && rawFilter !== 'all'
+      ? 'all'
+      : rawFilter;
+
+    const applyShortcutFilter = (filterKey) => {
+      state.shortcutCategoryFilter = filterKey;
+      _stateManager?.actions?.setShortcutCategoryFilter?.(filterKey);
+      rerender();
+    };
 
     const c = node('section', 'quick-start-card');
+    c.dataset.shortcutsByCategory = 'true';
+
+    const headerRow = node('div', 'quick-start-header');
     const title = node('div', 'quick-start-title');
-    title.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>Démarrage rapide (1 clic)</span>`;
-    c.appendChild(title);
+    title.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>Raccourcis par catégorie</span>`;
+    const hint = node('span', 'quick-start-hint', `${totalShortcuts} · 1 clic`);
+    headerRow.append(title, hint);
+    c.appendChild(headerRow);
 
-    const chips = node('div', 'quick-chips-grid');
-    for (const item of suggestions) {
-      const cat = state.categories.find(k => k.id === item.categoryId);
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'quick-chip';
-      chip.setAttribute('aria-label', `Démarrer ${item.name}`);
+    if (groups.length > 1) {
+      const filterBar = node('div', 'shortcut-filter-bar');
+      filterBar.setAttribute('role', 'tablist');
+      filterBar.setAttribute('aria-label', 'Filtrer les raccourcis par catégorie');
 
-      chip.innerHTML = `
-        <span class="quick-chip-icon">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
-        </span>
-        <span class="quick-chip-name">${escapeHtml(item.name)}</span>
-        ${cat ? `<span class="quick-chip-category" style="background:${cat.color || '#948C7E'}">${escapeHtml(cat.label)}</span>` : ''}
-      `;
+      const allBtn = document.createElement('button');
+      allBtn.type = 'button';
+      allBtn.className = `shortcut-filter-btn ${activeFilter === 'all' ? 'is-active' : ''}`.trim();
+      allBtn.dataset.behaviorTarget = 'shortcut-filter-all';
+      allBtn.dataset.shortcutFilter = 'all';
+      allBtn.setAttribute('aria-pressed', String(activeFilter === 'all'));
+      allBtn.textContent = `Toutes (${totalShortcuts})`;
+      allBtn.onclick = () => applyShortcutFilter('all');
+      filterBar.appendChild(allBtn);
 
-      chip.onclick = () => {
-        trackEvent('saved_activity_started');
-        startTimer(item.name, item.categoryId || state.categories[0]?.id, today(), nowTime());
-      };
-      chips.appendChild(chip);
+      for (const group of groups) {
+        const filterBtn = document.createElement('button');
+        filterBtn.type = 'button';
+        const isActive = activeFilter === group.filterKey;
+        filterBtn.className = `shortcut-filter-btn ${isActive ? 'is-active' : ''}`.trim();
+        filterBtn.dataset.behaviorTarget = 'shortcut-filter-category';
+        filterBtn.dataset.shortcutFilter = group.filterKey;
+        filterBtn.setAttribute('aria-pressed', String(isActive));
+        filterBtn.textContent = `${group.label} (${group.count})`;
+        filterBtn.onclick = () => applyShortcutFilter(group.filterKey);
+        filterBar.appendChild(filterBtn);
+      }
+
+      c.appendChild(filterBar);
     }
-    c.appendChild(chips);
+
+    const groupsWrap = node('div', 'shortcut-groups-list');
+    for (const group of visibleGroups) {
+      const groupBox = node('div', 'shortcut-category-group');
+      groupBox.dataset.shortcutCategory = group.filterKey;
+
+      const groupHeader = node('div', 'shortcut-category-header');
+      const catBadge = createCategoryBadge(group.categoryId, state.categories, { showPath: true, size: 'small' });
+      const countBadge = node('span', 'shortcut-category-count', String(group.shortcuts.length));
+      groupHeader.append(catBadge, countBadge);
+      groupBox.appendChild(groupHeader);
+
+      const chips = node('div', 'quick-chips-grid');
+      for (const item of group.shortcuts) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'quick-chip';
+        chip.dataset.behaviorTarget = 'quick-shortcut-start';
+        chip.setAttribute('aria-label', `Démarrer ${item.name} (${group.pathLabel})`);
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'quick-chip-icon';
+        iconSpan.setAttribute('aria-hidden', 'true');
+        iconSpan.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>`;
+
+        const nameSpan = node('span', 'quick-chip-name', item.name);
+        chip.append(iconSpan, nameSpan);
+
+        if (item.count > 0) {
+          chip.appendChild(node('span', 'quick-chip-count', `${item.count}×`));
+        }
+
+        chip.onclick = () => {
+          trackEvent('saved_activity_started');
+          startTimer(item.name, item.categoryId || state.categories[0]?.id, today(), nowTime());
+        };
+        chips.appendChild(chip);
+      }
+
+      groupBox.appendChild(chips);
+      groupsWrap.appendChild(groupBox);
+    }
+
+    c.appendChild(groupsWrap);
     return c;
   }
 
@@ -651,6 +723,7 @@ export function createUI({
       const chronoModeBtn = document.createElement('button');
       chronoModeBtn.type = 'button';
       chronoModeBtn.className = `mode-toggle-btn ${entryFormMode === 'timer' ? 'active' : ''}`;
+      chronoModeBtn.dataset.behaviorTarget = 'entry-mode-timer';
       chronoModeBtn.textContent = '⏱️ Démarrer un chrono';
       chronoModeBtn.onclick = () => {
         entryFormMode = 'timer';
@@ -660,6 +733,7 @@ export function createUI({
       const manualModeBtn = document.createElement('button');
       manualModeBtn.type = 'button';
       manualModeBtn.className = `mode-toggle-btn ${entryFormMode === 'manual' ? 'active' : ''}`;
+      manualModeBtn.dataset.behaviorTarget = 'entry-mode-manual';
       manualModeBtn.textContent = '📝 Saisie manuelle';
       manualModeBtn.onclick = () => {
         entryFormMode = 'manual';
@@ -740,6 +814,7 @@ export function createUI({
         date: date.input.value,
         start: start.input.value,
         end: end.input.value,
+        viaTimer: old ? old.viaTimer : false,
       });
 
       if (!value.activity || value.mins <= 0) {
@@ -755,7 +830,7 @@ export function createUI({
       trackEvent(
         old ? 'time_entry_updated' : 'time_entry_created',
         old ? timeEntryUpdatedPayload({ durationMinutes: value.mins, hasCategory: Boolean(value.categoryId) }) :
-              timeEntryCreatedPayload({ durationMinutes: value.mins, hasCategory: Boolean(value.categoryId) })
+              timeEntryCreatedPayload({ durationMinutes: value.mins, hasCategory: Boolean(value.categoryId), viaTimer: Boolean(value.viaTimer) })
       );
       getBehaviorTracking()?.tracker.trackFormResult('entry-form', 'success', { object: 'time_entry' });
       errorManager.notifySuccess(old ? 'Modifications enregistrées.' : 'Session enregistrée !');
@@ -902,7 +977,7 @@ export function createUI({
         state.editingEntryId = e.id;
         entryFormMode = 'manual';
         rerender();
-        root.querySelector('.entry-form')?.scrollIntoView({ behavior: 'smooth' });
+        root.querySelector('.entry-form')?.scrollIntoView?.({ behavior: 'smooth' });
       };
 
       const del = button('Supprimer', 'small danger', 'entry-delete');
@@ -1067,36 +1142,136 @@ export function createUI({
     return cardNode;
   }
 
+  const BEHAVIOR_KIND_LABELS = {
+    workflow: 'Parcours récurrent',
+    abandonment: 'Formulaire interrompu',
+    repetition: 'Répétitions rapides',
+  };
+
+  function confidenceModifier(level) {
+    if (level === 'élevée') return 'high';
+    if (level === 'modérée') return 'medium';
+    return 'low';
+  }
+
+  function renderProvenanceRow({ rule, occurrences, sessionCount, sessionUnit = 'sessions', periodLabel, confidence }) {
+    const row = node('div', 'suggestion-provenance');
+    if (rule) row.appendChild(node('span', 'suggestion-meta-chip', `Règle : ${rule}`));
+    if (Number.isFinite(occurrences) && occurrences > 0) {
+      row.appendChild(node('span', 'suggestion-meta-chip', `${occurrences} occurrence${occurrences > 1 ? 's' : ''}`));
+    }
+    if (Number.isFinite(sessionCount) && sessionCount > 0) {
+      const singular = sessionUnit.endsWith('s') ? sessionUnit.slice(0, -1) : sessionUnit;
+      row.appendChild(node('span', 'suggestion-meta-chip', `${sessionCount} ${sessionCount > 1 ? sessionUnit : singular}`));
+    }
+    if (periodLabel) {
+      row.appendChild(node('span', 'suggestion-meta-chip', `Période : ${periodLabel}`));
+    }
+    if (confidence?.label) {
+      const mod = confidenceModifier(confidence.level);
+      row.appendChild(node('span', `suggestion-meta-chip suggestion-confidence suggestion-confidence--${mod}`, `Confiance : ${confidence.label}`));
+    }
+    return row;
+  }
+
+  function computeBehaviorCandidatesSignature(candidates) {
+    return candidates
+      .map(c => `${c.id}:${c.occurrences}:${c.supportSessions}:${c.confidence?.score ?? 0}`)
+      .join('|');
+  }
+
+  function scheduleInsightsRefresh(currentSignature) {
+    if (!isConsentGranted()) return;
+    const behavior = getBehaviorTracking();
+    if (!behavior || insightsState.running) return;
+
+    const meta = getBehaviorDetectionMeta();
+    const now = Date.now();
+    const neverRan = meta.lastRunAt === 0 && !insightsState.hasCompletedInitialRun;
+    const cooldownElapsed = (now - Math.max(insightsState.lastRunAt, meta.lastRunAt)) > 60_000;
+
+    if (!neverRan && !cooldownElapsed) return;
+
+    insightsState.running = true;
+    insightsState.lastRunAt = now;
+
+    runPatternDetection()
+      .then(() => {
+        const updatedCandidates = getFeatureCandidates({ limit: 4 });
+        const updatedSignature = computeBehaviorCandidatesSignature(updatedCandidates);
+        const wasFirstRun = !insightsState.hasCompletedInitialRun;
+        insightsState.hasCompletedInitialRun = true;
+        insightsState.lastRunAt = Date.now();
+        insightsState.lastSignature = updatedSignature;
+        insightsState.running = false;
+        if (state.tab === 'dashboard' && (updatedSignature !== currentSignature || wasFirstRun)) {
+          rerender();
+        }
+      })
+      .catch(() => {
+        insightsState.running = false;
+      });
+  }
+
   /**
-   * Priorité 3: Suggestions personnalisées présentées comme observations ou hypothèses.
+   * Observations & Suggestions personnalisées :
+   * Sépare strictement les observations métier (habitudes personnelles)
+   * et les hypothèses comportementales locales (utilisation de TimeTracker).
    */
   function insightsCard() {
     const c = card('Observations & Suggestions personnalisées');
-    const list = node('div', 'suggestions-list');
+    c.dataset.insightsCard = 'true';
 
-    // 1. Suggestions calculated from the local user's real entries
+    // -------------------------------------------------------------------------
+    // Section A : Habitudes personnelles (moteur métier local)
+    // -------------------------------------------------------------------------
+    const personalSection = node('div', 'insights-section');
+    personalSection.dataset.insightsSection = 'business';
+    const personalHeader = node('div', 'insights-section__header');
+    personalHeader.append(
+      node('h3', 'insights-section__title', 'Habitudes personnelles'),
+      node('span', 'insights-section__subtitle', 'Données métier locales : sessions, horaires, catégories')
+    );
+    personalSection.appendChild(personalHeader);
+
+    const personalList = node('div', 'suggestions-list');
+    const nowDate = new Date();
     const personalSuggestions = generatePersonalizedSuggestions({
       entries: state.entries,
       activities: state.activities,
       categories: state.categories,
-      currentHour: new Date().getHours(),
+      currentHour: nowDate.getHours(),
+      currentMinute: nowDate.getMinutes(),
     });
 
     for (const item of personalSuggestions) {
-      const box = node('div', 'suggestion-box');
+      const isStatus = item.status === 'insufficient_data' || item.status === 'no_trend';
+      const box = node('div', `suggestion-box${isStatus ? ' suggestion-box--status' : ''}`);
+      box.dataset.suggestionKind = item.kind || 'observation';
+      box.dataset.suggestionStatus = item.status || item.type;
 
       const badgeRow = node('div', 'suggestion-badge-row');
-      const badge = node('span', `suggestion-badge ${item.type}`, item.badge);
-      const title = node('span', 'suggestion-title', item.title);
-      badgeRow.append(badge, title);
+      const badgeTone = isStatus ? 'neutral' : item.type;
+      badgeRow.append(
+        node('span', `suggestion-badge ${badgeTone}`, item.badge),
+        node('span', 'suggestion-title', item.title)
+      );
       box.appendChild(badgeRow);
+      box.appendChild(node('p', 'suggestion-message', item.message));
 
-      const message = node('p', 'suggestion-message', item.message);
-      box.appendChild(message);
+      const sessionUnit = item.kind === 'usage_mode' ? 'sessions connues' : 'jours';
+      box.appendChild(renderProvenanceRow({
+        rule: item.rule,
+        occurrences: item.occurrences,
+        sessionCount: item.sessionCount,
+        sessionUnit,
+        periodLabel: item.periodLabel,
+        confidence: isStatus ? null : item.confidence,
+      }));
 
       if (item.action) {
         const actionRow = node('div', 'suggestion-action-row');
-        const startBtn = button(item.action.label, 'small primary');
+        const startBtn = button(item.action.label, 'small primary', 'suggestion-start-activity');
         startBtn.onclick = () => {
           startTimer(item.action.activity, item.action.categoryId || state.categories[0]?.id, today(), nowTime());
         };
@@ -1104,32 +1279,122 @@ export function createUI({
         box.appendChild(actionRow);
       }
 
-      list.appendChild(box);
+      personalList.appendChild(box);
     }
+    personalSection.appendChild(personalList);
+    c.appendChild(personalSection);
 
-    // 2. Behavioral hypotheses from Pattern Detection
-    const candidates = getFeatureCandidates({ limit: 4 });
-    for (const candidate of candidates) {
-      const box = node('div', 'suggestion-box');
+    // -------------------------------------------------------------------------
+    // Section B : Utilisation de TimeTracker (moteur comportemental local)
+    // -------------------------------------------------------------------------
+    const behaviorSection = node('div', 'insights-section');
+    behaviorSection.dataset.insightsSection = 'behavior';
+    const behaviorHeader = node('div', 'insights-section__header');
+    const behaviorTitleWrap = node('div', 'insights-section__title-row');
+    behaviorTitleWrap.append(
+      node('h3', 'insights-section__title', 'Utilisation de TimeTracker'),
+      node('span', 'insights-privacy-pill', '100 % local · jamais transmis')
+    );
+    behaviorHeader.append(
+      behaviorTitleWrap,
+      node('span', 'insights-section__subtitle', 'Parcours récurrents, formulaires et points de friction potentiels')
+    );
+    behaviorSection.appendChild(behaviorHeader);
+
+    const behaviorList = node('div', 'suggestions-list');
+    const consentGranted = isConsentGranted();
+    const behaviorInstance = getBehaviorTracking();
+
+    if (!consentGranted) {
+      const box = node('div', 'suggestion-box suggestion-box--status');
+      box.dataset.suggestionStatus = 'consent_disabled';
       const badgeRow = node('div', 'suggestion-badge-row');
-      const badge = node('span', 'suggestion-badge hypothesis', 'Hypothèse comportementale');
-      badgeRow.appendChild(badge);
+      badgeRow.append(
+        node('span', 'suggestion-badge neutral', 'Suivi désactivé'),
+        node('span', 'suggestion-title', 'Consentement requis pour l’analyse d’interface')
+      );
       box.appendChild(badgeRow);
+      box.appendChild(node(
+        'p',
+        'suggestion-message',
+        'L’analyse locale des parcours et points de friction est désactivée. Vos habitudes personnelles ci-dessus continuent de fonctionner uniquement à partir de vos entrées.'
+      ));
+      behaviorList.appendChild(box);
+    } else if (!behaviorInstance) {
+      const box = node('div', 'suggestion-box suggestion-box--status');
+      box.dataset.suggestionStatus = 'insufficient_data';
+      const badgeRow = node('div', 'suggestion-badge-row');
+      badgeRow.append(
+        node('span', 'suggestion-badge neutral', 'En attente'),
+        node('span', 'suggestion-title', 'Collecteur local non actif')
+      );
+      box.appendChild(badgeRow);
+      box.appendChild(node('p', 'suggestion-message', 'Les observations d’utilisation apparaîtront ici dès que le collecteur comportemental local sera initialisé.'));
+      behaviorList.appendChild(box);
+    } else {
+      const candidates = getFeatureCandidates({ limit: 4 });
+      const currentSignature = computeBehaviorCandidatesSignature(candidates);
+      scheduleInsightsRefresh(currentSignature);
 
-      const message = node('p', 'suggestion-message', candidate.description);
-      box.appendChild(message);
-      list.appendChild(box);
+      const meta = getBehaviorDetectionMeta();
+      if (!candidates.length) {
+        const box = node('div', 'suggestion-box suggestion-box--status');
+        const isAnalyzing = insightsState.running && !insightsState.hasCompletedInitialRun && meta.lastRunAt === 0;
+        const isInsufficient = !isAnalyzing && meta.eventCountAtRun >= 0 && meta.eventCountAtRun < 4;
+        box.dataset.suggestionStatus = isInsufficient ? 'insufficient_data' : 'no_trend';
+
+        const badgeRow = node('div', 'suggestion-badge-row');
+        badgeRow.append(
+          node('span', 'suggestion-badge neutral', isAnalyzing ? 'Analyse en cours' : isInsufficient ? 'Données insuffisantes' : 'Aucune tendance'),
+          node('span', 'suggestion-title', isAnalyzing ? 'Détection locale en cours…' : isInsufficient ? 'Historique d’interactions court' : 'Aucune friction ou routine d’interface détectée')
+        );
+        box.appendChild(badgeRow);
+        box.appendChild(node(
+          'p',
+          'suggestion-message',
+          isAnalyzing
+            ? 'Analyse des interactions locales en cours sur votre appareil…'
+            : isInsufficient
+              ? `Données encore insuffisantes (${meta.eventCountAtRun} interaction${meta.eventCountAtRun > 1 ? 's' : ''}) pour formuler une hypothèse fiable.`
+              : 'Aucune séquence répétée multi-sessions ni point de friction notable observé pour le moment.'
+        ));
+        if (!isAnalyzing) {
+          box.appendChild(renderProvenanceRow({
+            rule: isInsufficient ? 'Échantillon minimal comportemental non atteint' : 'Seuils multi-sessions non atteints',
+            occurrences: meta.eventCountAtRun > 0 ? meta.eventCountAtRun : 0,
+            periodLabel: 'Historique local',
+          }));
+        }
+        behaviorList.appendChild(box);
+      } else {
+        for (const candidate of candidates) {
+          const box = node('div', 'suggestion-box');
+          box.dataset.suggestionKind = candidate.kind || 'workflow';
+          box.dataset.suggestionStatus = candidate.status || 'hypothesis';
+
+          const badgeRow = node('div', 'suggestion-badge-row');
+          const kindLabel = BEHAVIOR_KIND_LABELS[candidate.kind] || candidate.category || 'Utilisation';
+          badgeRow.append(
+            node('span', 'suggestion-badge hypothesis', 'Hypothèse à confirmer'),
+            node('span', 'suggestion-title', kindLabel)
+          );
+          box.appendChild(badgeRow);
+          box.appendChild(node('p', 'suggestion-message', candidate.description));
+          box.appendChild(renderProvenanceRow({
+            rule: candidate.rule,
+            occurrences: candidate.occurrences,
+            sessionCount: candidate.supportSessions,
+            sessionUnit: 'sessions',
+            periodLabel: candidate.periodLabel,
+            confidence: candidate.confidence,
+          }));
+          behaviorList.appendChild(box);
+        }
+      }
     }
 
-    c.appendChild(list);
-
-    // Refresh background pattern detection if due
-    const now = Date.now();
-    if (now - lastInsightsRefresh > 15000 && hasConsentDecision()) {
-      lastInsightsRefresh = now;
-      runPatternDetection({ minSupportUsers: 1 }).catch(() => {});
-    }
-
+    behaviorSection.appendChild(behaviorList);
+    c.appendChild(behaviorSection);
     return c;
   }
 
@@ -1991,6 +2256,7 @@ export function createUI({
       end,
       endDate,
       mins: durationMinutes,
+      viaTimer: true,
     });
     state.entries = [entry, ...state.entries];
     state.activeTimer = null;
@@ -2106,12 +2372,6 @@ export function createUI({
 
   function clock(s) {
     return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-  }
-
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
   }
 
   const handleOnlineSync = () => {

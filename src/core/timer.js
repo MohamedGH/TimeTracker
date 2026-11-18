@@ -42,5 +42,6 @@ export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID()) 
     end: endTime,
     ...(endDate ? { endDate } : {}),
     mins: elapsedMinutes(timer),
+    viaTimer: true,
   };
 }

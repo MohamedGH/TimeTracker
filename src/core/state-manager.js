@@ -11,6 +11,7 @@ import { today } from './time.js';
 export const ACTION_TYPES = Object.freeze({
   SET_TAB: 'SET_TAB',
   SET_PERIOD: 'SET_PERIOD',
+  SET_SHORTCUT_CATEGORY_FILTER: 'SET_SHORTCUT_CATEGORY_FILTER',
   SET_MODAL: 'SET_MODAL',
   CLOSE_MODAL: 'CLOSE_MODAL',
   SET_EDITING_ENTRY: 'SET_EDITING_ENTRY',
@@ -51,6 +52,12 @@ export function appReducer(state, action) {
       return {
         ...state,
         period: action.payload,
+      };
+
+    case ACTION_TYPES.SET_SHORTCUT_CATEGORY_FILTER:
+      return {
+        ...state,
+        shortcutCategoryFilter: action.payload || 'all',
       };
 
     case ACTION_TYPES.SET_MODAL:
@@ -103,6 +110,7 @@ export function appReducer(state, action) {
         end,
         endDate: t.date === today() ? t.date : today(),
         mins: durationMinutes,
+        viaTimer: true,
       });
 
       // Update or record the activity usage metadata
@@ -303,6 +311,7 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     activeTimer: null,
     tab: 'entry',
     period: '7',
+    shortcutCategoryFilter: 'all',
     customStart: null,
     customEnd: null,
     editingEntryId: null,
@@ -338,18 +347,20 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     }
   }
 
+  function dispatch(action) {
+    const prevState = currentState;
+    currentState = appReducer(currentState, action);
+    notify();
+    persistIfChanged(prevState, currentState);
+    return currentState;
+  }
+
   return {
     getState() {
       return currentState;
     },
 
-    dispatch(action) {
-      const prevState = currentState;
-      currentState = appReducer(currentState, action);
-      notify();
-      persistIfChanged(prevState, currentState);
-      return currentState;
-    },
+    dispatch,
 
     subscribe(listener) {
       listeners.add(listener);
@@ -359,55 +370,58 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     // Convenient action dispatchers
     actions: {
       setTab(tab) {
-        return this.dispatch({ type: ACTION_TYPES.SET_TAB, payload: tab });
+        return dispatch({ type: ACTION_TYPES.SET_TAB, payload: tab });
       },
       setPeriod(period) {
-        return this.dispatch({ type: ACTION_TYPES.SET_PERIOD, payload: period });
+        return dispatch({ type: ACTION_TYPES.SET_PERIOD, payload: period });
+      },
+      setShortcutCategoryFilter(filterKey) {
+        return dispatch({ type: ACTION_TYPES.SET_SHORTCUT_CATEGORY_FILTER, payload: filterKey });
       },
       startTimer(payload) {
-        return this.dispatch({ type: ACTION_TYPES.START_TIMER, payload });
+        return dispatch({ type: ACTION_TYPES.START_TIMER, payload });
       },
       stopTimer(payload) {
-        return this.dispatch({ type: ACTION_TYPES.STOP_TIMER, payload });
+        return dispatch({ type: ACTION_TYPES.STOP_TIMER, payload });
       },
       upsertEntry(entry) {
-        return this.dispatch({ type: ACTION_TYPES.UPSERT_ENTRY, payload: entry });
+        return dispatch({ type: ACTION_TYPES.UPSERT_ENTRY, payload: entry });
       },
       deleteEntry(id) {
-        return this.dispatch({ type: ACTION_TYPES.DELETE_ENTRY, payload: id });
+        return dispatch({ type: ACTION_TYPES.DELETE_ENTRY, payload: id });
       },
       addActivity(activity) {
-        return this.dispatch({ type: ACTION_TYPES.ADD_ACTIVITY, payload: activity });
+        return dispatch({ type: ACTION_TYPES.ADD_ACTIVITY, payload: activity });
       },
       deleteActivity(id) {
-        return this.dispatch({ type: ACTION_TYPES.DELETE_ACTIVITY, payload: id });
+        return dispatch({ type: ACTION_TYPES.DELETE_ACTIVITY, payload: id });
       },
       setCategories(categories) {
-        return this.dispatch({ type: ACTION_TYPES.SET_CATEGORIES, payload: categories });
+        return dispatch({ type: ACTION_TYPES.SET_CATEGORIES, payload: categories });
       },
       setModal(modal) {
-        return this.dispatch({ type: ACTION_TYPES.SET_MODAL, payload: modal });
+        return dispatch({ type: ACTION_TYPES.SET_MODAL, payload: modal });
       },
       closeModal() {
-        return this.dispatch({ type: ACTION_TYPES.CLOSE_MODAL });
+        return dispatch({ type: ACTION_TYPES.CLOSE_MODAL });
       },
       setError(error) {
-        return this.dispatch({ type: ACTION_TYPES.SET_ERROR, payload: error });
+        return dispatch({ type: ACTION_TYPES.SET_ERROR, payload: error });
       },
       clearError() {
-        return this.dispatch({ type: ACTION_TYPES.CLEAR_ERROR });
+        return dispatch({ type: ACTION_TYPES.CLEAR_ERROR });
       },
       setNotice(notice) {
-        return this.dispatch({ type: ACTION_TYPES.SET_NOTICE, payload: notice });
+        return dispatch({ type: ACTION_TYPES.SET_NOTICE, payload: notice });
       },
       clearNotice() {
-        return this.dispatch({ type: ACTION_TYPES.CLEAR_NOTICE });
+        return dispatch({ type: ACTION_TYPES.CLEAR_NOTICE });
       },
       setAuthUser(user) {
-        return this.dispatch({ type: ACTION_TYPES.SET_AUTH_USER, payload: user });
+        return dispatch({ type: ACTION_TYPES.SET_AUTH_USER, payload: user });
       },
       clearAuthUser() {
-        return this.dispatch({ type: ACTION_TYPES.CLEAR_AUTH_USER });
+        return dispatch({ type: ACTION_TYPES.CLEAR_AUTH_USER });
       },
     },
   };

@@ -13,6 +13,7 @@ export function createTimeEntry({
   end,
   endDate,
   mins,
+  viaTimer,
 } = {}) {
   const duration = Number.isFinite(mins) ? Math.max(0, mins) : durationBetween(start, end);
 
@@ -25,6 +26,7 @@ export function createTimeEntry({
     end,
     ...(endDate ? { endDate } : {}),
     mins: duration,
+    ...(typeof viaTimer === 'boolean' ? { viaTimer } : {}),
   };
 }
 
@@ -41,6 +43,7 @@ export function isTimeEntry(value) {
     typeof value.start === 'string' &&
     typeof value.end === 'string' &&
     Number.isFinite(value.mins) &&
-    (value.categoryId === null || typeof value.categoryId === 'string'),
+    (value.categoryId === null || typeof value.categoryId === 'string') &&
+    (value.viaTimer === undefined || typeof value.viaTimer === 'boolean'),
   );
 }

@@ -81,6 +81,7 @@ export async function createAppState() {
     authUser: restoredAuthUser,
     tab: 'entry',
     period: '7',
+    shortcutCategoryFilter: 'all',
     customStart: null,
     customEnd: null,
     editingEntryId: null,

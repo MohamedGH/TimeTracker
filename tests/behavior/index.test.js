@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setConsentStatus, clearConsentDecision } from '../../src/core/analytics/consent.js';
 import {
-  initBehaviorTracking, resetBehaviorTracking, getBehaviorTracking, runPatternDetection, getFeatureCandidates,
-  createEventStore, createSemanticEvent, NODE_TYPES,
+  initBehaviorTracking, resetBehaviorTracking, getBehaviorTracking, runPatternDetection,
+  getFeatureCandidates, getBehaviorDetectionMeta, createEventStore, createSemanticEvent, NODE_TYPES,
 } from '../../src/core/behavior/index.js';
 
 function seqEvents(userId, sessionId, actions, startTs = 0, gapMs = 1000) {
@@ -66,9 +66,6 @@ describe('initBehaviorTracking', () => {
       }
     }
 
-    // Real (short) interval rather than fake timers: fake-indexeddb relies
-    // on real timer/microtask scheduling internally, so faking the clock
-    // here would deadlock the IndexedDB-backed pattern-detection run.
     const root = document.getElementById('app');
     const instance = initBehaviorTracking({ root, patternDetectionIntervalMs: 20 });
     await instance.ready;
@@ -84,7 +81,7 @@ describe('runPatternDetection', () => {
     expect(await runPatternDetection()).toBeNull();
   });
 
-  it('mines stored history end-to-end and writes hypotheses into the live graph', async () => {
+  it('mines stored history end-to-end including sequences, abandonments, and repetitions', async () => {
     setConsentStatus(true);
     const store = createEventStore();
     for (const [user, session] of [['u1', 's1'], ['u2', 's2'], ['u3', 's3']]) {
@@ -92,18 +89,62 @@ describe('runPatternDetection', () => {
         await store.append(event);
       }
     }
+    // Add 2 rapid click clusters on the same target in separate sessions (2 clicks per cluster won't trigger 3-gram workflow)
+    for (const [session, baseTs] of [['s4', 10_000], ['s5', 20_000]]) {
+      for (let i = 0; i < 3; i += 1) {
+        await store.append(createSemanticEvent({
+          action: 'click',
+          target: 'sync-btn',
+          context: 'entry',
+          sessionId: session,
+          userId: 'u1',
+          timestamp: baseTs + i * 350,
+        }));
+      }
+    }
 
     const root = document.getElementById('app');
     initBehaviorTracking({ root, patternDetectionIntervalMs: 0 });
-    const result = await runPatternDetection({ sequenceLengths: [3], minSupportUsers: 2 });
+    const result = await runPatternDetection({ sequenceLengths: [3], minSupportUsers: 1, minSupportSessions: 2 });
 
     expect(result.sequencePatterns.some(p => p.sequence.join('>') === 'search>filter>export')).toBe(true);
-    expect(result.workflows).toHaveLength(1);
+    expect(result.workflows.some(w => w.workflowNode.value === 'search_then_filter_then_export')).toBe(true);
     expect(result.workflows[0].description).toContain('3 utilisateurs');
+    expect(result.repetitionClusters.length).toBe(2);
+    expect(result.repetitions).toHaveLength(1);
+
+    const meta = getBehaviorDetectionMeta();
+    expect(meta.lastRunAt).toBeGreaterThan(0);
+    expect(meta.eventCountAtRun).toBe(15);
 
     const workflowNode = result.graph.getNode(NODE_TYPES.WORKFLOW, 'search_then_filter_then_export');
     expect(workflowNode).toBeTruthy();
     expect(workflowNode.properties.supportUsers).toBe(3);
+  });
+
+  it('deduplicates concurrent runPatternDetection calls and refreshes stale hypotheses', async () => {
+    setConsentStatus(true);
+    const store = createEventStore();
+    for (const session of ['s1', 's2']) {
+      for (const event of seqEvents('u1', session, ['search', 'filter'])) {
+        await store.append(event);
+      }
+    }
+
+    const root = document.getElementById('app');
+    initBehaviorTracking({ root, patternDetectionIntervalMs: 0 });
+
+    const [p1, p2] = await Promise.all([
+      runPatternDetection({ sequenceLengths: [2], minSupportSessions: 2 }),
+      runPatternDetection({ sequenceLengths: [2], minSupportSessions: 2 }),
+    ]);
+    expect(p1).toBe(p2);
+    expect(getFeatureCandidates().length).toBeGreaterThan(0);
+
+    // Clear store and re-run: stale hypothesis nodes should be removed cleanly
+    await store.clear();
+    await runPatternDetection({ sequenceLengths: [2], minSupportSessions: 2 });
+    expect(getFeatureCandidates()).toEqual([]);
   });
 });
 
@@ -112,7 +153,7 @@ describe('getFeatureCandidates', () => {
     expect(getFeatureCandidates()).toEqual([]);
   });
 
-  it('returns hypotheses ranked by support, all marked as unreviewed', async () => {
+  it('returns explainable hypotheses ranked by confidence and support', async () => {
     setConsentStatus(true);
     const store = createEventStore();
     for (const [user, session] of [['u1', 's1'], ['u2', 's2'], ['u3', 's3']]) {
@@ -128,14 +169,19 @@ describe('getFeatureCandidates', () => {
 
     const root = document.getElementById('app');
     initBehaviorTracking({ root, patternDetectionIntervalMs: 0 });
-    await runPatternDetection({ sequenceLengths: [2], minSupportUsers: 2 });
+    await runPatternDetection({ sequenceLengths: [2], minSupportUsers: 2, minSupportSessions: 2 });
 
     const candidates = getFeatureCandidates();
     expect(candidates.length).toBeGreaterThan(0);
-    expect(candidates.every(c => c.status === 'hypothesis')).toBe(true);
-    // Ranked descending by support.
+    for (const c of candidates) {
+      expect(c.status).toBe('hypothesis');
+      expect(c.rule).toBeTruthy();
+      expect(c.periodLabel).toBeTruthy();
+      expect(c.confidence?.label).toBeTruthy();
+      expect(Number.isFinite(c.occurrences)).toBe(true);
+    }
     for (let i = 1; i < candidates.length; i += 1) {
-      expect(candidates[i - 1].supportUsers).toBeGreaterThanOrEqual(candidates[i].supportUsers);
+      expect(candidates[i - 1].confidence.score).toBeGreaterThanOrEqual(candidates[i].confidence.score);
     }
   });
 
@@ -151,7 +197,7 @@ describe('getFeatureCandidates', () => {
 
     const root = document.getElementById('app');
     initBehaviorTracking({ root, patternDetectionIntervalMs: 0 });
-    await runPatternDetection({ sequenceLengths: [2], minSupportUsers: 2 });
+    await runPatternDetection({ sequenceLengths: [2], minSupportUsers: 2, minSupportSessions: 2 });
 
     expect(getFeatureCandidates({ limit: 1 })).toHaveLength(1);
   });
