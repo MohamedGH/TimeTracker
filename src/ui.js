@@ -48,6 +48,7 @@ import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js'
 import {
   createPwaInstallController,
   createQuickTilesBridge,
+  createDefaultQuickTilesConfig,
   collectAvailableTileActivities,
   normalizeQuickTilesConfig,
   suggestFavoriteQuickTiles,
@@ -110,6 +111,7 @@ export function createUI({
   let p2pOfferInput = '';
   let p2pAnswerInput = '';
   let reconcileBusy = false;
+  let reconcileQueued = false;
   let destroyed = false;
   let quickTilesCapabilities = {
     supported: false,
@@ -2342,35 +2344,44 @@ export function createUI({
   }
 
   async function reconcileFromNative({ openConfigIfRequested = true } = {}) {
-    if (reconcileBusy || destroyed) return false;
+    if (destroyed) return false;
+    if (reconcileBusy) {
+      reconcileQueued = true;
+      return false;
+    }
     reconcileBusy = true;
+    let changed = false;
     try {
-      const snapshot = await quickTilesBridge.getPendingSyncSnapshot();
-      const reconciled = reconcileNativeTimerSnapshot({
-        state,
-        nativeSnapshot: snapshot,
-      });
+      do {
+        reconcileQueued = false;
+        const snapshot = await quickTilesBridge.getPendingSyncSnapshot();
+        const reconciled = reconcileNativeTimerSnapshot({
+          state,
+          nativeSnapshot: snapshot,
+        });
 
-      if (reconciled.changed) {
-        state.entries = reconciled.entries;
-        state.activities = reconciled.activities;
-        state.activeTimer = reconciled.activeTimer;
-        state.timerUpdatedAt = reconciled.timerUpdatedAt;
-        _stateManager?.actions?.reconcileNativeTimer?.(reconciled);
+        if (reconciled.changed) {
+          changed = true;
+          state.entries = reconciled.entries;
+          state.activities = reconciled.activities;
+          state.activeTimer = reconciled.activeTimer;
+          state.timerUpdatedAt = reconciled.timerUpdatedAt;
+          _stateManager?.actions?.reconcileNativeTimer?.(reconciled);
 
-        await persist();
-        if (reconciled.importedEntryIds.length) {
+          await persist();
+          if (reconciled.importedEntryIds.length) {
+            await quickTilesBridge.acknowledgePendingEntries(reconciled.importedEntryIds);
+          }
+          rerender();
+        } else if (reconciled.importedEntryIds.length) {
           await quickTilesBridge.acknowledgePendingEntries(reconciled.importedEntryIds);
         }
-        rerender();
-      } else if (reconciled.importedEntryIds.length) {
-        await quickTilesBridge.acknowledgePendingEntries(reconciled.importedEntryIds);
-      }
 
-      if (openConfigIfRequested && snapshot?.pendingLaunchAction === 'open_quick_tiles_config') {
-        openQuickTilesConfigSection();
-      }
-      return reconciled.changed;
+        if (openConfigIfRequested && snapshot?.pendingLaunchAction === 'open_quick_tiles_config') {
+          openQuickTilesConfigSection();
+        }
+      } while (reconcileQueued && !destroyed);
+      return changed;
     } finally {
       reconcileBusy = false;
     }
@@ -2558,6 +2569,7 @@ export function createUI({
       state.activities = data.savedActivities;
       state.categories = [...builtins, ...data.categories.filter(c => !ids.has(c.id))];
       await persist();
+      syncQuickTilesToNative();
       trackEvent('data_imported', dataImportedPayload({ entryCount: state.entries.length, categoryCount: state.categories.length }));
       getBehaviorTracking()?.tracker.trackFormResult('data-import', 'success', { object: 'data' });
       errorManager.notifySuccess('Données importées avec succès !');
@@ -2578,12 +2590,16 @@ export function createUI({
       state.activities = [];
       state.categories = DEFAULT_CATEGORIES.map(c => ({ ...c }));
       state.activeTimer = null;
+      state.timerUpdatedAt = Date.now();
+      state.quickTilesConfig = createDefaultQuickTilesConfig();
       state.authUser = null;
       state.modal = null;
       state.editingEntryId = null;
       state.error = null;
       state.tab = 'entry';
       await persist();
+      await syncQuickTilesToNative();
+      await pushActiveTimerToNative(null, state.timerUpdatedAt);
       trackEvent('data_cleared');
       errorManager.notifyInfo('Toutes les données ont été réinitialisées.');
       rerender();

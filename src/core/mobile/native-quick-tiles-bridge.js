@@ -22,9 +22,11 @@ function createWebFallbackPlugin(win = typeof window !== 'undefined' ? window : 
         platform,
         isNative,
         apiLevel: 0,
+        androidRelease: '',
         maxSlots: QUICK_TILE_MAX_SLOTS,
         supportsRequestAddTileService: false,
         isDeviceLocked: false,
+        isKeyguardSecure: false,
         allowOnLockScreen: memoryConfig.allowOnLockScreen,
         pickerRequiresUnlockOnLockedScreen: true,
       };
@@ -109,9 +111,11 @@ export function createQuickTilesBridge({
           platform: getCapacitorPlatform(win),
           isNative: isCapacitorNative(win),
           apiLevel: 0,
+          androidRelease: '',
           maxSlots: QUICK_TILE_MAX_SLOTS,
           supportsRequestAddTileService: false,
           isDeviceLocked: false,
+          isKeyguardSecure: false,
           allowOnLockScreen: true,
           pickerRequiresUnlockOnLockedScreen: true,
         };

@@ -523,4 +523,62 @@ describe('Quick Settings Tiles UI & Android lock-screen integration', () => {
     ui.destroy();
     root.remove();
   });
+
+  it('opens quick-tiles section on cold start when native snapshot holds pendingLaunchAction and queues concurrent reconciliations', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    window.location.hash = '#dashboard';
+
+    const sim = createSimulatedAndroidTileBridge({
+      apiLevel: 34,
+      isDeviceLocked: false,
+      initialSnapshot: {
+        pendingLaunchAction: 'open_quick_tiles_config',
+      },
+    });
+    const state = createBaseState({
+      tab: 'dashboard',
+      activities: [{ id: 'a1', label: 'Travail', categoryId: 'travail', useCount: 1 }],
+    });
+
+    const ui = createUI({
+      root,
+      state,
+      persist: vi.fn().mockResolvedValue(undefined),
+      authClient: { isConfigured: () => false, signOut: vi.fn() },
+      quickTilesBridgeFactory: sim.factory,
+    });
+
+    await vi.waitFor(() => {
+      expect(state.tab).toBe('entry');
+      expect(root.querySelector('#quick-tiles-card')).toBeTruthy();
+    });
+
+    // Clear initial launch action and map slot 1
+    sim.clearLaunchAction();
+    const select1 = root.querySelector('[data-quick-tile-slot-select="1"]');
+    select1.value = 'a1';
+    select1.dispatchEvent(new Event('change'));
+    await vi.waitFor(() => {
+      expect(sim.getInternalState().config.slots?.[0]?.activity).toBe('Travail');
+    });
+
+    // Trigger overlapping native taps while reconcileFromNative runs concurrently
+    const t0 = new Date(2026, 10, 18, 12, 0, 0).getTime();
+    const t1 = t0 + 15 * 60_000;
+    const p1 = ui.reconcileFromNative();
+    sim.simulateNativeTileTap(1, t0, { locked: false });
+    sim.simulateNativeTileTap(1, t1, { locked: false });
+    const p2 = ui.reconcileFromNative();
+    await Promise.all([p1, p2]);
+
+    await vi.waitFor(() => {
+      expect(state.entries).toHaveLength(1);
+      expect(state.entries[0]).toMatchObject({ activity: 'Travail', mins: 15, viaTimer: true });
+      expect(state.activeTimer).toBeNull();
+    });
+
+    ui.destroy();
+    root.remove();
+  });
 });
