@@ -1,0 +1,15 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Carnet du temps</string>
+    <string name="title_activity_main">Carnet du temps</string>
+    <string name="package_name">com.timetracker.carnetdutemps</string>
+    <string name="custom_url_scheme">com.timetracker.carnetdutemps</string>
+    <string name="qs_tile_slot_1">TimeTracker — Tuile 1</string>
+    <string name="qs_tile_slot_2">TimeTracker — Tuile 2</string>
+    <string name="qs_tile_slot_3">TimeTracker — Tuile 3</string>
+    <string name="qs_tile_slot_4">TimeTracker — Tuile 4</string>
+    <string name="qs_tile_slot_5">TimeTracker — Tuile 5</string>
+    <string name="qs_tile_slot_6">TimeTracker — Tuile 6</string>
+    <string name="qs_tile_picker">TimeTracker — Choisir</string>
+</resources>
+
