@@ -45,7 +45,19 @@ import { moveCategory } from './state/category-actions.js';
 import { updateActivityAndEntries, moveActivity } from './state/activity-actions.js';
 import { createGoogleOidcAuth, DRIVE_APPDATA_SCOPE, DRIVE_SYNC_SCOPES } from './core/auth/index.js';
 import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js';
-import { createPwaInstallController } from './core/mobile/index.js';
+import {
+  createPwaInstallController,
+  createQuickTilesBridge,
+  collectAvailableTileActivities,
+  normalizeQuickTilesConfig,
+  suggestFavoriteQuickTiles,
+  assignActivityToQuickTile,
+  clearQuickTileSlot,
+  toggleQuickTileSlotEnabled,
+  setAllowOnLockScreen,
+  reconcileNativeTimerSnapshot,
+  isSameTimerTarget,
+} from './core/mobile/index.js';
 import {
   NAV_LAYOUTS,
   NAV_ROUTES,
@@ -79,6 +91,7 @@ export function createUI({
   driveSyncFn = syncWithGoogleDrive,
   p2pManagerFactory = createP2PSyncManager,
   pwaControllerFactory = createPwaInstallController,
+  quickTilesBridgeFactory = createQuickTilesBridge,
   deviceNavControllerFactory = createDeviceNavigationController,
 }) {
   let ticker;
@@ -96,6 +109,28 @@ export function createUI({
   let p2pRole = 'offer'; // 'offer' | 'join'
   let p2pOfferInput = '';
   let p2pAnswerInput = '';
+  let reconcileBusy = false;
+  let destroyed = false;
+  let quickTilesCapabilities = {
+    supported: false,
+    platform: 'web',
+    isNative: false,
+    apiLevel: 0,
+    maxSlots: 6,
+    supportsRequestAddTileService: false,
+    isDeviceLocked: false,
+    allowOnLockScreen: true,
+    pickerRequiresUnlockOnLockedScreen: true,
+  };
+  const nativeListenerHandles = [];
+
+  state.quickTilesConfig = normalizeQuickTilesConfig(state.quickTilesConfig, {
+    categories: state.categories,
+    activities: state.activities,
+    entries: state.entries,
+  });
+
+  const quickTilesBridge = quickTilesBridgeFactory();
 
   const pwaController = pwaControllerFactory({
     onChange: () => {
@@ -243,6 +278,7 @@ export function createUI({
       state.entries = nextSlice.entries;
       state.activeTimer = nextSlice.activeTimer;
       await persist();
+      syncQuickTilesToNative();
       trackEvent('saved_activity_moved');
       const targetCat = payload?.newCategoryId
         ? state.categories.find(c => c.id === payload.newCategoryId)
@@ -591,7 +627,8 @@ export function createUI({
       dataCard(),
       syncCard(),
       accountCard(),
-      mobileAppCard()
+      mobileAppCard(),
+      quickTilesCard()
     );
     return f;
   }
@@ -971,6 +1008,7 @@ export function createUI({
       del.onclick = async () => {
         state.activities = state.activities.filter(x => x.id !== a.id);
         await persist();
+        syncQuickTilesToNative();
         trackEvent('saved_activity_deleted');
         rerender();
       };
@@ -1579,6 +1617,7 @@ export function createUI({
         state.activeTimer = nextSlice.activeTimer;
         state.modal = null;
         await persist();
+        syncQuickTilesToNative();
         getBehaviorTracking()?.tracker.trackFormResult('activity-form', 'success', { object: 'saved_activity' });
         errorManager.notifySuccess(`Activité « ${labelVal} » modifiée !`);
         rerender();
@@ -1594,6 +1633,7 @@ export function createUI({
       });
       state.modal = null;
       await persist();
+      syncQuickTilesToNative();
       trackEvent('saved_activity_created', savedActivityCreatedPayload({ hasCategory: Boolean(c.select.value) }));
       getBehaviorTracking()?.tracker.trackFormResult('activity-form', 'success', { object: 'saved_activity' });
       errorManager.notifySuccess(`Activité « ${labelVal} » ajoutée !`);
@@ -2038,6 +2078,311 @@ export function createUI({
     return c;
   }
 
+  function quickTilesCard() {
+    const c = card('Tuiles Android & Écran verrouillé');
+    c.id = 'quick-tiles-card';
+    c.dataset.quickTilesCard = 'true';
+
+    const availableActivities = collectAvailableTileActivities({
+      activities: state.activities,
+      entries: state.entries,
+      categories: state.categories,
+    });
+    const config = normalizeQuickTilesConfig(state.quickTilesConfig, {
+      categories: state.categories,
+      activities: state.activities,
+      entries: state.entries,
+    });
+    state.quickTilesConfig = config;
+
+    const statusRow = node('div', 'quick-tiles-status-row');
+    statusRow.appendChild(
+      node(
+        'span',
+        `sync-status-pill ${quickTilesCapabilities.supported ? 'is-ok' : ''}`.trim(),
+        quickTilesCapabilities.supported
+          ? `TileService Android actif (API ${quickTilesCapabilities.apiLevel})`
+          : 'Prêt pour Capacitor Android (API 24+)'
+      )
+    );
+    const configuredCount = config.slots.filter(s => Boolean(s.activity)).length;
+    statusRow.appendChild(
+      node('span', 'quick-tiles-count-pill', `${configuredCount} / ${config.slots.length} tuiles associées`)
+    );
+    c.appendChild(statusRow);
+
+    c.appendChild(
+      node(
+        'p',
+        'muted sync-desc',
+        'Associez vos activités réelles aux tuiles Réglages rapides Android. Un appui démarre, arrête ou bascule sans ouvrir l’application ni déverrouiller si Android l’autorise.'
+      )
+    );
+
+    const toolbar = node('div', 'quick-tiles-toolbar');
+    const autofillBtn = button('Remplir depuis mes activités fréquentes', 'secondary', 'quick-tiles-autofill');
+    autofillBtn.onclick = async () => {
+      if (!availableActivities.length) {
+        errorManager.notifyInfo('Ajoutez ou enregistrez au moins une activité dans TimeTracker pour remplir les tuiles.');
+        return;
+      }
+      const suggested = suggestFavoriteQuickTiles({
+        activities: state.activities,
+        entries: state.entries,
+        categories: state.categories,
+      }, 4);
+      await updateQuickTilesConfig((prev) => ({
+        ...prev,
+        slots: suggested,
+      }));
+      errorManager.notifySuccess('Tuiles associées à vos activités réelles les plus utilisées.');
+    };
+    toolbar.appendChild(autofillBtn);
+
+    if (!availableActivities.length) {
+      const createActBtn = button('Créer une activité', 'primary', 'quick-tiles-create-activity');
+      createActBtn.onclick = () => openActivityCreateModal();
+      toolbar.appendChild(createActBtn);
+    }
+    c.appendChild(toolbar);
+
+    const lockLabel = document.createElement('label');
+    lockLabel.className = 'sync-auto-toggle quick-tiles-lock-toggle';
+    const lockCheck = document.createElement('input');
+    lockCheck.type = 'checkbox';
+    lockCheck.dataset.quickTilesLockscreen = 'true';
+    lockCheck.checked = Boolean(config.allowOnLockScreen);
+    lockCheck.onchange = async () => {
+      const checked = lockCheck.checked;
+      await updateQuickTilesConfig((prev) => setAllowOnLockScreen(prev, checked));
+      errorManager.notifyInfo(
+        checked
+          ? 'Démarrage et arrêt autorisés depuis l’écran verrouillé (selon politique Android).'
+          : 'Déverrouillage exigé avant toute action sur les tuiles.'
+      );
+    };
+    lockLabel.append(lockCheck, document.createTextNode(' Autoriser démarrage / arrêt depuis l’écran verrouillé'));
+    c.appendChild(lockLabel);
+
+    const slotsList = node('div', 'quick-tiles-slots-list');
+    for (const slot of config.slots) {
+      const row = node('div', `quick-tile-slot-row ${slot.enabled ? '' : 'is-disabled'}`.trim());
+      row.dataset.quickTileSlot = String(slot.slot);
+
+      const isActiveSlot = Boolean(
+        slot.activity && isSameTimerTarget(state.activeTimer, slot.activity, slot.categoryId)
+      );
+
+      const header = node('div', 'quick-tile-slot-header');
+      const titleWrap = node('div', 'quick-tile-slot-title');
+      titleWrap.appendChild(node('span', 'quick-tile-slot-index', `Tuile #${slot.slot}`));
+      if (slot.activity) {
+        titleWrap.appendChild(node('strong', 'quick-tile-slot-label', slot.tileLabel || `TimeTracker — ${slot.activity}`));
+        if (slot.categoryId) {
+          titleWrap.appendChild(createCategoryBadge(slot.categoryId, state.categories, { showPath: false, size: 'small' }));
+        }
+        if (isActiveSlot) {
+          titleWrap.appendChild(node('span', 'quick-tile-active-badge', 'Chrono actif'));
+        }
+      } else {
+        titleWrap.appendChild(node('span', 'muted quick-tile-slot-empty', 'Non associée'));
+      }
+      header.appendChild(titleWrap);
+
+      const enabledWrap = document.createElement('label');
+      enabledWrap.className = 'quick-tile-enable-toggle';
+      const enabledCheck = document.createElement('input');
+      enabledCheck.type = 'checkbox';
+      enabledCheck.checked = Boolean(slot.enabled);
+      enabledCheck.dataset.quickTileSlotToggle = String(slot.slot);
+      enabledCheck.setAttribute('aria-label', `Activer la tuile #${slot.slot}`);
+      enabledCheck.onchange = async () => {
+        const checked = enabledCheck.checked;
+        await updateQuickTilesConfig((prev) => toggleQuickTileSlotEnabled(prev, slot.slot, checked));
+      };
+      enabledWrap.append(enabledCheck, document.createTextNode('Active'));
+      header.appendChild(enabledWrap);
+      row.appendChild(header);
+
+      const controls = node('div', 'quick-tile-slot-controls');
+      const select = document.createElement('select');
+      select.className = 'quick-tile-activity-select';
+      select.dataset.quickTileSlotSelect = String(slot.slot);
+      select.setAttribute('aria-label', `Activité pour la tuile #${slot.slot}`);
+
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = '— Aucune activité —';
+      emptyOpt.selected = !slot.activity;
+      select.appendChild(emptyOpt);
+
+      let matchedInList = false;
+      for (const act of availableActivities) {
+        const opt = document.createElement('option');
+        opt.value = act.id;
+        opt.textContent = `${act.activity} (${act.categoryLabel})`;
+        const isSelected = Boolean(
+          slot.activity &&
+          slot.activity.toLowerCase() === act.activity.toLowerCase()
+        );
+        if (isSelected) {
+          opt.selected = true;
+          matchedInList = true;
+        }
+        select.appendChild(opt);
+      }
+
+      if (slot.activity && !matchedInList) {
+        const currentOpt = document.createElement('option');
+        currentOpt.value = `custom:${slot.activity}`;
+        currentOpt.textContent = slot.categoryLabel ? `${slot.activity} (${slot.categoryLabel})` : slot.activity;
+        currentOpt.selected = true;
+        select.appendChild(currentOpt);
+      }
+
+      select.onchange = async () => {
+        const chosenId = select.value;
+        if (!chosenId) {
+          await updateQuickTilesConfig((prev) => clearQuickTileSlot(prev, slot.slot));
+          return;
+        }
+        const chosenAct = availableActivities.find(a => a.id === chosenId);
+        if (chosenAct) {
+          await updateQuickTilesConfig((prev) => assignActivityToQuickTile(prev, slot.slot, chosenAct));
+        }
+      };
+
+      controls.appendChild(select);
+
+      if (slot.activity && quickTilesCapabilities.supportsRequestAddTileService) {
+        const addBtn = button('Ajouter', 'small secondary', 'quick-tile-add-os');
+        addBtn.dataset.quickTileSlotAdd = String(slot.slot);
+        addBtn.onclick = async () => {
+          const res = await quickTilesBridge.requestAddTile(slot.slot);
+          if (res?.status === 'added') {
+            errorManager.notifySuccess(`Tuile « ${slot.activity} » ajoutée aux Réglages rapides.`);
+          } else if (res?.status === 'already_added') {
+            errorManager.notifyInfo(`La tuile « ${slot.activity} » est déjà présente dans vos Réglages rapides.`);
+          } else if (res?.message) {
+            errorManager.notifyInfo(res.message);
+          }
+        };
+        controls.appendChild(addBtn);
+      }
+
+      row.appendChild(controls);
+      slotsList.appendChild(row);
+    }
+
+    c.appendChild(slotsList);
+
+    c.appendChild(
+      node(
+        'p',
+        'muted quick-tiles-picker-note',
+        'Note : la tuile unique « TimeTracker — Choisir » ouvre une liste native lorsqu’il est déverrouillé (mécanisme secondaire ; sur écran verrouillé, Android impose le déverrouillage).'
+      )
+    );
+
+    return c;
+  }
+
+  async function updateQuickTilesConfig(updaterOrConfig) {
+    const current = normalizeQuickTilesConfig(state.quickTilesConfig, {
+      categories: state.categories,
+      activities: state.activities,
+      entries: state.entries,
+    });
+    const nextConfig = typeof updaterOrConfig === 'function'
+      ? updaterOrConfig(current)
+      : updaterOrConfig;
+    state.quickTilesConfig = normalizeQuickTilesConfig(nextConfig, {
+      categories: state.categories,
+      activities: state.activities,
+      entries: state.entries,
+    });
+    _stateManager?.actions?.setQuickTilesConfig?.(state.quickTilesConfig);
+    await persist();
+    await syncQuickTilesToNative();
+    rerender();
+  }
+
+  async function syncQuickTilesToNative() {
+    const config = normalizeQuickTilesConfig(state.quickTilesConfig, {
+      categories: state.categories,
+      activities: state.activities,
+      entries: state.entries,
+    });
+    state.quickTilesConfig = config;
+    const availableActivities = collectAvailableTileActivities({
+      activities: state.activities,
+      entries: state.entries,
+      categories: state.categories,
+    });
+    await quickTilesBridge.syncConfiguration({
+      config,
+      availableActivities,
+    });
+  }
+
+  async function pushActiveTimerToNative(timer, updatedAt = Date.now()) {
+    const cat = timer?.categoryId
+      ? state.categories.find(c => c.id === timer.categoryId)
+      : null;
+    const payloadTimer = timer
+      ? {
+          ...timer,
+          categoryLabel: cat?.label || null,
+        }
+      : null;
+    await quickTilesBridge.syncActiveTimer({
+      activeTimer: payloadTimer,
+      updatedAt,
+    });
+  }
+
+  async function reconcileFromNative({ openConfigIfRequested = true } = {}) {
+    if (reconcileBusy || destroyed) return false;
+    reconcileBusy = true;
+    try {
+      const snapshot = await quickTilesBridge.getPendingSyncSnapshot();
+      const reconciled = reconcileNativeTimerSnapshot({
+        state,
+        nativeSnapshot: snapshot,
+      });
+
+      if (reconciled.changed) {
+        state.entries = reconciled.entries;
+        state.activities = reconciled.activities;
+        state.activeTimer = reconciled.activeTimer;
+        state.timerUpdatedAt = reconciled.timerUpdatedAt;
+        _stateManager?.actions?.reconcileNativeTimer?.(reconciled);
+
+        await persist();
+        if (reconciled.importedEntryIds.length) {
+          await quickTilesBridge.acknowledgePendingEntries(reconciled.importedEntryIds);
+        }
+        rerender();
+      } else if (reconciled.importedEntryIds.length) {
+        await quickTilesBridge.acknowledgePendingEntries(reconciled.importedEntryIds);
+      }
+
+      if (openConfigIfRequested && snapshot?.pendingLaunchAction === 'open_quick_tiles_config') {
+        openQuickTilesConfigSection();
+      }
+      return reconciled.changed;
+    } finally {
+      reconcileBusy = false;
+    }
+  }
+
+  function openQuickTilesConfigSection() {
+    routeManager.navigate('entry');
+    state.modal = null;
+    rerender();
+    root.querySelector('#quick-tiles-card')?.scrollIntoView?.({ behavior: 'smooth' });
+  }
+
   function accountSectionContent() {
     const wrap = node('div', 'auth-account-panel');
     if (state.authUser) {
@@ -2254,14 +2599,17 @@ export function createUI({
       errorManager.handleError(new Error('Activité ou catégorie manquante.'), 'timer');
       return;
     }
+    const nowTs = Date.now();
     state.activeTimer = createActiveTimer({
       activity,
       categoryId,
-      startTs: Date.now(),
+      startTs: nowTs,
       startTime: startTime || nowTime(),
       date: date || today(),
     });
+    state.timerUpdatedAt = nowTs;
     await persist();
+    pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
     trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(categoryId) }));
     errorManager.notifySuccess(`Chronomètre lancé pour « ${activity} »`);
     rerender();
@@ -2270,9 +2618,10 @@ export function createUI({
   async function stopTimer() {
     const t = state.activeTimer;
     if (!t) return;
+    const nowTs = Date.now();
     const end = nowTime();
     const endDate = t.date === today() ? t.date : today();
-    const durationMinutes = elapsedMinutes(t);
+    const durationMinutes = elapsedMinutes(t, nowTs);
     const hasCategory = Boolean(t.categoryId ?? t.cat);
     const entry = createTimeEntry({
       id: crypto.randomUUID(),
@@ -2287,6 +2636,7 @@ export function createUI({
     });
     state.entries = [entry, ...state.entries];
     state.activeTimer = null;
+    state.timerUpdatedAt = nowTs;
 
     // Update usage on saved activities if found
     const actIdx = state.activities.findIndex(a => (a.label || a.activity) === t.activity);
@@ -2296,6 +2646,7 @@ export function createUI({
     }
 
     await persist();
+    pushActiveTimerToNative(null, nowTs).catch(() => {});
     trackEvent('timer_stopped', timerStoppedPayload({ durationMinutes, hasCategory }));
     trackEvent('time_entry_created', timeEntryCreatedPayload({ durationMinutes, hasCategory, viaTimer: true }));
     errorManager.notifySuccess(`Session « ${t.activity} » enregistrée (${formatDuration(durationMinutes)})`);
@@ -2414,21 +2765,65 @@ export function createUI({
     e.preventDefault();
     routeManager.navigate(route);
   };
+  const handleVisibilityReconcile = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      reconcileFromNative().catch(() => {});
+    }
+  };
+  const handleFocusReconcile = () => {
+    reconcileFromNative().catch(() => {});
+  };
 
   if (typeof window !== 'undefined') {
     window.addEventListener('online', handleOnlineSync);
     window.addEventListener('keydown', handleDesktopShortcut);
+    window.addEventListener('focus', handleFocusReconcile);
   }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityReconcile);
+  }
+
+  // Initialize native Quick Settings bridge & reconcile any background/lockscreen tile events
+  Promise.resolve().then(async () => {
+    const caps = await quickTilesBridge.getCapabilities();
+    if (destroyed) return;
+    quickTilesCapabilities = caps;
+    await reconcileFromNative();
+    await syncQuickTilesToNative();
+    await pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt || state.activeTimer?.startTs || 0);
+
+    const h1 = await quickTilesBridge.addListener('nativeTimerStateChanged', () => {
+      reconcileFromNative().catch(() => {});
+    });
+    const h2 = await quickTilesBridge.addListener('openQuickTilesConfig', () => {
+      openQuickTilesConfigSection();
+    });
+    if (destroyed) {
+      h1?.remove?.();
+      h2?.remove?.();
+    } else {
+      nativeListenerHandles.push(h1, h2);
+      rerender();
+    }
+  }).catch(() => {});
 
   render();
   return {
     render,
+    reconcileFromNative,
     destroy: () => {
+      destroyed = true;
       clearInterval(ticker);
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnlineSync);
         window.removeEventListener('keydown', handleDesktopShortcut);
+        window.removeEventListener('focus', handleFocusReconcile);
       }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityReconcile);
+      }
+      nativeListenerHandles.forEach(handle => handle?.remove?.());
+      nativeListenerHandles.length = 0;
       deviceNavController.destroy();
       pwaController.destroy();
       p2pManager.disconnect();

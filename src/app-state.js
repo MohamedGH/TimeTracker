@@ -4,6 +4,7 @@ import { DEFAULT_CATEGORIES, normalizeEntries } from './core/model.js';
 import { migrateCategoryTree } from './core/category-tree.js';
 import { createStateManager } from './core/state-manager.js';
 import { detectDeviceType } from './core/device-navigation.js';
+import { normalizeQuickTilesConfig } from './core/mobile/quick-tiles.js';
 import { isSessionValid } from './core/auth/oidc.js';
 import {
   diffAndStampCollection,
@@ -15,11 +16,23 @@ import {
 export async function createAppState() {
   await migratePersistedData();
 
-  const [entries, activities, storedCategories, activeTimer, storedAuthSession, storedTombstones, storedSyncMeta] = await Promise.all([
+  const [
+    entries,
+    activities,
+    storedCategories,
+    activeTimer,
+    storedTimerUpdatedAt,
+    storedQuickTilesConfig,
+    storedAuthSession,
+    storedTombstones,
+    storedSyncMeta,
+  ] = await Promise.all([
     getValue(STORAGE_KEYS.entries, []),
     getValue(STORAGE_KEYS.activities, []),
     getValue(STORAGE_KEYS.categories, []),
     getValue(STORAGE_KEYS.activeTimer, null),
+    getValue(STORAGE_KEYS.timerUpdatedAt, 0),
+    getValue(STORAGE_KEYS.quickTilesConfig, null),
     getValue(STORAGE_KEYS.authSession, null),
     getValue(STORAGE_KEYS.syncTombstones, null),
     getValue(STORAGE_KEYS.syncMeta, null),
@@ -55,6 +68,12 @@ export async function createAppState() {
     : [];
 
   const normalizedEntries = normalizeEntries(entries, categories, []).map(e => stampItem(e, 1));
+  const normalizedQuickTilesConfig = normalizeQuickTilesConfig(storedQuickTilesConfig, {
+    categories,
+    activities: normalizedActivities,
+    entries: normalizedEntries,
+  });
+  const initialTimerUpdatedAt = Number(storedTimerUpdatedAt) || Number(activeTimer?.startTs) || 0;
   const restoredAuthUser = isSessionValid(storedAuthSession) ? storedAuthSession.user : null;
 
   let currentTombstones = storedTombstones ? normalizeTombstones(storedTombstones) : emptyTombstones();
@@ -79,6 +98,8 @@ export async function createAppState() {
     activities: normalizedActivities,
     categories,
     activeTimer: activeTimer || null,
+    timerUpdatedAt: initialTimerUpdatedAt,
+    quickTilesConfig: normalizedQuickTilesConfig,
     authUser: restoredAuthUser,
     tab: 'entry',
     period: '7',
@@ -121,6 +142,8 @@ export async function createAppState() {
       setValue(STORAGE_KEYS.activities, s.activities),
       setValue(STORAGE_KEYS.categories, s.categories),
       setValue(STORAGE_KEYS.activeTimer, s.activeTimer),
+      setValue(STORAGE_KEYS.timerUpdatedAt, Number(s.timerUpdatedAt) || 0),
+      setValue(STORAGE_KEYS.quickTilesConfig, s.quickTilesConfig || normalizedQuickTilesConfig),
       setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
     ]);
   }

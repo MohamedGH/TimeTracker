@@ -7,6 +7,7 @@ import { DEFAULT_CATEGORIES } from './model.js';
 import { createTimeEntry } from './time-entry.js';
 import { createActiveTimer, elapsedMinutes } from './timer.js';
 import { today } from './time.js';
+import { createDefaultQuickTilesConfig } from './mobile/quick-tiles.js';
 
 export const ACTION_TYPES = Object.freeze({
   SET_TAB: 'SET_TAB',
@@ -18,6 +19,8 @@ export const ACTION_TYPES = Object.freeze({
   SET_EDITING_ENTRY: 'SET_EDITING_ENTRY',
   START_TIMER: 'START_TIMER',
   STOP_TIMER: 'STOP_TIMER',
+  SET_QUICK_TILES_CONFIG: 'SET_QUICK_TILES_CONFIG',
+  RECONCILE_NATIVE_TIMER: 'RECONCILE_NATIVE_TIMER',
   UPSERT_ENTRY: 'UPSERT_ENTRY',
   DELETE_ENTRY: 'DELETE_ENTRY',
   ADD_ACTIVITY: 'ADD_ACTIVITY',
@@ -88,7 +91,7 @@ export function appReducer(state, action) {
       };
 
     case ACTION_TYPES.START_TIMER: {
-      const { activity, categoryId, date, startTime, startTs = Date.now() } = action.payload;
+      const { activity, categoryId, date, startTime, startTs = Date.now(), updatedAt } = action.payload;
       const timer = createActiveTimer({
         activity,
         categoryId,
@@ -99,6 +102,7 @@ export function appReducer(state, action) {
       return {
         ...state,
         activeTimer: timer,
+        timerUpdatedAt: Number.isFinite(Number(updatedAt)) ? Number(updatedAt) : startTs,
         error: null,
       };
     }
@@ -131,9 +135,31 @@ export function appReducer(state, action) {
       return {
         ...state,
         activeTimer: null,
+        timerUpdatedAt: Number.isFinite(Number(action.payload?.updatedAt))
+          ? Number(action.payload.updatedAt)
+          : Date.now(),
         entries: [entry, ...state.entries],
         activities: nextActivities,
         error: null,
+      };
+    }
+
+    case ACTION_TYPES.SET_QUICK_TILES_CONFIG:
+      return {
+        ...state,
+        quickTilesConfig: action.payload || createDefaultQuickTilesConfig(),
+      };
+
+    case ACTION_TYPES.RECONCILE_NATIVE_TIMER: {
+      const next = action.payload || {};
+      return {
+        ...state,
+        entries: Array.isArray(next.entries) ? next.entries : state.entries,
+        activities: Array.isArray(next.activities) ? next.activities : state.activities,
+        activeTimer: next.activeTimer !== undefined ? next.activeTimer : state.activeTimer,
+        timerUpdatedAt: Number.isFinite(Number(next.timerUpdatedAt))
+          ? Number(next.timerUpdatedAt)
+          : state.timerUpdatedAt,
       };
     }
 
@@ -316,6 +342,8 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     activities: [],
     categories: [...DEFAULT_CATEGORIES],
     activeTimer: null,
+    timerUpdatedAt: 0,
+    quickTilesConfig: createDefaultQuickTilesConfig(),
     tab: 'entry',
     period: '7',
     shortcutCategoryFilter: 'all',
@@ -341,7 +369,9 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       prevState.entries !== nextState.entries ||
       prevState.activities !== nextState.activities ||
       prevState.categories !== nextState.categories ||
-      prevState.activeTimer !== nextState.activeTimer
+      prevState.activeTimer !== nextState.activeTimer ||
+      prevState.quickTilesConfig !== nextState.quickTilesConfig ||
+      prevState.timerUpdatedAt !== nextState.timerUpdatedAt
     ) {
       if (typeof persistFn === 'function') {
         try {
@@ -394,6 +424,12 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       stopTimer(payload) {
         return dispatch({ type: ACTION_TYPES.STOP_TIMER, payload });
+      },
+      setQuickTilesConfig(config) {
+        return dispatch({ type: ACTION_TYPES.SET_QUICK_TILES_CONFIG, payload: config });
+      },
+      reconcileNativeTimer(reconciled) {
+        return dispatch({ type: ACTION_TYPES.RECONCILE_NATIVE_TIMER, payload: reconciled });
       },
       upsertEntry(entry) {
         return dispatch({ type: ACTION_TYPES.UPSERT_ENTRY, payload: entry });

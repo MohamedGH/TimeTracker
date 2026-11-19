@@ -2977,4 +2977,146 @@ canvas {
   margin: 0;
 }
 
+/* =========================================================================
+   ANDROID QUICK SETTINGS TILES & LOCKSCREEN CONFIGURATION CARD
+   ========================================================================= */
+
+.quick-tiles-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.quick-tiles-count-pill {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.quick-tiles-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.quick-tiles-toolbar .btn {
+  flex: 1 1 200px;
+  min-height: 42px;
+  margin: 0;
+}
+
+.quick-tiles-lock-toggle {
+  margin-bottom: 12px;
+}
+
+.quick-tiles-slots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quick-tile-slot-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.quick-tile-slot-row.is-disabled {
+  opacity: 0.68;
+}
+
+.quick-tile-slot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.quick-tile-slot-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.quick-tile-slot-index {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--paper-card);
+  border: 1px solid var(--line-subtle);
+}
+
+.quick-tile-slot-label {
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.quick-tile-slot-empty {
+  font-size: 13px;
+}
+
+.quick-tile-active-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #2F5C34;
+  background: var(--moss-light);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.quick-tile-enable-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.quick-tile-slot-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-tile-activity-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-size: 13.5px;
+}
+
+.quick-tile-slot-controls .btn {
+  width: auto;
+  margin: 0;
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+.quick-tiles-picker-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+
 
