@@ -29,6 +29,7 @@ import {
   renderCategoryEditorModal,
   renderCategoryDeleteConfirmModal,
 } from './components/categories/category-manager.js';
+import { renderMergeModal } from './components/merge/merge-modal.js';
 import { createRouteManager } from './core/route-manager.js';
 import { createErrorManager } from './core/error-manager.js';
 import { calculateDashboardStats, filterEntriesByPeriod, formatDuration } from './core/statistics.js';
@@ -41,8 +42,13 @@ import {
   filterShortcutGroups,
 } from './core/shortcuts-by-category.js';
 import { installCategorySelectors } from './category-selector.js';
-import { moveCategory } from './state/category-actions.js';
-import { updateActivityAndEntries, moveActivity } from './state/activity-actions.js';
+import { moveCategory, mergeCategoriesState } from './state/category-actions.js';
+import {
+  updateActivityAndEntries,
+  moveActivity,
+  mergeActivitiesState,
+  collectMergeableActivities,
+} from './state/activity-actions.js';
 import { createGoogleOidcAuth, DRIVE_APPDATA_SCOPE, DRIVE_SYNC_SCOPES } from './core/auth/index.js';
 import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js';
 import {
@@ -301,6 +307,128 @@ export function createUI({
     }
   }
 
+  function openMergeModal({
+    mode = 'categories',
+    sourceCategoryId = null,
+    targetCategoryId = null,
+    sourceActivityKey = null,
+    targetActivityKey = null,
+  } = {}) {
+    state.modal = {
+      type: 'merge-items',
+      mode: mode === 'activities' ? 'activities' : 'categories',
+      sourceCategoryId,
+      targetCategoryId,
+      sourceActivityKey,
+      targetActivityKey,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  async function handleMergeCategories({ sourceId, targetId }) {
+    try {
+      const merged = mergeCategoriesState(state, { sourceId, targetId });
+      if (_stateManager?.actions?.mergeCategories && _stateManager?.getState) {
+        const smState = _stateManager.getState();
+        if (smState !== state) {
+          Object.assign(smState, {
+            categories: state.categories,
+            entries: state.entries,
+            activities: state.activities,
+            activeTimer: state.activeTimer,
+            quickTilesConfig: state.quickTilesConfig,
+            timerUpdatedAt: state.timerUpdatedAt,
+          });
+        }
+        const nextSm = _stateManager.actions.mergeCategories({ sourceId, targetId });
+        state.categories = nextSm.categories;
+        state.entries = nextSm.entries;
+        state.activities = nextSm.activities;
+        state.activeTimer = nextSm.activeTimer;
+        state.quickTilesConfig = nextSm.quickTilesConfig;
+        state.timerUpdatedAt = nextSm.timerUpdatedAt;
+      } else {
+        state.categories = merged.categories;
+        state.entries = merged.entries;
+        state.activities = merged.activities;
+        state.activeTimer = merged.activeTimer;
+        if (merged.quickTilesConfig) state.quickTilesConfig = merged.quickTilesConfig;
+        if (merged.summary.affectsActiveTimer) {
+          state.timerUpdatedAt = Math.max(Date.now(), (Number(state.timerUpdatedAt) || 0) + 1);
+        }
+      }
+      state.modal = null;
+      state.error = null;
+      await persist();
+      await syncQuickTilesToNative();
+      if (merged.summary.affectsActiveTimer) {
+        pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt).catch(() => {});
+      }
+      trackEvent(ANALYTICS_EVENTS.CATEGORY_MERGED, {
+        entries_count: merged.summary.entriesCount,
+        activities_count: merged.summary.savedActivitiesCount,
+      });
+      errorManager.notifySuccess(
+        `« ${merged.summary.sourceLabel} » fusionnée dans « ${merged.summary.targetLabel} » (${merged.summary.entriesCount} session${merged.summary.entriesCount > 1 ? 's' : ''} transférée${merged.summary.entriesCount > 1 ? 's' : ''}).`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'merge');
+      rerender();
+    }
+  }
+
+  async function handleMergeActivities({ source, target }) {
+    try {
+      const merged = mergeActivitiesState(state, { source, target });
+      if (_stateManager?.actions?.mergeActivities && _stateManager?.getState) {
+        const smState = _stateManager.getState();
+        if (smState !== state) {
+          Object.assign(smState, {
+            categories: state.categories,
+            entries: state.entries,
+            activities: state.activities,
+            activeTimer: state.activeTimer,
+            quickTilesConfig: state.quickTilesConfig,
+            timerUpdatedAt: state.timerUpdatedAt,
+          });
+        }
+        const nextSm = _stateManager.actions.mergeActivities({ source, target });
+        state.activities = nextSm.activities;
+        state.entries = nextSm.entries;
+        state.activeTimer = nextSm.activeTimer;
+        state.quickTilesConfig = nextSm.quickTilesConfig;
+        state.timerUpdatedAt = nextSm.timerUpdatedAt;
+      } else {
+        state.activities = merged.activities;
+        state.entries = merged.entries;
+        state.activeTimer = merged.activeTimer;
+        if (merged.quickTilesConfig) state.quickTilesConfig = merged.quickTilesConfig;
+        if (merged.summary.affectsActiveTimer) {
+          state.timerUpdatedAt = Math.max(Date.now(), (Number(state.timerUpdatedAt) || 0) + 1);
+        }
+      }
+      state.modal = null;
+      state.error = null;
+      await persist();
+      await syncQuickTilesToNative();
+      if (merged.summary.affectsActiveTimer) {
+        pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt).catch(() => {});
+      }
+      trackEvent(ANALYTICS_EVENTS.SAVED_ACTIVITY_MERGED, {
+        entries_count: merged.summary.entriesCount,
+      });
+      errorManager.notifySuccess(
+        `« ${merged.summary.sourceLabel} » fusionnée dans « ${merged.summary.targetLabel} » (${merged.summary.entriesCount} session${merged.summary.entriesCount > 1 ? 's' : ''} mise${merged.summary.entriesCount > 1 ? 's' : ''} à jour).`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'merge');
+      rerender();
+    }
+  }
+
   const categoryManager = createCategoryManager({
     state,
     persist,
@@ -312,6 +440,7 @@ export function createUI({
     onEditActivity: (payload) => openActivityEditModal(payload),
     onMoveCategory: handleMoveCategory,
     onMoveActivity: handleMoveActivity,
+    onMergeCategory: (sourceCategoryId) => openMergeModal({ mode: 'categories', sourceCategoryId }),
   });
 
   function render() {
@@ -988,13 +1117,25 @@ export function createUI({
 
   function activitiesCard() {
     const c = card('Activités enregistrées');
+    const actionRow = node('div', 'action-row');
     const add = button('Ajouter une activité', 'secondary', 'activity-add-open');
     add.onclick = () => {
       state.modal = { type: 'activity' };
       state.error = null;
       rerender();
     };
-    c.appendChild(add);
+    const mergeActivitiesBtn = button('⇄ Fusionner', 'secondary', 'activity-merge-open');
+    const mergeableCount = collectMergeableActivities({
+      activities: state.activities,
+      entries: state.entries,
+      categories: state.categories,
+    }).length;
+    mergeActivitiesBtn.disabled = mergeableCount < 2;
+    mergeActivitiesBtn.title = 'Fusionner deux activités';
+    mergeActivitiesBtn.onclick = () => openMergeModal({ mode: 'activities' });
+
+    actionRow.append(add, mergeActivitiesBtn);
+    c.appendChild(actionRow);
 
     for (const a of state.activities) {
       const r = node('div', 'entry-row');
@@ -1483,6 +1624,26 @@ export function createUI({
 
     if (m.type === 'custom-category-delete-confirm') {
       return renderCategoryDeleteConfirmModal({ state, modal: m, persist, rerender });
+    }
+
+    if (m.type === 'merge-items') {
+      return renderMergeModal({
+        state,
+        modal: m,
+        onClose: () => {
+          state.modal = null;
+          rerender();
+        },
+        onSwitchMode: (nextMode) => {
+          state.modal = {
+            ...m,
+            mode: nextMode,
+          };
+          rerender();
+        },
+        onSubmitCategoryMerge: handleMergeCategories,
+        onSubmitActivityMerge: handleMergeActivities,
+      });
     }
 
     if (m.type === 'category' || m.type === 'rename') {

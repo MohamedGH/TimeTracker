@@ -3133,5 +3133,107 @@ canvas {
   line-height: 1.45;
 }
 
+/* =========================================================================
+   MERGE CATEGORIES & ACTIVITIES (MOBILE-FIRST & RESPONSIVE)
+   ========================================================================= */
 
+.category-header-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
 
+.category-merge-open-btn {
+  width: 100%;
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.category-item-row__actions {
+  flex-wrap: wrap;
+}
+
+.merge-modal .merge-mode-tabs {
+  margin-bottom: 12px;
+}
+
+.merge-desc {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.merge-form .field {
+  margin-bottom: 10px;
+}
+
+.merge-form select {
+  width: 100%;
+  min-height: 44px;
+}
+
+.merge-swap-row {
+  display: flex;
+  justify-content: center;
+  margin: 4px 0 10px;
+}
+
+.merge-swap-btn {
+  min-height: 36px;
+  width: auto;
+  margin: 0;
+}
+
+.merge-impact-card {
+  background: var(--paper-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin: 12px 0 4px;
+}
+
+.merge-preview-flow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13.5px;
+}
+
+.merge-arrow {
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.merge-impact-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.merge-warning-box {
+  background: rgba(185, 72, 54, 0.1);
+  border: 1px solid rgba(185, 72, 54, 0.35);
+  color: var(--danger, #9e3322);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (min-width: 640px) {
+  .category-header-actions {
+    flex-direction: row;
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  .category-add-btn,
+  .category-merge-open-btn {
+    width: auto;
+  }
+}

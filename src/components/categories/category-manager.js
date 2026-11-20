@@ -15,6 +15,7 @@ export function createCategoryManager({
   onEditActivity = null,
   onMoveCategory = null,
   onMoveActivity = null,
+  onMergeCategory = null,
 }) {
   let searchQuery = '';
   let activeFilter = 'all'; // 'all' | 'roots' | 'children'
@@ -104,6 +105,9 @@ export function createCategoryManager({
     subtitle.textContent = 'Créez, modifiez et organisez vos catégories avec des étiquettes colorées pour catégoriser vos activités.';
     titleGroup.append(title, subtitle);
 
+    const headerActions = document.createElement('div');
+    headerActions.className = 'category-header-actions';
+
     const addRootBtn = document.createElement('button');
     addRootBtn.type = 'button';
     addRootBtn.className = 'btn category-add-btn';
@@ -113,7 +117,23 @@ export function createCategoryManager({
       openCategoryModal({ mode: 'create', parentId: null });
     };
 
-    topRow.append(titleGroup, addRootBtn);
+    const mergeBtn = document.createElement('button');
+    mergeBtn.type = 'button';
+    mergeBtn.className = 'btn secondary category-merge-open-btn';
+    mergeBtn.dataset.behaviorTarget = 'category-merge-open';
+    mergeBtn.textContent = '⇄ Fusionner';
+    mergeBtn.title = 'Fusionner deux catégories ou activités';
+    mergeBtn.disabled = state.categories.length < 2;
+    mergeBtn.onclick = () => {
+      if (typeof onMergeCategory === 'function') {
+        onMergeCategory(null);
+      } else {
+        openMergeCategoriesModal(null);
+      }
+    };
+
+    headerActions.append(addRootBtn, mergeBtn);
+    topRow.append(titleGroup, headerActions);
     card.appendChild(topRow);
 
     // Stats Grid
@@ -546,7 +566,24 @@ export function createCategoryManager({
       openCategoryModal({ mode: 'edit', categoryId: category.id });
     };
 
-    // 3. Delete button
+    // 3. Merge button
+    const mergeRowBtn = document.createElement('button');
+    mergeRowBtn.type = 'button';
+    mergeRowBtn.className = 'btn small secondary';
+    mergeRowBtn.dataset.behaviorTarget = 'category-merge';
+    mergeRowBtn.textContent = 'Fusionner';
+    mergeRowBtn.title = `Fusionner « ${category.label} » dans une autre catégorie`;
+    mergeRowBtn.disabled = state.categories.length < 2;
+    mergeRowBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (typeof onMergeCategory === 'function') {
+        onMergeCategory(category.id);
+      } else {
+        openMergeCategoriesModal(category.id);
+      }
+    };
+
+    // 4. Delete button
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'btn small danger';
@@ -558,7 +595,7 @@ export function createCategoryManager({
       openDeleteConfirmModal(category.id);
     };
 
-    actions.append(addChildBtn, editBtn, deleteBtn);
+    actions.append(addChildBtn, editBtn, mergeRowBtn, deleteBtn);
     row.append(left, actions);
     return row;
   }
@@ -597,6 +634,17 @@ export function createCategoryManager({
       descendants,
       entryCount,
       activityCount,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  function openMergeCategoriesModal(sourceCategoryId = null) {
+    state.modal = {
+      type: 'merge-items',
+      mode: 'categories',
+      sourceCategoryId,
+      targetCategoryId: null,
     };
     state.error = null;
     rerender();

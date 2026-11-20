@@ -38,7 +38,11 @@ export async function createAppState() {
     getValue(STORAGE_KEYS.syncMeta, null),
   ]);
 
-  const categories = mergeCategories(DEFAULT_CATEGORIES, migrateCategoryTree(storedCategories, [])).map(c => stampItem(c, 1));
+  const categories = mergeCategories(
+    DEFAULT_CATEGORIES,
+    migrateCategoryTree(storedCategories, []),
+    storedTombstones?.categories || null,
+  ).map(c => stampItem(c, 1));
   const categoryIds = new Set(categories.map(category => category.id));
   const categoryLabels = new Set(categories.map(category => String(category.label || '').trim().toLowerCase()).filter(Boolean));
 
@@ -225,9 +229,11 @@ export async function createAppState() {
   };
 }
 
-function mergeCategories(defaults, stored) {
+function mergeCategories(defaults, stored, categoryTombstones = null) {
   const result = [];
   const seen = new Set();
+  const hasStored = Array.isArray(stored) && stored.length > 0;
+  const tombstones = categoryTombstones && typeof categoryTombstones === 'object' ? categoryTombstones : {};
 
   // Load stored categories first so custom colors and edits are preserved
   for (const category of (Array.isArray(stored) ? stored : [])) {
@@ -242,9 +248,10 @@ function mergeCategories(defaults, stored) {
     seen.add(category.id);
   }
 
-  // Add any initial defaults if not yet present in storage
+  // Add any initial defaults if not yet present in storage and not explicitly deleted/merged
   for (const category of (Array.isArray(defaults) ? defaults : [])) {
     if (!category?.id || seen.has(category.id)) continue;
+    if (hasStored && Number(tombstones[category.id]) > 0) continue;
     result.push({
       id: category.id,
       label: String(category.label || '').trim(),

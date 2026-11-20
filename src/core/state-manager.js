@@ -8,6 +8,8 @@ import { createTimeEntry } from './time-entry.js';
 import { createActiveTimer, elapsedMinutes } from './timer.js';
 import { today } from './time.js';
 import { createDefaultQuickTilesConfig } from './mobile/quick-tiles.js';
+import { mergeCategoriesState } from '../state/category-actions.js';
+import { mergeActivitiesState } from '../state/activity-actions.js';
 
 export const ACTION_TYPES = Object.freeze({
   SET_TAB: 'SET_TAB',
@@ -27,6 +29,8 @@ export const ACTION_TYPES = Object.freeze({
   DELETE_ACTIVITY: 'DELETE_ACTIVITY',
   RECORD_ACTIVITY_USE: 'RECORD_ACTIVITY_USE',
   SET_CATEGORIES: 'SET_CATEGORIES',
+  MERGE_CATEGORIES: 'MERGE_CATEGORIES',
+  MERGE_ACTIVITIES: 'MERGE_ACTIVITIES',
   SET_ERROR: 'SET_ERROR',
   CLEAR_ERROR: 'CLEAR_ERROR',
   SET_NOTICE: 'SET_NOTICE',
@@ -221,6 +225,57 @@ export function appReducer(state, action) {
         ...state,
         categories: action.payload,
       };
+
+    case ACTION_TYPES.MERGE_CATEGORIES: {
+      const merged = mergeCategoriesState(
+        {
+          categories: state.categories,
+          entries: state.entries,
+          activities: state.activities,
+          activeTimer: state.activeTimer,
+          quickTilesConfig: state.quickTilesConfig,
+        },
+        action.payload || {}
+      );
+      return {
+        ...state,
+        categories: merged.categories,
+        entries: merged.entries,
+        activities: merged.activities,
+        activeTimer: merged.activeTimer,
+        quickTilesConfig: merged.quickTilesConfig ?? state.quickTilesConfig,
+        timerUpdatedAt: merged.summary.affectsActiveTimer
+          ? Math.max(Date.now(), (Number(state.timerUpdatedAt) || 0) + 1)
+          : state.timerUpdatedAt,
+        modal: null,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.MERGE_ACTIVITIES: {
+      const merged = mergeActivitiesState(
+        {
+          activities: state.activities,
+          entries: state.entries,
+          activeTimer: state.activeTimer,
+          quickTilesConfig: state.quickTilesConfig,
+          categories: state.categories,
+        },
+        action.payload || {}
+      );
+      return {
+        ...state,
+        activities: merged.activities,
+        entries: merged.entries,
+        activeTimer: merged.activeTimer,
+        quickTilesConfig: merged.quickTilesConfig ?? state.quickTilesConfig,
+        timerUpdatedAt: merged.summary.affectsActiveTimer
+          ? Math.max(Date.now(), (Number(state.timerUpdatedAt) || 0) + 1)
+          : state.timerUpdatedAt,
+        modal: null,
+        error: null,
+      };
+    }
 
     case ACTION_TYPES.SET_ERROR:
       return {
@@ -445,6 +500,12 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       setCategories(categories) {
         return dispatch({ type: ACTION_TYPES.SET_CATEGORIES, payload: categories });
+      },
+      mergeCategories({ sourceId, targetId }) {
+        return dispatch({ type: ACTION_TYPES.MERGE_CATEGORIES, payload: { sourceId, targetId } });
+      },
+      mergeActivities({ source, target }) {
+        return dispatch({ type: ACTION_TYPES.MERGE_ACTIVITIES, payload: { source, target } });
       },
       setModal(modal) {
         return dispatch({ type: ACTION_TYPES.SET_MODAL, payload: modal });
