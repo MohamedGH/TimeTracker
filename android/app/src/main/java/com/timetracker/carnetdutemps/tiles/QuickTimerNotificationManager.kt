@@ -18,7 +18,9 @@ import com.timetracker.carnetdutemps.R
 /**
  * Displays the active TimeTracker chronometer directly on the Android lock screen
  * using a VISIBILITY_PUBLIC ongoing notification with Android's native ticking Chronometer.
- * Cancels the notification automatically when no timer is active.
+ * Always registers the notification channel upfront (even before any timer starts or
+ * POST_NOTIFICATIONS is granted) so OEMs such as HONOR MagicOS list TimeTracker in
+ * system notification settings while preserving user-customized channel preferences.
  */
 object QuickTimerNotificationManager {
     const val CHANNEL_ID = "timetracker_active_chrono"
@@ -27,19 +29,22 @@ object QuickTimerNotificationManager {
     private const val STOP_ACTION_REQUEST_CODE = 4203
 
     fun hasNotificationPermission(context: Context): Boolean {
+        val appContext = context.applicationContext
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
-                context,
+                appContext,
                 Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED
             if (!granted) return false
         }
-        return NotificationManagerCompat.from(context).areNotificationsEnabled()
+        return NotificationManagerCompat.from(appContext).areNotificationsEnabled()
     }
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val appContext = context.applicationContext
+        val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        // Preserve any user-customized importance or lock-screen settings once created.
         val existing = nm.getNotificationChannel(CHANNEL_ID)
         if (existing != null) return
 
@@ -63,22 +68,40 @@ object QuickTimerNotificationManager {
         val nmCompat = NotificationManagerCompat.from(appContext)
         val activeTimer = QuickTimerRepository.getActiveTimer(appContext)
         val config = QuickTimerRepository.getConfig(appContext)
-        val spec = QuickTimerLogic.buildNotificationSpec(activeTimer, config)
+        val hasPermission = hasNotificationPermission(appContext)
+        val plan = QuickTimerLogic.computeNotificationSyncPlan(activeTimer, config, hasPermission)
 
-        if (spec == null) {
-            try {
-                nmCompat.cancel(NOTIFICATION_ID)
-            } catch (_: Exception) {
+        if (plan.shouldEnsureChannel) {
+            ensureChannel(appContext)
+        }
+
+        when (plan.action) {
+            NotificationSyncAction.CANCEL -> {
+                try {
+                    nmCompat.cancel(NOTIFICATION_ID)
+                } catch (_: Exception) {
+                }
+                return
             }
-            return
+
+            NotificationSyncAction.SKIP_NO_PERMISSION -> return
+
+            NotificationSyncAction.SHOW -> {
+                val spec = plan.spec ?: return
+                val notification = buildOngoingNotification(appContext, spec)
+                try {
+                    nmCompat.notify(NOTIFICATION_ID, notification)
+                } catch (_: SecurityException) {
+                    // POST_NOTIFICATIONS missing or revoked by system settings
+                }
+            }
         }
+    }
 
-        if (!hasNotificationPermission(appContext)) {
-            return
-        }
-
-        ensureChannel(appContext)
-
+    private fun buildOngoingNotification(
+        appContext: Context,
+        spec: NativeChronoNotificationSpec,
+    ): Notification {
         val openAppIntent = Intent(appContext, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
@@ -109,7 +132,7 @@ object QuickTimerNotificationManager {
             .setAuthenticationRequired(spec.requireUnlockForStopAction)
             .build()
 
-        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+        return NotificationCompat.Builder(appContext, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_qs_timer_active)
             .setContentTitle(spec.title)
             .setContentText(spec.contentText)
@@ -127,11 +150,5 @@ object QuickTimerNotificationManager {
             .setContentIntent(openAppPendingIntent)
             .addAction(stopAction)
             .build()
-
-        try {
-            nmCompat.notify(NOTIFICATION_ID, notification)
-        } catch (_: SecurityException) {
-            // POST_NOTIFICATIONS missing or revoked by system settings
-        }
     }
 }

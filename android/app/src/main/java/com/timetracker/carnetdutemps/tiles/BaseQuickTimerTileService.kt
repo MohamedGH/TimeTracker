@@ -28,6 +28,7 @@ abstract class BaseQuickTimerTileService(
     override fun onStartListening() {
         super.onStartListening()
         QuickTimerTileRegistry.registerListeningTile(this)
+        QuickTimerNotificationManager.ensureChannel(this)
         refreshTileVisualState()
     }
 

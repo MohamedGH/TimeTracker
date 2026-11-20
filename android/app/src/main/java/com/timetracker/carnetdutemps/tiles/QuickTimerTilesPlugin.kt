@@ -99,6 +99,7 @@ class QuickTimerTilesPlugin : Plugin() {
     @PluginMethod
     fun requestNotificationPermission(call: PluginCall) {
         val ctx = context
+        QuickTimerNotificationManager.ensureChannel(ctx)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             getPermissionState("notifications") != PermissionState.GRANTED
         ) {

@@ -456,7 +456,45 @@ object QuickTimerLogic {
             requireUnlockForStopAction = !config.allowOnLockScreen,
         )
     }
+
+    /**
+     * Pure synchronization plan for lock-screen notifications:
+     * - Always ensures the Android NotificationChannel exists first (even when idle or
+     *   before POST_NOTIFICATIONS is granted, so OEMs like HONOR list TimeTracker in
+     *   system notification settings).
+     * - Cancels when no timer is active.
+     * - Posts only when an active timer exists AND notification permission is granted.
+     */
+    fun computeNotificationSyncPlan(
+        activeTimer: NativeActiveTimer?,
+        config: QuickTilesConfig,
+        hasPermission: Boolean,
+    ): NotificationSyncPlan {
+        val spec = buildNotificationSpec(activeTimer, config)
+        val action = when {
+            spec == null -> NotificationSyncAction.CANCEL
+            !hasPermission -> NotificationSyncAction.SKIP_NO_PERMISSION
+            else -> NotificationSyncAction.SHOW
+        }
+        return NotificationSyncPlan(
+            shouldEnsureChannel = true,
+            action = action,
+            spec = spec,
+        )
+    }
 }
+
+enum class NotificationSyncAction {
+    SHOW,
+    CANCEL,
+    SKIP_NO_PERMISSION,
+}
+
+data class NotificationSyncPlan(
+    val shouldEnsureChannel: Boolean,
+    val action: NotificationSyncAction,
+    val spec: NativeChronoNotificationSpec?,
+)
 
 data class NativeChronoNotificationSpec(
     val title: String,
@@ -465,4 +503,5 @@ data class NativeChronoNotificationSpec(
     val startTs: Long,
     val requireUnlockForStopAction: Boolean,
 )
+
 

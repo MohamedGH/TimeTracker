@@ -2814,13 +2814,32 @@ export function createUI({
     e.preventDefault();
     routeManager.navigate(route);
   };
+  const refreshNativeCapabilitiesOnResume = () => {
+    if (!quickTilesBridge.isNativeAndroid || destroyed) return;
+    quickTilesBridge.getCapabilities().then((caps) => {
+      if (destroyed || !caps) return;
+      const changed =
+        caps.notificationsEnabled !== quickTilesCapabilities.notificationsEnabled ||
+        caps.notificationPermissionState !== quickTilesCapabilities.notificationPermissionState ||
+        caps.isDeviceLocked !== quickTilesCapabilities.isDeviceLocked;
+      quickTilesCapabilities = caps;
+      if (changed) {
+        if (caps.notificationsEnabled && state.activeTimer) {
+          pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt || state.activeTimer.startTs || Date.now()).catch(() => {});
+        }
+        rerender();
+      }
+    }).catch(() => {});
+  };
   const handleVisibilityReconcile = () => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       reconcileFromNative().catch(() => {});
+      refreshNativeCapabilitiesOnResume();
     }
   };
   const handleFocusReconcile = () => {
     reconcileFromNative().catch(() => {});
+    refreshNativeCapabilitiesOnResume();
   };
 
   if (typeof window !== 'undefined') {

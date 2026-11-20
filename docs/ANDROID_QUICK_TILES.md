@@ -31,9 +31,10 @@ Ce document décrit l'architecture native Android (Capacitor + Kotlin), le compo
 - **`tiles/QuickTimerTilesPlugin.kt`** :
   - Expose au pont JavaScript (`src/core/mobile/native-quick-tiles-bridge.js`) : `getCapabilities`, `syncConfiguration`, `syncActiveTimer`, `getPendingSyncSnapshot`, `acknowledgePendingEntries`, `requestAddTile`, `refreshTiles`, `requestNotificationPermission`, et les événements `nativeTimerStateChanged` et `openQuickTilesConfig`.
 - **`tiles/QuickTimerNotificationManager.kt` & `QuickTimerNotificationReceiver.kt`** :
-  - Affichent en temps réel le chronomètre actif directement sur l'**écran verrouillé** via une notification permanente silencieuse (`IMPORTANCE_LOW`, `VISIBILITY_PUBLIC`, `CATEGORY_STOPWATCH`, `setUsesChronometer(true)` avec `setWhen(startTs)`).
+  - Enregistrent le canal Android `timetracker_active_chrono` (`IMPORTANCE_LOW`, `VISIBILITY_PUBLIC`) dès l'exécution de `syncNotification()` (et lors de `requestNotificationPermission()` / `onStartListening()`), même si aucun chronomètre n'est actif et même avant l'octroi de `POST_NOTIFICATIONS`, afin que l'application apparaisse dans les réglages de notifications d'Android / HONOR MagicOS ; si le canal existe déjà, ses réglages ne sont jamais écrasés afin de préserver les préférences utilisateur.
+  - Affichent en temps réel le chronomètre actif sur l'**écran verrouillé** via une notification permanente silencieuse (`CATEGORY_STOPWATCH`, `setUsesChronometer(true)` avec `setWhen(startTs)`) uniquement lorsqu'un chronomètre est actif et que les permissions sont accordées, puis la suppriment dès l'arrêt.
   - Incluent un bouton d'action **« Arrêter »** (protégé par `setAuthenticationRequired(!allowOnLockScreen)` sur Android 12+ / vérification `KeyguardManager` sur versions antérieures) et se synchronisent automatiquement après toute action depuis une tuile, la notification ou l'application WebView.
-  - Sur Android 13+ (API 33+), l'affichage nécessite la permission `POST_NOTIFICATIONS` et que les notifications sur l'écran verrouillé ne soient pas masquées dans les réglages système Android/Honor.
+  - Sur Android 13+ / HONOR MagicOS, l'affichage sur l'écran verrouillé nécessite que `POST_NOTIFICATIONS` soit accordée et que les notifications sur l'écran verrouillé ne soient pas masquées par les paramètres de confidentialité du téléphone.
 
 ### Couche JavaScript réutilisée (`src/core/mobile/` + `src/ui.js`)
 

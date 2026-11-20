@@ -250,4 +250,39 @@ class QuickTimerLogicTest {
         assertEquals("Démarré à 09:15", specLocked.contentText)
         assertTrue(specLocked.requireUnlockForStopAction)
     }
+
+    @Test
+    fun notificationSyncPlanAlwaysEnsuresChannelEvenWhenIdleOrPermissionDenied() {
+        val cfg = QuickTilesConfig(allowOnLockScreen = true)
+        val timer = NativeActiveTimer("Étude", "etude", "Étude", 12000L, "14:00", "2026-11-20")
+
+        // 1. No active timer & permission denied -> still creates channel + cancels notification
+        val idleDenied = QuickTimerLogic.computeNotificationSyncPlan(null, cfg, hasPermission = false)
+        assertTrue(idleDenied.shouldEnsureChannel)
+        assertEquals(NotificationSyncAction.CANCEL, idleDenied.action)
+        assertNull(idleDenied.spec)
+
+        // 2. No active timer & permission granted -> still creates channel + cancels notification
+        val idleGranted = QuickTimerLogic.computeNotificationSyncPlan(null, cfg, hasPermission = true)
+        assertTrue(idleGranted.shouldEnsureChannel)
+        assertEquals(NotificationSyncAction.CANCEL, idleGranted.action)
+
+        // 3. Active timer & permission denied -> still creates channel + skips notify()
+        val activeDenied = QuickTimerLogic.computeNotificationSyncPlan(timer, cfg, hasPermission = false)
+        assertTrue(activeDenied.shouldEnsureChannel)
+        assertEquals(NotificationSyncAction.SKIP_NO_PERMISSION, activeDenied.action)
+        assertNotNull(activeDenied.spec)
+
+        // 4. Active timer & permission granted -> creates/keeps channel + shows live chronometer
+        val activeGranted = QuickTimerLogic.computeNotificationSyncPlan(timer, cfg, hasPermission = true)
+        assertTrue(activeGranted.shouldEnsureChannel)
+        assertEquals(NotificationSyncAction.SHOW, activeGranted.action)
+        assertEquals("Étude", activeGranted.spec?.title)
+        assertEquals(12000L, activeGranted.spec?.startTs)
+
+        // 5. Timer stopped -> cancels notification
+        val afterStop = QuickTimerLogic.computeNotificationSyncPlan(null, cfg, hasPermission = true)
+        assertTrue(afterStop.shouldEnsureChannel)
+        assertEquals(NotificationSyncAction.CANCEL, afterStop.action)
+    }
 }
