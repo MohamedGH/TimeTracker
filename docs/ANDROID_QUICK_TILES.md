@@ -29,7 +29,11 @@ Ce document décrit l'architecture native Android (Capacitor + Kotlin), le compo
   - Tuile secondaire affichant un `AlertDialog` natif via `TileService.showDialog()`.
   - Utilise systématiquement `unlockAndRun()` si l'écran est verrouillé (`isLocked == true`), car Android interdit ou bloque les boîtes de dialogue sur écran verrouillé.
 - **`tiles/QuickTimerTilesPlugin.kt`** :
-  - Expose au pont JavaScript (`src/core/mobile/native-quick-tiles-bridge.js`) : `getCapabilities`, `syncConfiguration`, `syncActiveTimer`, `getPendingSyncSnapshot`, `acknowledgePendingEntries`, `requestAddTile`, `refreshTiles`, et les événements `nativeTimerStateChanged` et `openQuickTilesConfig`.
+  - Expose au pont JavaScript (`src/core/mobile/native-quick-tiles-bridge.js`) : `getCapabilities`, `syncConfiguration`, `syncActiveTimer`, `getPendingSyncSnapshot`, `acknowledgePendingEntries`, `requestAddTile`, `refreshTiles`, `requestNotificationPermission`, et les événements `nativeTimerStateChanged` et `openQuickTilesConfig`.
+- **`tiles/QuickTimerNotificationManager.kt` & `QuickTimerNotificationReceiver.kt`** :
+  - Affichent en temps réel le chronomètre actif directement sur l'**écran verrouillé** via une notification permanente silencieuse (`IMPORTANCE_LOW`, `VISIBILITY_PUBLIC`, `CATEGORY_STOPWATCH`, `setUsesChronometer(true)` avec `setWhen(startTs)`).
+  - Incluent un bouton d'action **« Arrêter »** (protégé par `setAuthenticationRequired(!allowOnLockScreen)` sur Android 12+ / vérification `KeyguardManager` sur versions antérieures) et se synchronisent automatiquement après toute action depuis une tuile, la notification ou l'application WebView.
+  - Sur Android 13+ (API 33+), l'affichage nécessite la permission `POST_NOTIFICATIONS` et que les notifications sur l'écran verrouillé ne soient pas masquées dans les réglages système Android/Honor.
 
 ### Couche JavaScript réutilisée (`src/core/mobile/` + `src/ui.js`)
 

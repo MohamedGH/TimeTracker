@@ -29,6 +29,9 @@ function createWebFallbackPlugin(win = typeof window !== 'undefined' ? window : 
         isKeyguardSecure: false,
         allowOnLockScreen: memoryConfig.allowOnLockScreen,
         pickerRequiresUnlockOnLockedScreen: true,
+        lockScreenChronoSupported: false,
+        notificationsEnabled: false,
+        notificationPermissionState: 'prompt',
       };
     },
 
@@ -70,6 +73,14 @@ function createWebFallbackPlugin(win = typeof window !== 'undefined' ? window : 
 
     async refreshTiles() {
       return { refreshed: false };
+    },
+
+    async requestNotificationPermission() {
+      return {
+        granted: false,
+        notificationsEnabled: false,
+        state: 'unsupported',
+      };
     },
 
     async addListener() {
@@ -118,6 +129,9 @@ export function createQuickTilesBridge({
           isKeyguardSecure: false,
           allowOnLockScreen: true,
           pickerRequiresUnlockOnLockedScreen: true,
+          lockScreenChronoSupported: false,
+          notificationsEnabled: false,
+          notificationPermissionState: 'prompt',
         };
       }
     },
@@ -176,6 +190,17 @@ export function createQuickTilesBridge({
         return await target.refreshTiles();
       } catch {
         return { refreshed: false };
+      }
+    },
+
+    async requestNotificationPermission() {
+      if (typeof target.requestNotificationPermission !== 'function') {
+        return { granted: false, notificationsEnabled: false, state: 'unsupported' };
+      }
+      try {
+        return await target.requestNotificationPermission();
+      } catch {
+        return { granted: false, notificationsEnabled: false, state: 'error' };
       }
     },
 

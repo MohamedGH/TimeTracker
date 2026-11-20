@@ -77,6 +77,7 @@ class QuickTimerPickerTileService : TileService(), QuickTimerTileRegistry.Refres
             labels.add("⏹ Arrêter « ${activeTimer.activity} »")
             actions.add {
                 QuickTimerRepository.stopActiveTimer(this)
+                QuickTimerNotificationManager.syncNotification(this)
                 refreshTileState()
                 QuickTimerTileRegistry.refreshAllTiles(this)
                 QuickTimerTilesPlugin.notifyNativeTimerChanged(this)
@@ -95,6 +96,7 @@ class QuickTimerPickerTileService : TileService(), QuickTimerTileRegistry.Refres
                     categoryId = item.categoryId,
                     categoryLabel = item.categoryLabel,
                 )
+                QuickTimerNotificationManager.syncNotification(this)
                 refreshTileState()
                 QuickTimerTileRegistry.refreshAllTiles(this)
                 QuickTimerTilesPlugin.notifyNativeTimerChanged(this)

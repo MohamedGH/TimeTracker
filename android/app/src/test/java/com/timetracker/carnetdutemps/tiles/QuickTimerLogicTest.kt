@@ -230,4 +230,24 @@ class QuickTimerLogicTest {
         assertEquals("open_quick_tiles_config", json.getString("pendingLaunchAction"))
         assertEquals("Étude", json.getJSONObject("activeTimer").getString("activity"))
     }
+
+    @Test
+    fun lockScreenNotificationSpecReflectsActiveTimerAndLockPolicy() {
+        val allowLockedConfig = QuickTilesConfig(allowOnLockScreen = true)
+        val requireUnlockConfig = QuickTilesConfig(allowOnLockScreen = false)
+
+        assertNull(QuickTimerLogic.buildNotificationSpec(null, allowLockedConfig))
+
+        val timer = NativeActiveTimer("Travail", "travail", "Travail", 9000L, "09:15", "2026-11-20")
+        val specAllow = QuickTimerLogic.buildNotificationSpec(timer, allowLockedConfig)!!
+        assertEquals("Travail", specAllow.title)
+        assertEquals("Travail · Démarré à 09:15", specAllow.contentText)
+        assertEquals("Chrono en cours", specAllow.subText)
+        assertEquals(9000L, specAllow.startTs)
+        assertFalse(specAllow.requireUnlockForStopAction)
+
+        val specLocked = QuickTimerLogic.buildNotificationSpec(timer.copy(categoryLabel = null), requireUnlockConfig)!!
+        assertEquals("Démarré à 09:15", specLocked.contentText)
+        assertTrue(specLocked.requireUnlockForStopAction)
+    }
 }

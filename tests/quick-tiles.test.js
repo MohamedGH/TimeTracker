@@ -45,9 +45,11 @@ function createBaseState(overrides = {}) {
 function createSimulatedAndroidTileBridge({
   apiLevel = 34,
   isDeviceLocked = true,
+  notificationsEnabled: initialNotificationsEnabled = true,
   initialSnapshot = null,
 } = {}) {
   let config = { allowOnLockScreen: true, slots: [] };
+  let notificationsEnabled = initialNotificationsEnabled;
   let activeTimer = initialSnapshot?.activeTimer || null;
   let activeTimerUpdatedAt = initialSnapshot?.activeTimerUpdatedAt || 0;
   let pendingEntries = Array.isArray(initialSnapshot?.pendingEntries)
@@ -67,6 +69,9 @@ function createSimulatedAndroidTileBridge({
       isDeviceLocked,
       allowOnLockScreen: config.allowOnLockScreen,
       pickerRequiresUnlockOnLockedScreen: true,
+      lockScreenChronoSupported: true,
+      notificationsEnabled,
+      notificationPermissionState: notificationsEnabled ? 'granted' : 'prompt',
     })),
     syncConfiguration: vi.fn(async ({ config: nextCfg } = {}) => {
       if (nextCfg) config = nextCfg;
@@ -94,6 +99,10 @@ function createSimulatedAndroidTileBridge({
     }),
     requestAddTile: vi.fn(async () => ({ status: 'added', resultCode: 2 })),
     refreshTiles: vi.fn(async () => ({ refreshed: true })),
+    requestNotificationPermission: vi.fn(async () => {
+      notificationsEnabled = true;
+      return { granted: true, notificationsEnabled: true, state: 'granted' };
+    }),
     addListener: vi.fn(async (eventName, fn) => {
       if (!listeners.has(eventName)) listeners.set(eventName, new Set());
       listeners.get(eventName).add(fn);
@@ -576,6 +585,54 @@ describe('Quick Settings Tiles UI & Android lock-screen integration', () => {
       expect(state.entries).toHaveLength(1);
       expect(state.entries[0]).toMatchObject({ activity: 'Travail', mins: 15, viaTimer: true });
       expect(state.activeTimer).toBeNull();
+    });
+
+    ui.destroy();
+    root.remove();
+  });
+
+  it('requests notification permission when disabled so active chronometer is displayed on lock screen', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    const sim = createSimulatedAndroidTileBridge({
+      apiLevel: 34,
+      isDeviceLocked: false,
+      notificationsEnabled: false,
+    });
+    const state = createBaseState({
+      activeTimer: {
+        activity: 'Travail',
+        categoryId: 'travail',
+        cat: 'travail',
+        startTs: Date.now() - 60_000,
+        startTime: '10:00',
+        date: '2026-11-20',
+      },
+      timerUpdatedAt: Date.now() - 60_000,
+      activities: [{ id: 'a1', label: 'Travail', categoryId: 'travail', useCount: 1 }],
+    });
+
+    const ui = createUI({
+      root,
+      state,
+      persist: vi.fn().mockResolvedValue(undefined),
+      authClient: { isConfigured: () => false, signOut: vi.fn() },
+      quickTilesBridgeFactory: sim.factory,
+    });
+
+    let notifBtn = null;
+    await vi.waitFor(() => {
+      notifBtn = root.querySelector('[data-quick-tiles-notif-btn="true"]');
+      expect(notifBtn).toBeTruthy();
+      expect(root.textContent).toContain('Notification écran verrouillé désactivée');
+    });
+
+    notifBtn.click();
+
+    await vi.waitFor(() => {
+      expect(sim.plugin.requestNotificationPermission).toHaveBeenCalledTimes(1);
+      expect(root.textContent).toContain('Chrono actif affiché sur l’écran verrouillé');
     });
 
     ui.destroy();

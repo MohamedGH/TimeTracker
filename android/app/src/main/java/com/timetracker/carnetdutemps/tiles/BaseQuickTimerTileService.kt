@@ -74,6 +74,7 @@ abstract class BaseQuickTimerTileService(
 
     private fun toggleSlotAndRefreshAll() {
         QuickTimerRepository.toggleSlot(this, slotNumber)
+        QuickTimerNotificationManager.syncNotification(this)
         refreshTileVisualState()
         QuickTimerTileRegistry.refreshAllTiles(this)
         QuickTimerTilesPlugin.notifyNativeTimerChanged(this)

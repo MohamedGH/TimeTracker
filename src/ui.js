@@ -121,8 +121,12 @@ export function createUI({
     maxSlots: 6,
     supportsRequestAddTileService: false,
     isDeviceLocked: false,
+    isKeyguardSecure: false,
     allowOnLockScreen: true,
     pickerRequiresUnlockOnLockedScreen: true,
+    lockScreenChronoSupported: false,
+    notificationsEnabled: false,
+    notificationPermissionState: 'prompt',
   };
   const nativeListenerHandles = [];
 
@@ -2165,6 +2169,35 @@ export function createUI({
     };
     lockLabel.append(lockCheck, document.createTextNode(' Autoriser démarrage / arrêt depuis l’écran verrouillé'));
     c.appendChild(lockLabel);
+
+    if (quickTilesCapabilities.supported && quickTilesCapabilities.lockScreenChronoSupported) {
+      const notifRow = node('div', 'quick-tiles-notif-row');
+      notifRow.dataset.quickTilesNotifRow = 'true';
+      if (quickTilesCapabilities.notificationsEnabled) {
+        notifRow.appendChild(
+          node('span', 'sync-status-pill is-ok', 'Chrono actif affiché sur l’écran verrouillé')
+        );
+      } else {
+        notifRow.appendChild(
+          node('span', 'sync-status-pill', 'Notification écran verrouillé désactivée')
+        );
+        const notifBtn = button('Afficher le chrono sur l’écran verrouillé', 'secondary small', 'quick-tiles-notif-permission');
+        notifBtn.dataset.quickTilesNotifBtn = 'true';
+        notifBtn.onclick = async () => {
+          const res = await quickTilesBridge.requestNotificationPermission();
+          quickTilesCapabilities = await quickTilesBridge.getCapabilities();
+          if (res?.granted || quickTilesCapabilities.notificationsEnabled) {
+            await pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt || state.activeTimer?.startTs || Date.now());
+            errorManager.notifySuccess('Le chronomètre actif s’affichera sur l’écran verrouillé.');
+          } else {
+            errorManager.notifyInfo('Activez les notifications de « Carnet du temps » dans les réglages Android pour afficher le chrono sur l’écran verrouillé.');
+          }
+          rerender();
+        };
+        notifRow.appendChild(notifBtn);
+      }
+      c.appendChild(notifRow);
+    }
 
     const slotsList = node('div', 'quick-tiles-slots-list');
     for (const slot of config.slots) {

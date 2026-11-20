@@ -433,4 +433,36 @@ object QuickTimerLogic {
             transitionTs = nowMs,
         )
     }
+
+    /**
+     * Pure specification for the lock-screen active chronometer notification.
+     */
+    fun buildNotificationSpec(
+        activeTimer: NativeActiveTimer?,
+        config: QuickTilesConfig,
+    ): NativeChronoNotificationSpec? {
+        if (activeTimer == null) return null
+        val cleanCat = activeTimer.categoryLabel?.trim()?.ifEmpty { null }
+        val contentText = if (cleanCat != null) {
+            "$cleanCat · Démarré à ${activeTimer.startTime}"
+        } else {
+            "Démarré à ${activeTimer.startTime}"
+        }
+        return NativeChronoNotificationSpec(
+            title = activeTimer.activity,
+            contentText = contentText,
+            subText = "Chrono en cours",
+            startTs = activeTimer.startTs,
+            requireUnlockForStopAction = !config.allowOnLockScreen,
+        )
+    }
 }
+
+data class NativeChronoNotificationSpec(
+    val title: String,
+    val contentText: String,
+    val subText: String,
+    val startTs: Long,
+    val requireUnlockForStopAction: Boolean,
+)
+

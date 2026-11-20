@@ -1,5 +1,6 @@
 package com.timetracker.carnetdutemps.tiles
 
+import android.Manifest
 import android.app.KeyguardManager
 import android.app.StatusBarManager
 import android.content.Context
@@ -9,19 +10,31 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
+import com.getcapacitor.PermissionState
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 import com.timetracker.carnetdutemps.R
 import java.lang.ref.WeakReference
 
-@CapacitorPlugin(name = "QuickTimerTiles")
+@CapacitorPlugin(
+    name = "QuickTimerTiles",
+    permissions = [
+        Permission(
+            strings = [Manifest.permission.POST_NOTIFICATIONS],
+            alias = "notifications",
+        ),
+    ],
+)
 class QuickTimerTilesPlugin : Plugin() {
 
     override fun load() {
         super.load()
         activeInstance = WeakReference(this)
+        QuickTimerNotificationManager.syncNotification(context)
         handleIntentIfNeeded(activity?.intent)
     }
 
@@ -50,11 +63,20 @@ class QuickTimerTilesPlugin : Plugin() {
         notifyListeners("openQuickTilesConfig", payload, true)
     }
 
+    private fun currentNotificationPermissionState(): String {
+        val ctx = context
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return getPermissionState("notifications").toString()
+        }
+        return if (QuickTimerNotificationManager.hasNotificationPermission(ctx)) "granted" else "denied"
+    }
+
     @PluginMethod
     fun getCapabilities(call: PluginCall) {
         val ctx = context
         val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         val config = QuickTimerRepository.getConfig(ctx)
+        val notificationsEnabled = QuickTimerNotificationManager.hasNotificationPermission(ctx)
         val result = JSObject().apply {
             put("supported", Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
             put("platform", "android")
@@ -67,8 +89,53 @@ class QuickTimerTilesPlugin : Plugin() {
             put("isKeyguardSecure", km?.isKeyguardSecure == true)
             put("allowOnLockScreen", config.allowOnLockScreen)
             put("pickerRequiresUnlockOnLockedScreen", true)
+            put("lockScreenChronoSupported", true)
+            put("notificationsEnabled", notificationsEnabled)
+            put("notificationPermissionState", currentNotificationPermissionState())
         }
         call.resolve(result)
+    }
+
+    @PluginMethod
+    fun requestNotificationPermission(call: PluginCall) {
+        val ctx = context
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            getPermissionState("notifications") != PermissionState.GRANTED
+        ) {
+            requestPermissionForAlias("notifications", call, "notificationsPermissionCallback")
+            return
+        }
+
+        val enabled = QuickTimerNotificationManager.hasNotificationPermission(ctx)
+        if (enabled) {
+            QuickTimerNotificationManager.syncNotification(ctx)
+        }
+        call.resolve(JSObject().apply {
+            put("granted", enabled)
+            put("notificationsEnabled", enabled)
+            put("state", currentNotificationPermissionState())
+        })
+    }
+
+    @PermissionCallback
+    private fun notificationsPermissionCallback(call: PluginCall) {
+        val ctx = context
+        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getPermissionState("notifications") == PermissionState.GRANTED &&
+                QuickTimerNotificationManager.hasNotificationPermission(ctx)
+        } else {
+            QuickTimerNotificationManager.hasNotificationPermission(ctx)
+        }
+
+        if (granted) {
+            QuickTimerNotificationManager.syncNotification(ctx)
+        }
+
+        call.resolve(JSObject().apply {
+            put("granted", granted)
+            put("notificationsEnabled", granted)
+            put("state", currentNotificationPermissionState())
+        })
     }
 
     @PluginMethod
@@ -89,6 +156,7 @@ class QuickTimerTilesPlugin : Plugin() {
 
         QuickTimerTileRegistry.applyComponentEnabledStates(ctx, config)
         QuickTimerTileRegistry.refreshAllTiles(ctx)
+        QuickTimerNotificationManager.syncNotification(ctx)
 
         call.resolve(JSObject().apply {
             put("synced", true)
@@ -107,6 +175,7 @@ class QuickTimerTilesPlugin : Plugin() {
         if (applied) {
             QuickTimerTileRegistry.refreshAllTiles(ctx)
         }
+        QuickTimerNotificationManager.syncNotification(ctx)
 
         call.resolve(JSObject().apply {
             put("synced", true)
@@ -204,6 +273,7 @@ class QuickTimerTilesPlugin : Plugin() {
     @PluginMethod
     fun refreshTiles(call: PluginCall) {
         QuickTimerTileRegistry.refreshAllTiles(context)
+        QuickTimerNotificationManager.syncNotification(context)
         call.resolve(JSObject().apply { put("refreshed", true) })
     }
 
