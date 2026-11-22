@@ -51,5 +51,6 @@ export function validateBackup(data) {
     entries: normalizeEntries(data.entries, categories, legacySubCategories),
     savedActivities: normalizeList(data.savedActivities),
     categories,
+    activityTemplates: normalizeList(data.activityTemplates),
   };
 }

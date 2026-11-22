@@ -13,20 +13,41 @@ export function isDate(value) {
 export function isTimeEntry(value) { return Boolean(value && isString(value.id) && isString(value.activity) && (value.categoryId === null || isString(value.categoryId)) && isDate(value.date) && isTime(value.start) && isTime(value.end) && isFiniteNumber(value.mins) && value.mins >= 0 && (value.viaTimer === undefined || typeof value.viaTimer === 'boolean')); }
 export function isSavedActivity(value) { return Boolean(value && isString(value.id) && isString(value.label) && (value.categoryId === null || isString(value.categoryId))); }
 export function isCategory(value) { return Boolean(value && isString(value.id) && isString(value.label) && (value.color === null || isString(value.color)) && (value.parentId === null || value.parentId === undefined || isString(value.parentId))); }
+export function isActivityTemplate(value) {
+  return Boolean(
+    value
+    && isString(value.id)
+    && isString(value.name)
+    && Array.isArray(value.steps)
+    && value.steps.every(step => (
+      step
+      && isString(step.activity)
+      && (step.categoryId === null || step.categoryId === undefined || isString(step.categoryId))
+    ))
+  );
+}
 
 export function validateImportData(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Format JSON invalide.');
   const entries = value.entries ?? [];
   const savedActivities = value.savedActivities ?? [];
   const categories = value.categories ?? [];
+  const activityTemplates = value.activityTemplates ?? [];
   if (!Array.isArray(entries) || !entries.every(isTimeEntry)) throw new Error('Entrées de temps invalides.');
   if (!Array.isArray(savedActivities) || !savedActivities.every(isSavedActivity)) throw new Error('Activités enregistrées invalides.');
   if (!Array.isArray(categories) || !categories.every(isCategory)) throw new Error('Catégories invalides.');
+  if (!Array.isArray(activityTemplates) || !activityTemplates.every(isActivityTemplate)) throw new Error('Gabarits d’activité invalides.');
 
   const ids = new Set(categories.map(category => category.id));
   if (categories.some(category => category.parentId && !ids.has(category.parentId))) throw new Error('Hiérarchie de catégories invalide.');
   if (entries.some(entry => entry.categoryId && !ids.has(entry.categoryId))) throw new Error('Catégorie d’une entrée introuvable.');
   if (savedActivities.some(activity => activity.categoryId && !ids.has(activity.categoryId))) throw new Error('Catégorie d’une activité enregistrée introuvable.');
 
-  return { version: Math.max(2, Number(value.version) || 1), entries, savedActivities, categories };
+  return {
+    version: Math.max(2, Number(value.version) || 1),
+    entries,
+    savedActivities,
+    categories,
+    activityTemplates,
+  };
 }

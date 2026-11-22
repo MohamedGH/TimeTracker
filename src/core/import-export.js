@@ -1,7 +1,14 @@
 import { validateImportData } from './validation.js';
 import { migrateBackupToCategoryTree } from './category-migration.js';
 
-export function buildExportPayload({ entries = [], savedActivities = [], categories = [], customCategories = [], subCategories = [] }) {
+export function buildExportPayload({
+  entries = [],
+  savedActivities = [],
+  categories = [],
+  customCategories = [],
+  subCategories = [],
+  activityTemplates = [],
+}) {
   const canonicalCategories = categories.length ? categories : [...customCategories, ...subCategories];
   return {
     version: 2,
@@ -9,6 +16,7 @@ export function buildExportPayload({ entries = [], savedActivities = [], categor
     entries: entries.map(({ cat: _cat, sub: _sub, ...entry }) => ({ ...entry, categoryId: entry.categoryId ?? null })),
     savedActivities: savedActivities.map(({ cat: _cat, sub: _sub, subCategoryId: _subCategoryId, ...activity }) => ({ ...activity, categoryId: activity.categoryId ?? null })),
     categories: canonicalCategories,
+    activityTemplates: Array.isArray(activityTemplates) ? activityTemplates : [],
   };
 }
 

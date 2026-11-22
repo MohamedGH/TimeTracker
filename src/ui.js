@@ -15,6 +15,7 @@ import {
   dashboardPeriodChangedPayload, dataExportedPayload, dataImportedPayload,
   authEventPayload,
   syncEventPayload,
+  templateEventPayload,
 } from './core/analytics/events.js';
 import {
   initBehaviorTracking,
@@ -30,6 +31,10 @@ import {
   renderCategoryDeleteConfirmModal,
 } from './components/categories/category-manager.js';
 import { renderMergeModal } from './components/merge/merge-modal.js';
+import {
+  renderTemplateEditorModal,
+  renderTemplateManualLogModal,
+} from './components/templates/template-modal.js';
 import { isolateModalEvents } from './core/modal-events.js';
 import { createRouteManager } from './core/route-manager.js';
 import { createErrorManager } from './core/error-manager.js';
@@ -50,6 +55,21 @@ import {
   mergeActivitiesState,
   collectMergeableActivities,
 } from './state/activity-actions.js';
+import {
+  normalizeTemplatesList,
+  normalizeActiveTemplateRun,
+  saveActivityTemplate,
+  deleteActivityTemplate,
+  recordTemplateUse,
+  startTemplateRun,
+  advanceTemplateRun,
+  pauseTemplateRunAfterManualStop,
+  resumeReadyTemplateRun,
+  computeTemplateRunProgress,
+  buildEntriesFromTemplate,
+  reassignCategoryInTemplates,
+  reassignActivityInTemplates,
+} from './state/template-actions.js';
 import { createGoogleOidcAuth, DRIVE_APPDATA_SCOPE, DRIVE_SYNC_SCOPES } from './core/auth/index.js';
 import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js';
 import {
@@ -142,6 +162,8 @@ export function createUI({
     activities: state.activities,
     entries: state.entries,
   });
+  state.activityTemplates = normalizeTemplatesList(state.activityTemplates, state.categories);
+  state.activeTemplateRun = normalizeActiveTemplateRun(state.activeTemplateRun);
 
   const quickTilesBridge = quickTilesBridgeFactory();
 
@@ -337,6 +359,7 @@ export function createUI({
             categories: state.categories,
             entries: state.entries,
             activities: state.activities,
+            activityTemplates: state.activityTemplates,
             activeTimer: state.activeTimer,
             quickTilesConfig: state.quickTilesConfig,
             timerUpdatedAt: state.timerUpdatedAt,
@@ -346,6 +369,7 @@ export function createUI({
         state.categories = nextSm.categories;
         state.entries = nextSm.entries;
         state.activities = nextSm.activities;
+        state.activityTemplates = nextSm.activityTemplates;
         state.activeTimer = nextSm.activeTimer;
         state.quickTilesConfig = nextSm.quickTilesConfig;
         state.timerUpdatedAt = nextSm.timerUpdatedAt;
@@ -353,6 +377,7 @@ export function createUI({
         state.categories = merged.categories;
         state.entries = merged.entries;
         state.activities = merged.activities;
+        state.activityTemplates = reassignCategoryInTemplates(state.activityTemplates, sourceId, targetId);
         state.activeTimer = merged.activeTimer;
         if (merged.quickTilesConfig) state.quickTilesConfig = merged.quickTilesConfig;
         if (merged.summary.affectsActiveTimer) {
@@ -390,6 +415,7 @@ export function createUI({
             categories: state.categories,
             entries: state.entries,
             activities: state.activities,
+            activityTemplates: state.activityTemplates,
             activeTimer: state.activeTimer,
             quickTilesConfig: state.quickTilesConfig,
             timerUpdatedAt: state.timerUpdatedAt,
@@ -398,12 +424,18 @@ export function createUI({
         const nextSm = _stateManager.actions.mergeActivities({ source, target });
         state.activities = nextSm.activities;
         state.entries = nextSm.entries;
+        state.activityTemplates = nextSm.activityTemplates;
         state.activeTimer = nextSm.activeTimer;
         state.quickTilesConfig = nextSm.quickTilesConfig;
         state.timerUpdatedAt = nextSm.timerUpdatedAt;
       } else {
         state.activities = merged.activities;
         state.entries = merged.entries;
+        state.activityTemplates = reassignActivityInTemplates(
+          state.activityTemplates,
+          { label: merged.summary.sourceLabel, categoryId: merged.summary.sourceCategoryId },
+          { label: merged.summary.targetLabel, categoryId: merged.summary.targetCategoryId }
+        );
         state.activeTimer = merged.activeTimer;
         if (merged.quickTilesConfig) state.quickTilesConfig = merged.quickTilesConfig;
         if (merged.summary.affectsActiveTimer) {
@@ -426,6 +458,274 @@ export function createUI({
       rerender();
     } catch (err) {
       errorManager.handleError(err, 'merge');
+      rerender();
+    }
+  }
+
+  function openTemplateCreateModal({ sourceMode = 'manual' } = {}) {
+    state.modal = {
+      type: 'template-editor',
+      sourceMode: sourceMode === 'history' ? 'history' : 'manual',
+      templateId: null,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  function openTemplateEditModal(templateId) {
+    state.modal = {
+      type: 'template-editor',
+      sourceMode: 'manual',
+      templateId,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  function openTemplateManualLogModal(templateId) {
+    state.modal = {
+      type: 'template-manual-log',
+      templateId,
+      date: today(),
+      startTime: nowTime(),
+    };
+    state.error = null;
+    rerender();
+  }
+
+  async function handleSaveTemplate({ id = null, name, steps, fromHistory = false, isEdit = false }) {
+    try {
+      const saved = saveActivityTemplate(
+        state.activityTemplates || [],
+        { id, name, steps },
+        state.categories
+      );
+      state.activityTemplates = saved.templates;
+      if (_stateManager?.getState) {
+        const smState = _stateManager.getState();
+        if (smState !== state) smState.activityTemplates = saved.templates;
+      }
+      state.modal = null;
+      state.error = null;
+      await persist();
+      trackEvent(
+        isEdit ? ANALYTICS_EVENTS.TEMPLATE_UPDATED : ANALYTICS_EVENTS.TEMPLATE_CREATED,
+        templateEventPayload({ stepCount: saved.template.steps.length, fromHistory })
+      );
+      errorManager.notifySuccess(
+        isEdit
+          ? `Gabarit « ${saved.template.name} » mis à jour.`
+          : `Gabarit « ${saved.template.name} » créé (${saved.template.steps.length} étapes).`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'template');
+      rerender();
+    }
+  }
+
+  async function handleDeleteTemplate(templateId) {
+    const existing = (state.activityTemplates || []).find(t => t.id === templateId);
+    state.activityTemplates = deleteActivityTemplate(state.activityTemplates || [], templateId);
+    if (state.activeTemplateRun?.templateId === templateId && !state.activeTimer) {
+      state.activeTemplateRun = null;
+    }
+    await persist();
+    trackEvent(
+      ANALYTICS_EVENTS.TEMPLATE_DELETED,
+      templateEventPayload({ stepCount: existing?.steps?.length || 0 })
+    );
+    errorManager.notifyInfo(existing ? `Gabarit « ${existing.name} » supprimé.` : 'Gabarit supprimé.');
+    rerender();
+  }
+
+  function recordRunningTimerIntoEntries(nowTs = Date.now(), end = nowTime()) {
+    const t = state.activeTimer;
+    if (!t) return null;
+    const endDate = t.date === today() ? t.date : today();
+    const durationMinutes = elapsedMinutes(t, nowTs);
+    const entry = createTimeEntry({
+      id: crypto.randomUUID(),
+      activity: t.activity,
+      categoryId: t.categoryId ?? t.cat,
+      date: t.date,
+      start: t.startTime,
+      end,
+      endDate,
+      mins: durationMinutes,
+      viaTimer: true,
+    });
+    state.entries = [entry, ...state.entries];
+    const actIdx = state.activities.findIndex(a => (a.label || a.activity) === t.activity);
+    if (actIdx >= 0) {
+      state.activities[actIdx].useCount = (state.activities[actIdx].useCount || 0) + 1;
+      state.activities[actIdx].lastUsedAt = new Date(nowTs).toISOString();
+    }
+    trackEvent('timer_stopped', timerStoppedPayload({
+      durationMinutes,
+      hasCategory: Boolean(t.categoryId ?? t.cat),
+    }));
+    trackEvent('time_entry_created', timeEntryCreatedPayload({
+      durationMinutes,
+      hasCategory: Boolean(t.categoryId ?? t.cat),
+      viaTimer: true,
+    }));
+    return { entry, durationMinutes, activity: t.activity };
+  }
+
+  async function handleStartTemplateRun(templateId) {
+    const template = (state.activityTemplates || []).find(t => t.id === templateId);
+    if (!template) return;
+
+    try {
+      const nowTs = Date.now();
+      const clockNow = nowTime();
+      const currentDay = today();
+
+      if (state.activeTimer) {
+        recordRunningTimerIntoEntries(nowTs, clockNow);
+      }
+
+      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(nowTs).toISOString() });
+      state.activeTimer = createActiveTimer({
+        activity: firstStep.activity,
+        categoryId: firstStep.categoryId,
+        date: currentDay,
+        startTime: clockNow,
+        startTs: nowTs,
+      });
+      state.timerUpdatedAt = nowTs;
+      state.activeTemplateRun = run;
+      state.activityTemplates = recordTemplateUse(state.activityTemplates || [], template.id, nowTs);
+      state.error = null;
+
+      await persist();
+      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
+      trackEvent(
+        ANALYTICS_EVENTS.TEMPLATE_STARTED,
+        templateEventPayload({ stepCount: run.steps.length })
+      );
+      trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(firstStep.categoryId) }));
+      errorManager.notifySuccess(
+        `Gabarit « ${template.name} » lancé — Étape 1/${run.steps.length} : ${firstStep.activity}`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'template');
+      rerender();
+    }
+  }
+
+  async function handleAdvanceTemplateRun({ recordCurrent = true } = {}) {
+    if (!state.activeTemplateRun) return;
+    const nowTs = Date.now();
+    const clockNow = nowTime();
+    const currentDay = today();
+    const templateName = state.activeTemplateRun.templateName;
+
+    if (recordCurrent && state.activeTimer) {
+      recordRunningTimerIntoEntries(nowTs, clockNow);
+    }
+
+    const transition = advanceTemplateRun(state.activeTemplateRun, { recordedStep: recordCurrent });
+
+    if (!transition.completed && transition.nextStep) {
+      state.activeTimer = createActiveTimer({
+        activity: transition.nextStep.activity,
+        categoryId: transition.nextStep.categoryId,
+        date: currentDay,
+        startTime: clockNow,
+        startTs: nowTs,
+      });
+      state.timerUpdatedAt = nowTs;
+      state.activeTemplateRun = transition.nextRun;
+
+      await persist();
+      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
+      trackEvent(
+        ANALYTICS_EVENTS.TEMPLATE_STEP_ADVANCED,
+        templateEventPayload({ stepCount: transition.nextRun.steps.length })
+      );
+      trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(transition.nextStep.categoryId) }));
+      errorManager.notifySuccess(
+        `Étape ${transition.nextRun.currentIndex + 1}/${transition.nextRun.steps.length} lancée : ${transition.nextStep.activity}`
+      );
+      rerender();
+      return;
+    }
+
+    state.activeTimer = null;
+    state.timerUpdatedAt = nowTs;
+    state.activeTemplateRun = null;
+
+    await persist();
+    pushActiveTimerToNative(null, nowTs).catch(() => {});
+    trackEvent(
+      ANALYTICS_EVENTS.TEMPLATE_COMPLETED,
+      templateEventPayload({ stepCount: transition.totalCompleted })
+    );
+    errorManager.notifySuccess(
+      `Gabarit « ${templateName} » terminé (${transition.totalCompleted} étape${transition.totalCompleted > 1 ? 's' : ''} enregistrée${transition.totalCompleted > 1 ? 's' : ''}) !`
+    );
+    rerender();
+  }
+
+  async function handleResumeTemplateRun() {
+    const resumed = resumeReadyTemplateRun(state.activeTemplateRun);
+    if (!resumed) return;
+    const nowTs = Date.now();
+    const clockNow = nowTime();
+    const currentDay = today();
+
+    if (state.activeTimer) {
+      recordRunningTimerIntoEntries(nowTs, clockNow);
+    }
+
+    state.activeTimer = createActiveTimer({
+      activity: resumed.currentStep.activity,
+      categoryId: resumed.currentStep.categoryId,
+      date: currentDay,
+      startTime: clockNow,
+      startTs: nowTs,
+    });
+    state.timerUpdatedAt = nowTs;
+    state.activeTemplateRun = resumed.nextRun;
+
+    await persist();
+    pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
+    trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(resumed.currentStep.categoryId) }));
+    errorManager.notifySuccess(
+      `Étape ${resumed.nextRun.currentIndex + 1}/${resumed.nextRun.steps.length} lancée : ${resumed.currentStep.activity}`
+    );
+    rerender();
+  }
+
+  async function handleStopTemplateRun() {
+    if (!state.activeTemplateRun) return;
+    state.activeTemplateRun = null;
+    await persist();
+    errorManager.notifyInfo('Séquence du gabarit terminée.');
+    rerender();
+  }
+
+  async function handleSubmitManualTemplateLog({ template, date, startTime, fallbackMins }) {
+    try {
+      const built = buildEntriesFromTemplate(template, { date, startTime, fallbackMins });
+      state.entries = [...built.slice().reverse(), ...state.entries];
+      state.activityTemplates = recordTemplateUse(state.activityTemplates || [], template.id);
+      state.modal = null;
+      state.error = null;
+      await persist();
+      trackEvent(
+        ANALYTICS_EVENTS.TEMPLATE_LOGGED_MANUAL,
+        templateEventPayload({ stepCount: built.length })
+      );
+      errorManager.notifySuccess(
+        `${built.length} session${built.length > 1 ? 's' : ''} enregistrée${built.length > 1 ? 's' : ''} depuis « ${template.name} » !`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'template');
       rerender();
     }
   }
@@ -719,6 +1019,7 @@ export function createUI({
   function floatingTimerBar() {
     const t = state.activeTimer;
     if (!t) return document.createDocumentFragment();
+    const runProgress = computeTemplateRunProgress(state.activeTemplateRun);
 
     const bar = node('div', 'floating-timer-bar');
     const info = node('div', 'floating-timer-info');
@@ -727,10 +1028,30 @@ export function createUI({
     const act = node('strong', 'floating-timer-activity', t.activity);
     const cat = createCategoryBadge(t.categoryId ?? t.cat, state.categories, { showPath: false, size: 'small' });
     info.append(dot, act, cat);
+    if (runProgress) {
+      info.appendChild(
+        node('span', 'floating-timer-template-step', `Gabarit ${runProgress.stepNumber}/${runProgress.totalSteps}`)
+      );
+    }
 
     const actions = node('div', 'floating-timer-actions');
     const clockNode = node('span', 'floating-timer-clock', clock(elapsedSeconds(t)));
     clockNode.dataset.timerClock = '1';
+
+    if (runProgress) {
+      const nextBtn = button(
+        runProgress.isLastStep ? 'Terminer ✓' : 'Suivante →',
+        'small primary',
+        runProgress.isLastStep ? 'floating-template-complete' : 'floating-template-next'
+      );
+      nextBtn.onclick = (e) => {
+        e.stopPropagation();
+        handleAdvanceTemplateRun({ recordCurrent: true });
+      };
+      actions.append(clockNode, nextBtn);
+    } else {
+      actions.append(clockNode);
+    }
 
     const stopBtn = button('Arrêter', 'small danger', 'floating-timer-stop');
     stopBtn.onclick = (e) => {
@@ -738,7 +1059,7 @@ export function createUI({
       stopTimer();
     };
 
-    actions.append(clockNode, stopBtn);
+    actions.append(stopBtn);
     bar.append(info, actions);
 
     bar.onclick = () => {
@@ -762,6 +1083,7 @@ export function createUI({
     f.append(
       timerCard(),
       quickStartCard(),
+      templatesCard(),
       entryCard(),
       activitiesCard(),
       entriesCard(),
@@ -776,12 +1098,65 @@ export function createUI({
 
   function timerCard() {
     const c = card('Chronomètre');
+    const runProgress = computeTemplateRunProgress(state.activeTemplateRun);
+
     if (!state.activeTimer) {
-      c.appendChild(node('p', 'muted', 'Aucun chronomètre actif. Lancez une activité en 1 clic ou configurez-la ci-dessous.'));
+      if (runProgress && runProgress.stepState === 'ready') {
+        const readyBox = node('div', 'template-runner-ready-box');
+        readyBox.dataset.templateRunner = 'ready';
+        readyBox.append(
+          node(
+            'div',
+            'template-runner-title',
+            `Gabarit « ${runProgress.templateName} » · Étape ${runProgress.stepNumber} / ${runProgress.totalSteps} prête`
+          ),
+          node('strong', 'template-runner-next-name', runProgress.currentStep.activity)
+        );
+        const btnRow = node('div', 'template-runner-actions');
+        const resumeBtn = button(
+          `▶ Lancer : ${runProgress.currentStep.activity}`,
+          'primary',
+          'template-resume-step'
+        );
+        resumeBtn.onclick = handleResumeTemplateRun;
+        const quitBtn = button('Terminer le gabarit', 'secondary', 'template-cancel-run');
+        quitBtn.onclick = handleStopTemplateRun;
+        btnRow.append(resumeBtn, quitBtn);
+        readyBox.appendChild(btnRow);
+        c.appendChild(readyBox);
+        return c;
+      }
+
+      c.appendChild(node('p', 'muted', 'Aucun chronomètre actif. Lancez une activité ou un gabarit en 1 clic ci-dessous.'));
       return c;
     }
+
     const t = state.activeTimer;
     const box = node('div', 'timer-active');
+
+    if (runProgress) {
+      const runnerBanner = node('div', 'template-runner-banner');
+      runnerBanner.dataset.templateRunner = 'running';
+
+      const runnerTop = node('div', 'template-runner-top');
+      runnerTop.append(
+        node('span', 'template-runner-title', `Gabarit : ${runProgress.templateName}`),
+        node('span', 'template-runner-counter', `Étape ${runProgress.stepNumber} / ${runProgress.totalSteps}`)
+      );
+      runnerBanner.appendChild(runnerTop);
+
+      const flowTrack = node('div', 'template-runner-track');
+      state.activeTemplateRun.steps.forEach((step, idx) => {
+        if (idx > 0) flowTrack.appendChild(node('span', 'template-runner-arrow', '→'));
+        const statusClass = idx < runProgress.currentIndex
+          ? 'is-done'
+          : (idx === runProgress.currentIndex ? 'is-current' : 'is-upcoming');
+        const prefix = idx < runProgress.currentIndex ? '✓ ' : (idx === runProgress.currentIndex ? '▶ ' : '');
+        flowTrack.appendChild(node('span', `template-runner-step ${statusClass}`, `${prefix}${step.activity}`));
+      });
+      runnerBanner.appendChild(flowTrack);
+      box.appendChild(runnerBanner);
+    }
 
     const metaRow = node('div', 'timer-meta-row');
     metaRow.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;';
@@ -792,11 +1167,120 @@ export function createUI({
     const clockNode = node('div', 't-clock', clock(elapsedSeconds(t)));
     clockNode.dataset.timerClock = '1';
 
-    const stop = button('Arrêter le chronomètre', 'danger', 'timer-stop');
-    stop.onclick = stopTimer;
+    box.append(metaRow, clockNode);
 
-    box.append(metaRow, clockNode, stop);
+    if (runProgress) {
+      const runnerActions = node('div', 'template-runner-actions');
+      const primaryNext = button(
+        runProgress.isLastStep
+          ? '✓ Terminer le gabarit'
+          : `Étape suivante → ${runProgress.nextStep.activity}`,
+        'primary template-runner-primary-btn',
+        runProgress.isLastStep ? 'template-complete-run' : 'template-next-step'
+      );
+      primaryNext.onclick = () => handleAdvanceTemplateRun({ recordCurrent: true });
+      runnerActions.appendChild(primaryNext);
+
+      const secondaryRow = node('div', 'template-runner-secondary-actions');
+      if (!runProgress.isLastStep) {
+        const skipBtn = button('Passer l’étape', 'small secondary', 'template-skip-step');
+        skipBtn.onclick = () => handleAdvanceTemplateRun({ recordCurrent: false });
+        secondaryRow.appendChild(skipBtn);
+      }
+      const stop = button('Arrêter le chrono', 'small danger', 'timer-stop');
+      stop.onclick = stopTimer;
+      secondaryRow.appendChild(stop);
+
+      runnerActions.appendChild(secondaryRow);
+      box.appendChild(runnerActions);
+    } else {
+      const stop = button('Arrêter le chronomètre', 'danger', 'timer-stop');
+      stop.onclick = stopTimer;
+      box.appendChild(stop);
+    }
+
     c.appendChild(box);
+    return c;
+  }
+
+  function templatesCard() {
+    const c = node('section', 'card templates-card');
+    c.dataset.templatesCard = 'true';
+
+    const headerRow = node('div', 'templates-card-header');
+    const titleGroup = node('div', 'templates-card-title-group');
+    titleGroup.appendChild(node('h2', 'card-title', 'Gabarits d’activité'));
+    titleGroup.appendChild(node('span', 'muted templates-card-subtitle', 'Enchaînements de chronos ou d’activités'));
+
+    const headerActions = node('div', 'templates-card-header-actions');
+    const createBtn = button('+ Nouveau', 'small primary', 'template-create-open');
+    createBtn.onclick = () => openTemplateCreateModal({ sourceMode: 'manual' });
+    const historyBtn = button('Depuis l’historique', 'small secondary', 'template-from-history-open');
+    historyBtn.onclick = () => openTemplateCreateModal({ sourceMode: 'history' });
+    headerActions.append(createBtn, historyBtn);
+
+    headerRow.append(titleGroup, headerActions);
+    c.appendChild(headerRow);
+
+    const templates = Array.isArray(state.activityTemplates) ? state.activityTemplates : [];
+    if (!templates.length) {
+      c.appendChild(
+        node(
+          'p',
+          'muted templates-empty-note',
+          'Créez une suite réutilisable (ex : Mosquée trajet → Mosquée prière → Doha) manuellement ou à partir d’une journée déjà enregistrée.'
+        )
+      );
+      return c;
+    }
+
+    const list = node('div', 'templates-list');
+    for (const tpl of templates) {
+      const row = node('div', 'template-row');
+      row.dataset.templateId = tpl.id;
+
+      const info = node('div', 'template-row-info');
+      const topLine = node('div', 'template-row-title-line');
+      topLine.appendChild(node('strong', 'template-row-name', tpl.name));
+      const totalMins = tpl.steps.reduce((sum, step) => sum + (Number(step.targetMins) || 0), 0);
+      const metaParts = [`${tpl.steps.length} étape${tpl.steps.length > 1 ? 's' : ''}`];
+      if (totalMins > 0) metaParts.push(`~${formatDuration(totalMins)}`);
+      if (tpl.useCount > 0) metaParts.push(`${tpl.useCount}×`);
+      topLine.appendChild(node('span', 'muted template-row-meta', metaParts.join(' · ')));
+
+      const seqLine = node('div', 'template-sequence-preview');
+      tpl.steps.forEach((step, idx) => {
+        if (idx > 0) seqLine.appendChild(node('span', 'template-sequence-arrow', ' → '));
+        const stepSpan = node('span', 'template-sequence-step-name', `${idx + 1}. ${step.activity}`);
+        if (step.targetMins) {
+          stepSpan.textContent += ` (${step.targetMins}m)`;
+        }
+        seqLine.appendChild(stepSpan);
+      });
+
+      info.append(topLine, seqLine);
+
+      const actions = node('div', 'template-row-actions');
+      const launchBtn = button('▶ Lancer', 'small primary', 'template-start');
+      launchBtn.onclick = () => handleStartTemplateRun(tpl.id);
+
+      const logBtn = button('📝 Saisir', 'small secondary', 'template-log-manual');
+      logBtn.title = 'Enregistrer toutes les étapes sans chrono';
+      logBtn.onclick = () => openTemplateManualLogModal(tpl.id);
+
+      const editBtn = button('Modifier', 'small secondary', 'template-edit');
+      editBtn.onclick = () => openTemplateEditModal(tpl.id);
+
+      const delBtn = button('×', 'small danger', 'template-delete');
+      delBtn.setAttribute('aria-label', `Supprimer le gabarit ${tpl.name}`);
+      delBtn.onclick = () => handleDeleteTemplate(tpl.id);
+
+      actions.append(launchBtn, logBtn, editBtn, delBtn);
+      row.append(info, actions);
+      list.appendChild(row);
+    }
+
+    c.appendChild(list);
     return c;
   }
 
@@ -1630,6 +2114,30 @@ export function createUI({
 
     if (m.type === 'custom-category-delete-confirm') {
       return renderCategoryDeleteConfirmModal({ state, modal: m, persist, rerender });
+    }
+
+    if (m.type === 'template-editor') {
+      return renderTemplateEditorModal({
+        state,
+        modal: m,
+        onClose: () => {
+          state.modal = null;
+          rerender();
+        },
+        onSaveTemplate: handleSaveTemplate,
+      });
+    }
+
+    if (m.type === 'template-manual-log') {
+      return renderTemplateManualLogModal({
+        state,
+        modal: m,
+        onClose: () => {
+          state.modal = null;
+          rerender();
+        },
+        onSubmitManualLog: handleSubmitManualTemplateLog,
+      });
     }
 
     if (m.type === 'merge-items') {
@@ -2564,6 +3072,9 @@ export function createUI({
           state.activities = reconciled.activities;
           state.activeTimer = reconciled.activeTimer;
           state.timerUpdatedAt = reconciled.timerUpdatedAt;
+          if (!state.activeTimer && state.activeTemplateRun?.stepState === 'running') {
+            state.activeTemplateRun = pauseTemplateRunAfterManualStop(state.activeTemplateRun);
+          }
           _stateManager?.actions?.reconcileNativeTimer?.(reconciled);
 
           await persist();
@@ -2745,6 +3256,7 @@ export function createUI({
       entries: state.entries,
       savedActivities: state.activities,
       categories: state.categories,
+      activityTemplates: state.activityTemplates || [],
     });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -2766,6 +3278,9 @@ export function createUI({
       state.entries = data.entries;
       state.activities = data.savedActivities;
       state.categories = [...builtins, ...data.categories.filter(c => !ids.has(c.id))];
+      if (Array.isArray(data.activityTemplates) && data.activityTemplates.length) {
+        state.activityTemplates = normalizeTemplatesList(data.activityTemplates, state.categories);
+      }
       await persist();
       syncQuickTilesToNative();
       trackEvent('data_imported', dataImportedPayload({ entryCount: state.entries.length, categoryCount: state.categories.length }));
@@ -2787,6 +3302,8 @@ export function createUI({
       state.entries = [];
       state.activities = [];
       state.categories = DEFAULT_CATEGORIES.map(c => ({ ...c }));
+      state.activityTemplates = [];
+      state.activeTemplateRun = null;
       state.activeTimer = null;
       state.timerUpdatedAt = Date.now();
       state.quickTilesConfig = createDefaultQuickTilesConfig();
@@ -2833,37 +3350,36 @@ export function createUI({
     const t = state.activeTimer;
     if (!t) return;
     const nowTs = Date.now();
-    const end = nowTime();
-    const endDate = t.date === today() ? t.date : today();
-    const durationMinutes = elapsedMinutes(t, nowTs);
-    const hasCategory = Boolean(t.categoryId ?? t.cat);
-    const entry = createTimeEntry({
-      id: crypto.randomUUID(),
-      activity: t.activity,
-      categoryId: t.categoryId ?? t.cat,
-      date: t.date,
-      start: t.startTime,
-      end,
-      endDate,
-      mins: durationMinutes,
-      viaTimer: true,
-    });
-    state.entries = [entry, ...state.entries];
+    const recorded = recordRunningTimerIntoEntries(nowTs, nowTime());
     state.activeTimer = null;
     state.timerUpdatedAt = nowTs;
 
-    // Update usage on saved activities if found
-    const actIdx = state.activities.findIndex(a => (a.label || a.activity) === t.activity);
-    if (actIdx >= 0) {
-      state.activities[actIdx].useCount = (state.activities[actIdx].useCount || 0) + 1;
-      state.activities[actIdx].lastUsedAt = new Date().toISOString();
+    let nextPausedStepName = null;
+    let templateCompletedByStop = false;
+    if (state.activeTemplateRun?.stepState === 'running') {
+      const nextRun = pauseTemplateRunAfterManualStop(state.activeTemplateRun);
+      if (nextRun) {
+        state.activeTemplateRun = nextRun;
+        nextPausedStepName = nextRun.steps[nextRun.currentIndex]?.activity || null;
+      } else {
+        state.activeTemplateRun = null;
+        templateCompletedByStop = true;
+      }
     }
 
     await persist();
     pushActiveTimerToNative(null, nowTs).catch(() => {});
-    trackEvent('timer_stopped', timerStoppedPayload({ durationMinutes, hasCategory }));
-    trackEvent('time_entry_created', timeEntryCreatedPayload({ durationMinutes, hasCategory, viaTimer: true }));
-    errorManager.notifySuccess(`Session « ${t.activity} » enregistrée (${formatDuration(durationMinutes)})`);
+    if (nextPausedStepName) {
+      errorManager.notifySuccess(
+        `Session « ${t.activity} » enregistrée (${formatDuration(recorded?.durationMinutes || 0)}). Étape suivante prête : « ${nextPausedStepName} ».`
+      );
+    } else if (templateCompletedByStop) {
+      errorManager.notifySuccess(
+        `Session « ${t.activity} » enregistrée (${formatDuration(recorded?.durationMinutes || 0)}). Gabarit terminé !`
+      );
+    } else {
+      errorManager.notifySuccess(`Session « ${t.activity} » enregistrée (${formatDuration(recorded?.durationMinutes || 0)})`);
+    }
     rerender();
   }
 

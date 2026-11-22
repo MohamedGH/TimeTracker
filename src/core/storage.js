@@ -79,6 +79,8 @@ export const STORAGE_KEYS = Object.freeze({
   entries: 'time-entries',
   activities: 'time-activities',
   categories: 'time-categories',
+  activityTemplates: 'time-activity-templates',
+  activeTemplateRun: 'time-active-template-run',
   // Legacy key kept readable for one-way migration.
   subcategories: 'time-subcategories',
   activeTimer: 'time-active-timer',

@@ -28,6 +28,13 @@ export const ANALYTICS_EVENTS = Object.freeze({
   CATEGORY_MERGED: 'category_merged',
   CATEGORY_DELETED: 'category_deleted',
   SAVED_ACTIVITY_MERGED: 'saved_activity_merged',
+  TEMPLATE_CREATED: 'template_created',
+  TEMPLATE_UPDATED: 'template_updated',
+  TEMPLATE_DELETED: 'template_deleted',
+  TEMPLATE_STARTED: 'template_started',
+  TEMPLATE_STEP_ADVANCED: 'template_step_advanced',
+  TEMPLATE_COMPLETED: 'template_completed',
+  TEMPLATE_LOGGED_MANUAL: 'template_logged_manual',
   DASHBOARD_PERIOD_CHANGED: 'dashboard_period_changed',
   DATA_EXPORTED: 'data_exported',
   DATA_IMPORTED: 'data_imported',
@@ -116,6 +123,13 @@ export function authEventPayload() {
 export function syncEventPayload(mode = 'unknown') {
   const allowed = new Set(['drive_appdata', 'webrtc_p2p']);
   return { mode: allowed.has(mode) ? mode : 'unknown' };
+}
+
+export function templateEventPayload({ stepCount = 0, fromHistory = false } = {}) {
+  return {
+    step_count: safeNonNegativeInt(stepCount),
+    from_history: Boolean(fromHistory),
+  };
 }
 
 function safeNonNegativeInt(value) {

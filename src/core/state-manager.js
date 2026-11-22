@@ -10,6 +10,18 @@ import { today } from './time.js';
 import { createDefaultQuickTilesConfig } from './mobile/quick-tiles.js';
 import { mergeCategoriesState } from '../state/category-actions.js';
 import { mergeActivitiesState } from '../state/activity-actions.js';
+import {
+  saveActivityTemplate,
+  deleteActivityTemplate,
+  recordTemplateUse,
+  startTemplateRun,
+  advanceTemplateRun,
+  pauseTemplateRunAfterManualStop,
+  resumeReadyTemplateRun,
+  reassignCategoryInTemplates,
+  reassignActivityInTemplates,
+  buildEntriesFromTemplate,
+} from '../state/template-actions.js';
 
 export const ACTION_TYPES = Object.freeze({
   SET_TAB: 'SET_TAB',
@@ -31,6 +43,14 @@ export const ACTION_TYPES = Object.freeze({
   SET_CATEGORIES: 'SET_CATEGORIES',
   MERGE_CATEGORIES: 'MERGE_CATEGORIES',
   MERGE_ACTIVITIES: 'MERGE_ACTIVITIES',
+  SAVE_TEMPLATE: 'SAVE_TEMPLATE',
+  DELETE_TEMPLATE: 'DELETE_TEMPLATE',
+  START_TEMPLATE_RUN: 'START_TEMPLATE_RUN',
+  ADVANCE_TEMPLATE_RUN: 'ADVANCE_TEMPLATE_RUN',
+  PAUSE_TEMPLATE_RUN: 'PAUSE_TEMPLATE_RUN',
+  RESUME_TEMPLATE_RUN: 'RESUME_TEMPLATE_RUN',
+  STOP_TEMPLATE_RUN: 'STOP_TEMPLATE_RUN',
+  LOG_TEMPLATE_ENTRIES: 'LOG_TEMPLATE_ENTRIES',
   SET_ERROR: 'SET_ERROR',
   CLEAR_ERROR: 'CLEAR_ERROR',
   SET_NOTICE: 'SET_NOTICE',
@@ -237,11 +257,17 @@ export function appReducer(state, action) {
         },
         action.payload || {}
       );
+      const nextTemplates = reassignCategoryInTemplates(
+        state.activityTemplates,
+        action.payload?.sourceId,
+        action.payload?.targetId
+      );
       return {
         ...state,
         categories: merged.categories,
         entries: merged.entries,
         activities: merged.activities,
+        activityTemplates: nextTemplates,
         activeTimer: merged.activeTimer,
         quickTilesConfig: merged.quickTilesConfig ?? state.quickTilesConfig,
         timerUpdatedAt: merged.summary.affectsActiveTimer
@@ -263,15 +289,157 @@ export function appReducer(state, action) {
         },
         action.payload || {}
       );
+      const nextTemplates = reassignActivityInTemplates(
+        state.activityTemplates,
+        { label: merged.summary.sourceLabel, categoryId: merged.summary.sourceCategoryId },
+        { label: merged.summary.targetLabel, categoryId: merged.summary.targetCategoryId }
+      );
       return {
         ...state,
         activities: merged.activities,
         entries: merged.entries,
+        activityTemplates: nextTemplates,
         activeTimer: merged.activeTimer,
         quickTilesConfig: merged.quickTilesConfig ?? state.quickTilesConfig,
         timerUpdatedAt: merged.summary.affectsActiveTimer
           ? Math.max(Date.now(), (Number(state.timerUpdatedAt) || 0) + 1)
           : state.timerUpdatedAt,
+        modal: null,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.SAVE_TEMPLATE: {
+      const result = saveActivityTemplate(
+        state.activityTemplates || [],
+        action.payload || {},
+        state.categories
+      );
+      return {
+        ...state,
+        activityTemplates: result.templates,
+        modal: null,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.DELETE_TEMPLATE:
+      return {
+        ...state,
+        activityTemplates: deleteActivityTemplate(state.activityTemplates || [], action.payload),
+      };
+
+    case ACTION_TYPES.START_TEMPLATE_RUN: {
+      const { template, date = today(), startTime = formatCurrentClock(), startTs = Date.now() } = action.payload || {};
+      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(startTs).toISOString() });
+      const timer = createActiveTimer({
+        activity: firstStep.activity,
+        categoryId: firstStep.categoryId,
+        date,
+        startTime,
+        startTs,
+      });
+      return {
+        ...state,
+        activeTimer: timer,
+        timerUpdatedAt: startTs,
+        activeTemplateRun: run,
+        activityTemplates: recordTemplateUse(state.activityTemplates || [], template.id, startTs),
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.ADVANCE_TEMPLATE_RUN: {
+      const { recordCurrent = true, end, startTime = formatCurrentClock(), date = today(), nowTs = Date.now() } = action.payload || {};
+      let nextEntries = state.entries;
+      let nextActivities = state.activities;
+
+      if (recordCurrent && state.activeTimer) {
+        const t = state.activeTimer;
+        const durationMinutes = elapsedMinutes(t, nowTs);
+        const entry = createTimeEntry({
+          id: crypto.randomUUID(),
+          activity: t.activity,
+          categoryId: t.categoryId ?? t.cat ?? null,
+          date: t.date,
+          start: t.startTime,
+          end: end || formatCurrentClock(),
+          endDate: t.date === date ? t.date : date,
+          mins: durationMinutes,
+          viaTimer: true,
+        });
+        nextEntries = [entry, ...state.entries];
+        nextActivities = updateActivityUsage(state.activities, t.activity, t.categoryId, durationMinutes);
+      }
+
+      const transition = advanceTemplateRun(state.activeTemplateRun, { recordedStep: recordCurrent });
+      const nextTimer = !transition.completed && transition.nextStep
+        ? createActiveTimer({
+            activity: transition.nextStep.activity,
+            categoryId: transition.nextStep.categoryId,
+            date,
+            startTime,
+            startTs: nowTs,
+          })
+        : null;
+
+      return {
+        ...state,
+        entries: nextEntries,
+        activities: nextActivities,
+        activeTimer: nextTimer,
+        timerUpdatedAt: nowTs,
+        activeTemplateRun: transition.nextRun,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.PAUSE_TEMPLATE_RUN: {
+      if (!state.activeTemplateRun) return state;
+      return {
+        ...state,
+        activeTemplateRun: pauseTemplateRunAfterManualStop(state.activeTemplateRun),
+      };
+    }
+
+    case ACTION_TYPES.RESUME_TEMPLATE_RUN: {
+      const resumed = resumeReadyTemplateRun(state.activeTemplateRun);
+      if (!resumed) return state;
+      const { date = today(), startTime = formatCurrentClock(), startTs = Date.now() } = action.payload || {};
+      const timer = createActiveTimer({
+        activity: resumed.currentStep.activity,
+        categoryId: resumed.currentStep.categoryId,
+        date,
+        startTime,
+        startTs,
+      });
+      return {
+        ...state,
+        activeTimer: timer,
+        timerUpdatedAt: startTs,
+        activeTemplateRun: resumed.nextRun,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.STOP_TEMPLATE_RUN:
+      return {
+        ...state,
+        activeTemplateRun: null,
+      };
+
+    case ACTION_TYPES.LOG_TEMPLATE_ENTRIES: {
+      const { template, date = today(), startTime = '08:00', fallbackMins = 15 } = action.payload || {};
+      const built = buildEntriesFromTemplate(template, { date, startTime, fallbackMins });
+      let nextActivities = state.activities;
+      for (const entry of built) {
+        nextActivities = updateActivityUsage(nextActivities, entry.activity, entry.categoryId, entry.mins);
+      }
+      return {
+        ...state,
+        entries: [...built.slice().reverse(), ...state.entries],
+        activities: nextActivities,
+        activityTemplates: recordTemplateUse(state.activityTemplates || [], template.id),
         modal: null,
         error: null,
       };
@@ -302,12 +470,13 @@ export function appReducer(state, action) {
       };
 
     case ACTION_TYPES.RESTORE_DATA: {
-      const { entries, activities, categories } = action.payload;
+      const { entries, activities, categories, activityTemplates } = action.payload;
       return {
         ...state,
         entries: Array.isArray(entries) ? entries : state.entries,
         activities: Array.isArray(activities) ? activities : state.activities,
         categories: Array.isArray(categories) ? categories : state.categories,
+        activityTemplates: Array.isArray(activityTemplates) ? activityTemplates : state.activityTemplates,
         editingEntryId: null,
         modal: null,
         error: null,
@@ -320,6 +489,8 @@ export function appReducer(state, action) {
         entries: [],
         activities: [],
         categories: DEFAULT_CATEGORIES.map(c => ({ ...c })),
+        activityTemplates: [],
+        activeTemplateRun: null,
         activeTimer: null,
         editingEntryId: null,
         modal: null,
@@ -396,6 +567,8 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     entries: [],
     activities: [],
     categories: [...DEFAULT_CATEGORIES],
+    activityTemplates: [],
+    activeTemplateRun: null,
     activeTimer: null,
     timerUpdatedAt: 0,
     quickTilesConfig: createDefaultQuickTilesConfig(),
@@ -424,6 +597,8 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       prevState.entries !== nextState.entries ||
       prevState.activities !== nextState.activities ||
       prevState.categories !== nextState.categories ||
+      prevState.activityTemplates !== nextState.activityTemplates ||
+      prevState.activeTemplateRun !== nextState.activeTemplateRun ||
       prevState.activeTimer !== nextState.activeTimer ||
       prevState.quickTilesConfig !== nextState.quickTilesConfig ||
       prevState.timerUpdatedAt !== nextState.timerUpdatedAt
@@ -506,6 +681,30 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       mergeActivities({ source, target }) {
         return dispatch({ type: ACTION_TYPES.MERGE_ACTIVITIES, payload: { source, target } });
+      },
+      saveTemplate(payload) {
+        return dispatch({ type: ACTION_TYPES.SAVE_TEMPLATE, payload });
+      },
+      deleteTemplate(templateId) {
+        return dispatch({ type: ACTION_TYPES.DELETE_TEMPLATE, payload: templateId });
+      },
+      startTemplateRun(payload) {
+        return dispatch({ type: ACTION_TYPES.START_TEMPLATE_RUN, payload });
+      },
+      advanceTemplateRun(payload) {
+        return dispatch({ type: ACTION_TYPES.ADVANCE_TEMPLATE_RUN, payload });
+      },
+      pauseTemplateRun() {
+        return dispatch({ type: ACTION_TYPES.PAUSE_TEMPLATE_RUN });
+      },
+      resumeTemplateRun(payload) {
+        return dispatch({ type: ACTION_TYPES.RESUME_TEMPLATE_RUN, payload });
+      },
+      stopTemplateRun() {
+        return dispatch({ type: ACTION_TYPES.STOP_TEMPLATE_RUN });
+      },
+      logTemplateEntries(payload) {
+        return dispatch({ type: ACTION_TYPES.LOG_TEMPLATE_ENTRIES, payload });
       },
       setModal(modal) {
         return dispatch({ type: ACTION_TYPES.SET_MODAL, payload: modal });

@@ -13,6 +13,7 @@ export function emptyTombstones() {
     entries: {},
     activities: {},
     categories: {},
+    templates: {},
   };
 }
 
@@ -31,6 +32,7 @@ export function normalizeTombstones(raw) {
     entries: cleanMap(src.entries),
     activities: cleanMap(src.activities),
     categories: cleanMap(src.categories),
+    templates: cleanMap(src.templates),
   };
 }
 
@@ -256,14 +258,34 @@ export function mergeSyncPayloads(localPayload, remotePayload) {
       return getItemTimestamp(b) - getItemTimestamp(a);
     });
 
+  const tplMerge = mergeCollectionLww(
+    localPayload?.templates || localPayload?.activityTemplates || [],
+    remotePayload?.templates || remotePayload?.activityTemplates || [],
+    localT.templates,
+    remoteT.templates
+  );
+  const repairedTemplates = tplMerge.items
+    .map(tpl => ({
+      ...tpl,
+      steps: Array.isArray(tpl.steps)
+        ? tpl.steps.map(step => ({
+            ...step,
+            categoryId: step.categoryId && validCategoryIds.has(step.categoryId) ? step.categoryId : null,
+          }))
+        : [],
+    }))
+    .sort((a, b) => getItemTimestamp(b) - getItemTimestamp(a));
+
   return {
     entries: repairedEntries,
     activities: repairedActivities,
     categories: repairedCategories,
+    templates: repairedTemplates,
     tombstones: {
       entries: entryMerge.tombstones,
       activities: actMerge.tombstones,
       categories: catMerge.tombstones,
+      templates: tplMerge.tombstones,
     },
   };
 }
@@ -273,11 +295,14 @@ export function serializeSyncPayload({
   activities = [],
   savedActivities = [],
   categories = [],
+  templates = [],
+  activityTemplates = [],
   tombstones = emptyTombstones(),
   deviceId = 'local',
   exportedAt = new Date().toISOString(),
 } = {}) {
   const actList = activities.length ? activities : savedActivities;
+  const tplList = templates.length ? templates : activityTemplates;
   return {
     format: SYNC_FORMAT,
     version: 3,
@@ -286,6 +311,7 @@ export function serializeSyncPayload({
     entries: entries.map(e => stampItem({ ...e, categoryId: e.categoryId ?? null })),
     savedActivities: actList.map(a => stampItem({ ...a, categoryId: a.categoryId ?? null })),
     categories: categories.map(c => stampItem({ ...c, parentId: c.parentId ?? null })),
+    templates: tplList.map(t => stampItem({ ...t })),
     tombstones: normalizeTombstones(tombstones),
   };
 }
@@ -312,6 +338,9 @@ export function parseSyncPayload(raw) {
       ? parsed.savedActivities
       : (Array.isArray(parsed.activities) ? parsed.activities : []),
     categories: Array.isArray(parsed.categories) ? parsed.categories : [],
+    templates: Array.isArray(parsed.templates)
+      ? parsed.templates
+      : (Array.isArray(parsed.activityTemplates) ? parsed.activityTemplates : []),
     tombstones: normalizeTombstones(parsed.tombstones),
   };
 }

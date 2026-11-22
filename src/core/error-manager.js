@@ -37,7 +37,7 @@ export function normalizeError(error, context = 'general') {
     userMessage = rawMessage.includes('invalide')
       ? 'Veuillez renseigner une activité et une catégorie pour démarrer le chrono.'
       : rawMessage;
-  } else if (context === 'category' || context === 'activity' || context === 'merge') {
+  } else if (context === 'category' || context === 'activity' || context === 'merge' || context === 'template') {
     code = ERROR_CODES.VALIDATION;
     userMessage = rawMessage || 'Opération impossible : veuillez vérifier votre sélection.';
   } else if (context === 'entry' || rawMessage.toLowerCase().includes('horaires') || rawMessage.toLowerCase().includes('activité')) {

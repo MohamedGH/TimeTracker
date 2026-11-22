@@ -12,6 +12,10 @@ import {
   normalizeTombstones,
   stampItem,
 } from './core/sync/crdt-merge.js';
+import {
+  normalizeTemplatesList,
+  normalizeActiveTemplateRun,
+} from './state/template-actions.js';
 
 export async function createAppState() {
   await migratePersistedData();
@@ -20,6 +24,8 @@ export async function createAppState() {
     entries,
     activities,
     storedCategories,
+    storedTemplates,
+    storedActiveTemplateRun,
     activeTimer,
     storedTimerUpdatedAt,
     storedQuickTilesConfig,
@@ -30,6 +36,8 @@ export async function createAppState() {
     getValue(STORAGE_KEYS.entries, []),
     getValue(STORAGE_KEYS.activities, []),
     getValue(STORAGE_KEYS.categories, []),
+    getValue(STORAGE_KEYS.activityTemplates, []),
+    getValue(STORAGE_KEYS.activeTemplateRun, null),
     getValue(STORAGE_KEYS.activeTimer, null),
     getValue(STORAGE_KEYS.timerUpdatedAt, 0),
     getValue(STORAGE_KEYS.quickTilesConfig, null),
@@ -72,6 +80,8 @@ export async function createAppState() {
     : [];
 
   const normalizedEntries = normalizeEntries(entries, categories, []).map(e => stampItem(e, 1));
+  const normalizedTemplates = normalizeTemplatesList(storedTemplates, categories).map(t => stampItem(t, 1));
+  const normalizedActiveTemplateRun = normalizeActiveTemplateRun(storedActiveTemplateRun);
   const normalizedQuickTilesConfig = normalizeQuickTilesConfig(storedQuickTilesConfig, {
     categories,
     activities: normalizedActivities,
@@ -95,12 +105,15 @@ export async function createAppState() {
     entries: normalizedEntries,
     activities: normalizedActivities,
     categories,
+    templates: normalizedTemplates,
   };
 
   const initialRawState = {
     entries: normalizedEntries,
     activities: normalizedActivities,
     categories,
+    activityTemplates: normalizedTemplates,
+    activeTemplateRun: normalizedActiveTemplateRun,
     activeTimer: activeTimer || null,
     timerUpdatedAt: initialTimerUpdatedAt,
     quickTilesConfig: normalizedQuickTilesConfig,
@@ -124,27 +137,33 @@ export async function createAppState() {
     const entryDiff = diffAndStampCollection(lastPersistedSnapshot.entries, s.entries, currentTombstones.entries, nowMs);
     const actDiff = diffAndStampCollection(lastPersistedSnapshot.activities, s.activities, currentTombstones.activities, nowMs);
     const catDiff = diffAndStampCollection(lastPersistedSnapshot.categories, s.categories, currentTombstones.categories, nowMs);
+    const tplDiff = diffAndStampCollection(lastPersistedSnapshot.templates, s.activityTemplates || [], currentTombstones.templates, nowMs);
 
     s.entries = entryDiff.items;
     s.activities = actDiff.items;
     s.categories = catDiff.items;
+    s.activityTemplates = tplDiff.items;
 
     currentTombstones = {
       entries: entryDiff.tombstones,
       activities: actDiff.tombstones,
       categories: catDiff.tombstones,
+      templates: tplDiff.tombstones,
     };
 
     lastPersistedSnapshot = {
       entries: s.entries,
       activities: s.activities,
       categories: s.categories,
+      templates: s.activityTemplates,
     };
 
     await Promise.all([
       setValue(STORAGE_KEYS.entries, s.entries),
       setValue(STORAGE_KEYS.activities, s.activities),
       setValue(STORAGE_KEYS.categories, s.categories),
+      setValue(STORAGE_KEYS.activityTemplates, s.activityTemplates),
+      setValue(STORAGE_KEYS.activeTemplateRun, s.activeTemplateRun || null),
       setValue(STORAGE_KEYS.activeTimer, s.activeTimer),
       setValue(STORAGE_KEYS.timerUpdatedAt, Number(s.timerUpdatedAt) || 0),
       setValue(STORAGE_KEYS.quickTilesConfig, s.quickTilesConfig || normalizedQuickTilesConfig),
@@ -158,6 +177,7 @@ export async function createAppState() {
       entries: s.entries,
       activities: s.activities,
       categories: s.categories,
+      templates: s.activityTemplates || [],
       tombstones: currentTombstones,
       deviceId: currentSyncMeta.deviceId,
     };
@@ -168,18 +188,23 @@ export async function createAppState() {
     s.entries = Array.isArray(merged?.entries) ? merged.entries : s.entries;
     s.activities = Array.isArray(merged?.activities) ? merged.activities : s.activities;
     s.categories = Array.isArray(merged?.categories) ? merged.categories : s.categories;
+    if (Array.isArray(merged?.templates)) {
+      s.activityTemplates = normalizeTemplatesList(merged.templates, s.categories);
+    }
     currentTombstones = normalizeTombstones(merged?.tombstones || currentTombstones);
 
     lastPersistedSnapshot = {
       entries: s.entries,
       activities: s.activities,
       categories: s.categories,
+      templates: s.activityTemplates || [],
     };
 
     await Promise.all([
       setValue(STORAGE_KEYS.entries, s.entries),
       setValue(STORAGE_KEYS.activities, s.activities),
       setValue(STORAGE_KEYS.categories, s.categories),
+      setValue(STORAGE_KEYS.activityTemplates, s.activityTemplates || []),
       setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
     ]);
   }
