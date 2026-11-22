@@ -5,6 +5,7 @@ import {
   collectMergeableActivities,
   computeActivityMergeImpact,
 } from '../../state/activity-actions.js';
+import { isolateModalEvents } from '../../core/modal-events.js';
 
 /**
  * Pure helper to determine initial source and target selections when opening the merge modal.
@@ -110,9 +111,6 @@ export function renderMergeModal({
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
-  overlay.onclick = (e) => {
-    if (e.target === overlay) onClose?.();
-  };
 
   const box = document.createElement('div');
   box.className = 'modal-box merge-modal';
@@ -188,6 +186,7 @@ export function renderMergeModal({
     actions.appendChild(cancelBtn);
     box.appendChild(actions);
     overlay.appendChild(box);
+    isolateModalEvents(overlay, box, { onBackdropClose: () => onClose?.() });
     return overlay;
   }
 
@@ -449,5 +448,6 @@ export function renderMergeModal({
   renderPreview();
   box.appendChild(form);
   overlay.appendChild(box);
+  isolateModalEvents(overlay, box, { onBackdropClose: () => onClose?.() });
   return overlay;
 }

@@ -22,6 +22,7 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
   let container;
 
   beforeEach(() => {
+    document.body.replaceChildren();
     container = document.createElement('div');
     document.body.appendChild(container);
   });
@@ -394,6 +395,176 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       oldCategoryId: 'dev',
       newCategoryId: 'sport',
     });
+
+    tree.destroy();
+  });
+
+  it('ignores wheel/zoom until stage has focus and releases focus on Escape or outside click', () => {
+    const tree = renderCategoryActivityTree({
+      container,
+      categories,
+      activities,
+      entries,
+      animationDuration: 0,
+    });
+
+    const stage = container.querySelector('.cat-tree-stage');
+    const svg = container.querySelector('.cat-tree-svg');
+    const zoomLayer = container.querySelector('.cat-tree-zoom-layer');
+    expect(stage.dataset.chartFocused).toBe('false');
+    expect(stage.classList.contains('is-focused')).toBe(false);
+
+    const initialTransform = zoomLayer.getAttribute('transform');
+
+    // 1. Wheel over unfocused SVG must NOT zoom and must allow default page scrolling
+    const wheelUnfocused = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: -120,
+    });
+    svg.dispatchEvent(wheelUnfocused);
+    expect(wheelUnfocused.defaultPrevented).toBe(false);
+    expect(zoomLayer.getAttribute('transform')).toBe(initialTransform);
+
+    // 2. Clicking/focusing stage enables wheel zoom
+    stage.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(stage.dataset.chartFocused).toBe('true');
+    expect(stage.classList.contains('is-focused')).toBe(true);
+
+    const wheelFocused = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: -120,
+    });
+    svg.dispatchEvent(wheelFocused);
+    expect(wheelFocused.defaultPrevented).toBe(true);
+    expect(zoomLayer.getAttribute('transform')).not.toBe(initialTransform);
+
+    // 3. Pressing Escape releases focus and stops subsequent wheel zooming
+    const transformAfterZoom = zoomLayer.getAttribute('transform');
+    stage.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(stage.dataset.chartFocused).toBe('false');
+    expect(stage.classList.contains('is-focused')).toBe(false);
+
+    const wheelAfterEscape = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: -120,
+    });
+    svg.dispatchEvent(wheelAfterEscape);
+    expect(wheelAfterEscape.defaultPrevented).toBe(false);
+    expect(zoomLayer.getAttribute('transform')).toBe(transformAfterZoom);
+
+    // 4. Re-focus then click outside -> focus released
+    stage.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(stage.dataset.chartFocused).toBe('true');
+    const outsideEl = document.createElement('div');
+    document.body.appendChild(outsideEl);
+    outsideEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(stage.dataset.chartFocused).toBe('false');
+
+    tree.destroy();
+  });
+
+  it('prevents edit-activity pointerdown/mousedown/click from bubbling to SVG zoom or focusing chart, and blocks D3 while modal is open', () => {
+    const onEditActivity = vi.fn();
+    const tree = renderCategoryActivityTree({
+      container,
+      categories,
+      activities,
+      entries,
+      animationDuration: 0,
+      onEditActivity,
+    });
+
+    const stage = container.querySelector('.cat-tree-stage');
+    const svg = container.querySelector('.cat-tree-svg');
+    const zoomLayer = container.querySelector('.cat-tree-zoom-layer');
+    const editBtn = container.querySelector('g.tree-node[data-node-id="activity:act-1"] [data-action="edit-activity"]');
+
+    const svgMouseDownSpy = vi.fn();
+    const svgClickSpy = vi.fn();
+    svg.addEventListener('mousedown', svgMouseDownSpy);
+    svg.addEventListener('click', svgClickSpy);
+
+    editBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    editBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(onEditActivity).toHaveBeenCalledTimes(1);
+    expect(svgMouseDownSpy).not.toHaveBeenCalled();
+    expect(svgClickSpy).not.toHaveBeenCalled();
+    expect(stage.dataset.chartFocused).toBe('false');
+
+    // Simulate an open modal in the document -> wheel/clicks on chart must be ignored
+    stage.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(stage.dataset.chartFocused).toBe('true');
+
+    const modalOverlay = document.createElement('div');
+    modalOverlay.className = 'modal-overlay';
+    document.body.appendChild(modalOverlay);
+
+    const transformBefore = zoomLayer.getAttribute('transform');
+    const wheelWithModal = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -120 });
+    svg.dispatchEvent(wheelWithModal);
+    expect(wheelWithModal.defaultPrevented).toBe(false);
+    expect(zoomLayer.getAttribute('transform')).toBe(transformBefore);
+
+    tree.destroy();
+  });
+
+  it('opens quick-add modal centered with backdrop, isolates D3 interactions while open, and closes on backdrop click or Escape', () => {
+    const onAddCategory = vi.fn();
+    const onAddActivity = vi.fn();
+    const tree = renderCategoryActivityTree({
+      container,
+      categories,
+      activities,
+      entries,
+      animationDuration: 0,
+      onAddCategory,
+      onAddActivity,
+    });
+
+    const stage = container.querySelector('.cat-tree-stage');
+    const svg = container.querySelector('.cat-tree-svg');
+    const zoomLayer = container.querySelector('.cat-tree-zoom-layer');
+    const backdrop = container.querySelector('.cat-tree-popover-backdrop');
+    const popover = container.querySelector('.cat-tree-node-popover');
+
+    expect(backdrop).toBeTruthy();
+    expect(backdrop.hidden).toBe(true);
+    expect(popover.getAttribute('aria-modal')).toBe('true');
+
+    // Focus chart first, then click '+' on category:dev
+    stage.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(stage.dataset.chartFocused).toBe('true');
+
+    const devAddBtn = container.querySelector('g.tree-node[data-node-id="category:dev"] [data-action="node-add"]');
+    devAddBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(popover.hidden).toBe(false);
+    expect(backdrop.hidden).toBe(false);
+    expect(stage.dataset.chartFocused).toBe('false');
+
+    // Wheel over SVG must NOT zoom while quick-add dialog is open
+    const transformBefore = zoomLayer.getAttribute('transform');
+    const wheelWhileOpen = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -120 });
+    svg.dispatchEvent(wheelWhileOpen);
+    expect(wheelWhileOpen.defaultPrevented).toBe(false);
+    expect(zoomLayer.getAttribute('transform')).toBe(transformBefore);
+
+    // Backdrop click closes dialog
+    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(popover.hidden).toBe(true);
+    expect(backdrop.hidden).toBe(true);
+
+    // Re-open and close with Escape
+    devAddBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(popover.hidden).toBe(false);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(popover.hidden).toBe(true);
+    expect(backdrop.hidden).toBe(true);
 
     tree.destroy();
   });

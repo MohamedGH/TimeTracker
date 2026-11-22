@@ -30,6 +30,7 @@ import {
   renderCategoryDeleteConfirmModal,
 } from './components/categories/category-manager.js';
 import { renderMergeModal } from './components/merge/merge-modal.js';
+import { isolateModalEvents } from './core/modal-events.js';
 import { createRouteManager } from './core/route-manager.js';
 import { createErrorManager } from './core/error-manager.js';
 import { calculateDashboardStats, filterEntriesByPeriod, formatDuration } from './core/statistics.js';
@@ -462,7 +463,12 @@ export function createUI({
     root.appendChild(header());
     trackTabView();
 
+    const hasModal = Boolean(state.modal);
+    root.classList.toggle('has-modal', hasModal);
+
     const main = node('main', 'content mobile-content');
+    main.setAttribute('aria-hidden', hasModal ? 'true' : 'false');
+    if ('inert' in main) main.inert = hasModal;
     main.append(
       state.tab === 'entry' ? entryPage() :
       state.tab === 'dashboard' ? dashboardPage() :
@@ -490,7 +496,7 @@ export function createUI({
       root.appendChild(offlineIndicatorBanner());
     }
 
-    if (state.modal) root.appendChild(modal());
+    if (hasModal) root.appendChild(modal());
     renderNoticeBanner();
 
     if (state.activeTimer) {
@@ -1663,32 +1669,36 @@ export function createUI({
     }
 
     const overlay = node('div', 'modal-overlay');
-    overlay.addEventListener('click', e => {
-      if (e.target === overlay) {
-        state.modal = null;
-        rerender();
+    const closeModal = () => {
+      state.modal = null;
+      if (m.type === 'pwa-ios-guide' || m.type === 'pwa-install-guide') {
+        pwaController.closeIOSGuide();
       }
-    });
+      rerender();
+    };
 
     if (m.type === 'account') {
       const box = node('div', 'modal-box');
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      box.setAttribute('aria-label', 'Compte Google (OIDC)');
       const head = node('div', 'modal-head');
       const title = node('h2', 'card-title', 'Compte Google (OIDC)');
       const close = button('×', 'modal-close', 'modal-close');
-      close.onclick = () => {
-        state.modal = null;
-        rerender();
-      };
+      close.onclick = closeModal;
       head.append(title, close);
       box.appendChild(head);
       box.appendChild(accountSectionContent());
       overlay.appendChild(box);
+      isolateModalEvents(overlay, box, { onBackdropClose: closeModal });
       return overlay;
     }
 
     if (m.type === 'pwa-ios-guide' || m.type === 'pwa-install-guide') {
       const isIos = m.type === 'pwa-ios-guide';
       const box = node('div', 'modal-box');
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
       const head = node('div', 'modal-head');
       const title = node(
         'h2',
@@ -1696,11 +1706,7 @@ export function createUI({
         isIos ? 'Installer sur iPhone / iPad' : 'Installer l’application mobile'
       );
       const close = button('×', 'modal-close', 'modal-close');
-      close.onclick = () => {
-        state.modal = null;
-        pwaController.closeIOSGuide();
-        rerender();
-      };
+      close.onclick = closeModal;
       head.append(title, close);
       box.appendChild(head);
 
@@ -1721,26 +1727,23 @@ export function createUI({
       box.appendChild(list);
 
       const okBtn = button('Compris', 'primary mobile-guide-close', 'pwa-guide-close');
-      okBtn.onclick = () => {
-        state.modal = null;
-        pwaController.closeIOSGuide();
-        rerender();
-      };
+      okBtn.onclick = closeModal;
       box.appendChild(okBtn);
       overlay.appendChild(box);
+      isolateModalEvents(overlay, box, { onBackdropClose: closeModal });
       return overlay;
     }
 
     const isEditActivity = m.mode === 'edit';
     const box = node('div', 'modal-box');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
     const head = node('div', 'modal-head');
     const titleText = isEditActivity ? 'Modifier l’activité' : 'Nouvelle activité';
+    box.setAttribute('aria-label', titleText);
     const title = node('h2', 'card-title', titleText);
     const close = button('×', 'modal-close', 'modal-close');
-    close.onclick = () => {
-      state.modal = null;
-      rerender();
-    };
+    close.onclick = closeModal;
     head.append(title, close);
     box.appendChild(head);
 
@@ -1809,6 +1812,7 @@ export function createUI({
 
     box.appendChild(form);
     overlay.appendChild(box);
+    isolateModalEvents(overlay, box, { onBackdropClose: closeModal });
     return overlay;
   }
 

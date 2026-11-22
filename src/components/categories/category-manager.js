@@ -4,6 +4,7 @@ import { CATEGORY_PALETTE, DEFAULT_CATEGORY_COLOR, createCategoryBadge } from '.
 import { trackEvent } from '../../core/analytics/analytics.js';
 import { categoryCreatedPayload, categoryDeletedPayload } from '../../core/analytics/events.js';
 import { getBehaviorTracking } from '../../core/behavior/index.js';
+import { isolateModalEvents } from '../../core/modal-events.js';
 import { renderCategoryActivityTree } from '../../charts/category-activity-tree.js';
 
 export function createCategoryManager({
@@ -667,15 +668,15 @@ export function renderCategoryEditorModal({ state, modal, persist, rerender }) {
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
-  overlay.onclick = (e) => {
-    if (e.target === overlay) {
-      state.modal = null;
-      rerender();
-    }
+  const closeModal = () => {
+    state.modal = null;
+    rerender();
   };
 
   const box = document.createElement('div');
   box.className = 'modal-box category-editor-modal';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
 
   const head = document.createElement('div');
   head.className = 'modal-head';
@@ -925,6 +926,7 @@ export function renderCategoryEditorModal({ state, modal, persist, rerender }) {
 
   box.appendChild(form);
   overlay.appendChild(box);
+  isolateModalEvents(overlay, box, { onBackdropClose: closeModal });
   return overlay;
 }
 
@@ -936,15 +938,15 @@ export function renderCategoryDeleteConfirmModal({ state, modal, persist, rerend
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
-  overlay.onclick = (e) => {
-    if (e.target === overlay) {
-      state.modal = null;
-      rerender();
-    }
+  const closeModal = () => {
+    state.modal = null;
+    rerender();
   };
 
   const box = document.createElement('div');
   box.className = 'modal-box category-delete-modal';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
 
   const head = document.createElement('div');
   head.className = 'modal-head';
@@ -1040,6 +1042,7 @@ export function renderCategoryDeleteConfirmModal({ state, modal, persist, rerend
   actions.append(confirmBtn, cancelBtn);
   box.append(content, actions);
   overlay.appendChild(box);
+  isolateModalEvents(overlay, box, { onBackdropClose: closeModal });
   return overlay;
 }
 

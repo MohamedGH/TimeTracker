@@ -13,6 +13,11 @@ import {
   computeTreeMetrics,
   findTreeDropTarget,
 } from '../core/category-activity-tree-model.js';
+import {
+  hasOpenModal,
+  isEventInsideModal,
+  isolateModalEvents,
+} from '../core/modal-events.js';
 
 const NODE_DIMENSIONS = Object.freeze({
   [TREE_NODE_TYPES.ROOT]: { width: 196, height: 46, rx: 12 },
@@ -126,21 +131,61 @@ export function renderCategoryActivityTree({
   const summaryBar = document.createElement('div');
   summaryBar.className = 'cat-tree-summary';
 
-  // 3. SVG Canvas Stage
+  // 3. SVG Canvas Stage (focus-gated mouse/wheel interaction)
+  const doc = container.ownerDocument || document;
   const stage = document.createElement('div');
   stage.className = 'cat-tree-stage';
+  stage.tabIndex = 0;
+  stage.setAttribute('role', 'region');
+  stage.setAttribute('aria-label', 'Graphique interactif des catégories et activités');
+  stage.dataset.chartFocused = 'false';
 
-  // Contextual creation popover anchored inside stage
+  const MODAL_TRIGGER_SELECTOR = '[data-action="edit-activity"], [data-action="edit-category"], [data-action="node-add"]';
+  const ACTION_CONTROL_SELECTOR = '[data-action], .tree-node-toggle, .cat-tree-node-popover';
+  let isChartFocused = false;
+  let wasFocusedBeforePointerDown = false;
+
+  const isModalActive = () => (
+    hasOpenModal(doc)
+    || !nodePopover.hidden
+    || Boolean(stage.closest?.('[inert], [aria-hidden="true"]'))
+  );
+
+  const focusHint = document.createElement('div');
+  focusHint.className = 'cat-tree-focus-hint';
+  focusHint.setAttribute('aria-hidden', 'true');
+
+  function setChartFocused(nextFocused) {
+    const active = Boolean(nextFocused) && !isModalActive();
+    isChartFocused = active;
+    stage.classList.toggle('is-focused', active);
+    stage.dataset.chartFocused = active ? 'true' : 'false';
+    focusHint.textContent = active
+      ? 'Zoom molette actif · Échap ou clic extérieur pour libérer'
+      : 'Cliquez sur le graphique pour zoomer à la molette';
+  }
+
+  // Contextual creation modal (fixed & centered in viewport so user never needs to scroll past tall charts)
+  const popoverBackdrop = document.createElement('div');
+  popoverBackdrop.className = 'cat-tree-popover-backdrop';
+  popoverBackdrop.hidden = true;
+
   const nodePopover = document.createElement('div');
   nodePopover.className = 'cat-tree-node-popover';
   nodePopover.hidden = true;
   nodePopover.setAttribute('role', 'dialog');
+  nodePopover.setAttribute('aria-modal', 'true');
   nodePopover.setAttribute('aria-label', 'Ajouter depuis ce nœud');
 
+  setChartFocused(false);
+
   function closePopover() {
+    popoverBackdrop.hidden = true;
     nodePopover.hidden = true;
     nodePopover.replaceChildren();
   }
+
+  isolateModalEvents(popoverBackdrop, nodePopover, { onBackdropClose: closePopover });
 
   function openNodeCreatePopover(d) {
     if (!canCreate) return;
@@ -214,6 +259,8 @@ export function renderCategoryActivityTree({
     }
 
     nodePopover.append(header, actions);
+    setChartFocused(false);
+    popoverBackdrop.hidden = false;
     nodePopover.hidden = false;
   }
 
@@ -237,6 +284,7 @@ export function renderCategoryActivityTree({
     .attr('role', 'tree')
     .attr('aria-label', 'Arbre des relations entre catégories et activités')
     .on('click', (event) => {
+      if (isModalActive() || isEventInsideModal(event)) return;
       if (event.target === svgSel.node()) closePopover();
     });
 
@@ -251,7 +299,7 @@ export function renderCategoryActivityTree({
   dragHint.setAttribute('role', 'status');
   dragHint.setAttribute('aria-live', 'polite');
 
-  stage.append(emptyState, nodePopover, dragHint);
+  stage.append(emptyState, popoverBackdrop, nodePopover, dragHint, focusHint);
 
   // Legend row
   const legend = document.createElement('div');
@@ -261,19 +309,101 @@ export function renderCategoryActivityTree({
     <span class="cat-tree-legend-item" aria-hidden="true">·</span>
     <span class="cat-tree-legend-item"><span class="legend-swatch legend-swatch--act"></span>Activité (feuille)</span>
     <span class="cat-tree-legend-item" aria-hidden="true">·</span>
-    <span class="cat-tree-legend-item">${canDragAny ? 'Cliquez pour replier · Glissez-déposez pour déplacer' : 'Cliquez sur un nœud pour replier ou déplier'}</span>
+    <span class="cat-tree-legend-item">${canDragAny ? 'Cliquez pour activer le graphique · Glissez-déposez pour déplacer' : 'Cliquez sur le graphique pour zoomer · Cliquez sur un nœud pour replier'}</span>
   `;
 
   wrapper.append(toolbar, summaryBar, stage, legend);
   container.appendChild(wrapper);
 
-  // Setup Zoom behavior (explicit extent avoids SVGAnimatedLength.baseVal dependency in jsdom)
+  // Focus lifecycle listeners (prevent wheel/mouse hijacking when unfocused or when a modal is open)
+  const handleStageCaptureDown = (event) => {
+    if (isModalActive() || isEventInsideModal(event)) {
+      setChartFocused(false);
+      wasFocusedBeforePointerDown = false;
+      return;
+    }
+    const target = event.target;
+    if (target?.closest?.('.cat-tree-node-popover')) return;
+    if (target?.closest?.(MODAL_TRIGGER_SELECTOR)) {
+      wasFocusedBeforePointerDown = false;
+      setChartFocused(false);
+      return;
+    }
+    wasFocusedBeforePointerDown = isChartFocused;
+    setChartFocused(true);
+    if (doc.activeElement !== stage && typeof stage.focus === 'function') {
+      stage.focus({ preventScroll: true });
+    }
+  };
+
+  const handleStageFocusIn = (event) => {
+    if (isModalActive() || isEventInsideModal(event)) {
+      setChartFocused(false);
+      return;
+    }
+    if (event.target?.closest?.(MODAL_TRIGGER_SELECTOR)) return;
+    setChartFocused(true);
+  };
+
+  const handleStageFocusOut = (event) => {
+    if (!event.relatedTarget || !stage.contains(event.relatedTarget)) {
+      setChartFocused(false);
+      wasFocusedBeforePointerDown = false;
+    }
+  };
+
+  const handleStageKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      setChartFocused(false);
+      wasFocusedBeforePointerDown = false;
+      stage.blur?.();
+    }
+  };
+
+  const handleDocInteraction = (event) => {
+    if (isModalActive() || isEventInsideModal(event) || !stage.contains(event.target)) {
+      setChartFocused(false);
+      wasFocusedBeforePointerDown = false;
+    }
+  };
+
+  const handleDocKeyDown = (event) => {
+    if (event.key === 'Escape' && !nodePopover.hidden) {
+      closePopover();
+    }
+  };
+
+  stage.addEventListener('mousedown', handleStageCaptureDown, true);
+  stage.addEventListener('pointerdown', handleStageCaptureDown, true);
+  stage.addEventListener('touchstart', handleStageCaptureDown, { capture: true, passive: true });
+  stage.addEventListener('focusin', handleStageFocusIn);
+  stage.addEventListener('focusout', handleStageFocusOut);
+  stage.addEventListener('keydown', handleStageKeyDown);
+  doc.addEventListener('mousedown', handleDocInteraction, true);
+  doc.addEventListener('pointerdown', handleDocInteraction, true);
+  doc.addEventListener('focusin', handleDocInteraction, true);
+  doc.addEventListener('keydown', handleDocKeyDown);
+
+  // Setup Zoom behavior (focus-gated wheel/dblclick/pan; explicit extent avoids SVGAnimatedLength.baseVal in jsdom)
   let currentTransform = d3.zoomIdentity.translate(28, 180).scale(0.9);
   const zoomBehavior = d3
     .zoom()
     .extent(() => [[0, 0], [stage.clientWidth || 480, stage.clientHeight || 380]])
     .scaleExtent([0.35, 2.2])
+    .filter((event) => {
+      if (isModalActive() || isEventInsideModal(event)) return false;
+      if (event.button && event.button !== 0) return false;
+      if (event.target?.closest?.(ACTION_CONTROL_SELECTOR)) return false;
+      if (event.type === 'wheel' || event.type === 'dblclick') {
+        return isChartFocused;
+      }
+      if (event.type === 'mousedown' || event.type === 'pointerdown' || event.type === 'touchstart') {
+        return wasFocusedBeforePointerDown && isChartFocused;
+      }
+      return isChartFocused;
+    })
     .on('zoom', (event) => {
+      if (isModalActive()) return;
       currentTransform = event.transform;
       zoomLayer.attr('transform', currentTransform.toString());
     });
@@ -313,8 +443,10 @@ export function renderCategoryActivityTree({
   const nodeDragBehavior = d3
     .drag()
     .filter((event, d) => {
+      if (isModalActive() || isEventInsideModal(event)) return false;
+      if (!isChartFocused) return false;
       if (event.button && event.button !== 0) return false;
-      if (event.target?.closest?.('[data-action], .tree-node-toggle')) return false;
+      if (event.target?.closest?.(ACTION_CONTROL_SELECTOR)) return false;
       return isNodeDraggable(d);
     })
     .clickDistance(6)
@@ -780,18 +912,20 @@ export function renderCategoryActivityTree({
 
       if (isCreatableNode) {
         const isRoot = d.data.type === TREE_NODE_TYPES.ROOT;
-        const addGroup = g
-          .append('g')
-          .attr('class', 'tree-node-add-btn')
-          .attr('data-action', 'node-add')
-          .attr('transform', `translate(${dims.width - 26}, 0)`)
-          .attr('role', 'button')
-          .attr('aria-label', isRoot ? 'Ajouter une catégorie ou activité' : `Ajouter dans ${d.data.label}`)
-          .style('cursor', 'pointer')
-          .on('click', (event) => {
-            event.stopPropagation();
-            openNodeCreatePopover(d);
-          });
+        const addGroup = stopControlPropagation(
+          g
+            .append('g')
+            .attr('class', 'tree-node-add-btn')
+            .attr('data-action', 'node-add')
+            .attr('transform', `translate(${dims.width - 26}, 0)`)
+            .attr('role', 'button')
+            .attr('aria-label', isRoot ? 'Ajouter une catégorie ou activité' : `Ajouter dans ${d.data.label}`)
+            .style('cursor', 'pointer')
+        ).on('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openNodeCreatePopover(d);
+        });
 
         addGroup
           .append('circle')
@@ -818,19 +952,22 @@ export function renderCategoryActivityTree({
         && typeof onEditCategory === 'function'
       ) {
         const editX = isCreatableNode ? dims.width - 54 : dims.width - 26;
-        const editCatGroup = g
-          .append('g')
-          .attr('class', 'tree-node-edit-btn')
-          .attr('data-action', 'edit-category')
-          .attr('transform', `translate(${editX}, 0)`)
-          .attr('role', 'button')
-          .attr('aria-label', `Modifier la catégorie ${d.data.label}`)
-          .style('cursor', 'pointer')
-          .on('click', (event) => {
-            event.stopPropagation();
-            closePopover();
-            onEditCategory(d.data.categoryId);
-          });
+        const editCatGroup = stopControlPropagation(
+          g
+            .append('g')
+            .attr('class', 'tree-node-edit-btn')
+            .attr('data-action', 'edit-category')
+            .attr('transform', `translate(${editX}, 0)`)
+            .attr('role', 'button')
+            .attr('aria-label', `Modifier la catégorie ${d.data.label}`)
+            .style('cursor', 'pointer')
+        ).on('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setChartFocused(false);
+          closePopover();
+          onEditCategory(d.data.categoryId);
+        });
 
         editCatGroup
           .append('circle')
@@ -852,23 +989,26 @@ export function renderCategoryActivityTree({
       if (d.data.type === TREE_NODE_TYPES.ACTIVITY && typeof onEditActivity === 'function') {
         const hasPlay = typeof onStartActivity === 'function';
         const editActX = hasPlay ? dims.width - 48 : dims.width - 22;
-        const editActGroup = g
-          .append('g')
-          .attr('class', 'tree-node-edit-btn')
-          .attr('data-action', 'edit-activity')
-          .attr('transform', `translate(${editActX}, 0)`)
-          .attr('role', 'button')
-          .attr('aria-label', `Modifier l’activité ${d.data.label}`)
-          .style('cursor', 'pointer')
-          .on('click', (event) => {
-            event.stopPropagation();
-            closePopover();
-            onEditActivity({
-              activityId: d.data.activityId || null,
-              label: d.data.label,
-              categoryId: d.data.categoryId ?? null,
-            });
+        const editActGroup = stopControlPropagation(
+          g
+            .append('g')
+            .attr('class', 'tree-node-edit-btn')
+            .attr('data-action', 'edit-activity')
+            .attr('transform', `translate(${editActX}, 0)`)
+            .attr('role', 'button')
+            .attr('aria-label', `Modifier l’activité ${d.data.label}`)
+            .style('cursor', 'pointer')
+        ).on('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setChartFocused(false);
+          closePopover();
+          onEditActivity({
+            activityId: d.data.activityId || null,
+            label: d.data.label,
+            categoryId: d.data.categoryId ?? null,
           });
+        });
 
         editActGroup
           .append('circle')
@@ -888,18 +1028,20 @@ export function renderCategoryActivityTree({
 
       // Play button on Activity leaves
       if (d.data.type === TREE_NODE_TYPES.ACTIVITY && typeof onStartActivity === 'function') {
-        const playGroup = g
-          .append('g')
-          .attr('class', 'tree-node-play-btn')
-          .attr('data-action', 'start-activity')
-          .attr('transform', `translate(${dims.width - 22}, 0)`)
-          .attr('role', 'button')
-          .attr('aria-label', `Démarrer ${d.data.label}`)
-          .style('cursor', 'pointer')
-          .on('click', (event) => {
-            event.stopPropagation();
-            onStartActivity(d.data.label, d.data.categoryId);
-          });
+        const playGroup = stopControlPropagation(
+          g
+            .append('g')
+            .attr('class', 'tree-node-play-btn')
+            .attr('data-action', 'start-activity')
+            .attr('transform', `translate(${dims.width - 22}, 0)`)
+            .attr('role', 'button')
+            .attr('aria-label', `Démarrer ${d.data.label}`)
+            .style('cursor', 'pointer')
+        ).on('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onStartActivity(d.data.label, d.data.categoryId);
+        });
 
         playGroup
           .append('circle')
@@ -917,10 +1059,12 @@ export function renderCategoryActivityTree({
 
       // Collapse / Expand badge on nodes that have children (categories, root, and activities with sessions)
       if (d.totalRawChildren > 0) {
-        const toggleGroup = g
-          .append('g')
-          .attr('class', 'tree-node-toggle')
-          .attr('transform', `translate(${dims.width}, 0)`);
+        const toggleGroup = stopControlPropagation(
+          g
+            .append('g')
+            .attr('class', 'tree-node-toggle')
+            .attr('transform', `translate(${dims.width}, 0)`)
+        );
 
         toggleGroup
           .append('circle')
@@ -947,7 +1091,7 @@ export function renderCategoryActivityTree({
       .attr('data-draggable', d => (isNodeDraggable(d) ? 'true' : 'false'))
       .call(nodeDragBehavior)
       .on('click', (event, d) => {
-        if (event.defaultPrevented) return;
+        if (event.defaultPrevented || isModalActive() || isEventInsideModal(event)) return;
         if (d.totalRawChildren > 0) {
           if (collapsedIds.has(d.data.id)) {
             collapsedIds.delete(d.data.id);
@@ -1113,6 +1257,21 @@ export function renderCategoryActivityTree({
       zoomResetBtn.click();
     },
     destroy() {
+      stage.removeEventListener('mousedown', handleStageCaptureDown, true);
+      stage.removeEventListener('pointerdown', handleStageCaptureDown, true);
+      stage.removeEventListener('touchstart', handleStageCaptureDown, { capture: true, passive: true });
+      stage.removeEventListener('focusin', handleStageFocusIn);
+      stage.removeEventListener('focusout', handleStageFocusOut);
+      stage.removeEventListener('keydown', handleStageKeyDown);
+      doc.removeEventListener('mousedown', handleDocInteraction, true);
+      doc.removeEventListener('pointerdown', handleDocInteraction, true);
+      doc.removeEventListener('focusin', handleDocInteraction, true);
+      doc.removeEventListener('keydown', handleDocKeyDown);
+      const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+      if (win) {
+        d3.select(win).on('.zoom', null).on('.drag', null);
+      }
+      nodeGroup.selectAll('g.tree-node').on('.drag', null);
       svgSel.interrupt();
       svgSel.selectAll('*').interrupt();
       clearDragVisuals();
@@ -1121,6 +1280,14 @@ export function renderCategoryActivityTree({
       container.replaceChildren();
     },
   };
+}
+
+function stopControlPropagation(selection) {
+  return selection
+    .on('pointerdown.stop', (event) => event.stopPropagation())
+    .on('mousedown.stop', (event) => event.stopPropagation())
+    .on('touchstart.stop', (event) => event.stopPropagation())
+    .on('dblclick.stop', (event) => event.stopPropagation());
 }
 
 function makeControlBtn(label, actionName, title = label) {
