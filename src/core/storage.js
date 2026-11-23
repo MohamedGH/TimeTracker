@@ -90,6 +90,7 @@ export const STORAGE_KEYS = Object.freeze({
   authSession: 'time-auth-session',
   syncMeta: 'time-sync-meta',
   syncTombstones: 'time-sync-tombstones',
+  trash: 'time-trash',
   schemaVersion: 'time-schema-version',
 });
 

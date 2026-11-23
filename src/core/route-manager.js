@@ -3,7 +3,22 @@
  * Supports forward/back history in mobile browsers and synchronization with app state.
  */
 
-export const VALID_ROUTES = Object.freeze(['entry', 'dashboard', 'categories']);
+export const PRIMARY_ROUTES = Object.freeze(['entry', 'dashboard', 'categories']);
+export const WIDGET_ROUTES = Object.freeze([
+  'templates',
+  'activities',
+  'entries',
+  'data',
+  'sync',
+  'account',
+  'mobile',
+  'tiles',
+]);
+export const VALID_ROUTES = Object.freeze([
+  ...PRIMARY_ROUTES,
+  'pages',
+  ...WIDGET_ROUTES,
+]);
 export const DEFAULT_ROUTE = 'entry';
 
 /**

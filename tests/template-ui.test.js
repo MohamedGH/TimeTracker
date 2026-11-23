@@ -21,7 +21,7 @@ function createBaseState(overrides = {}) {
     timerUpdatedAt: 0,
     quickTilesConfig: null,
     authUser: null,
-    tab: 'entry',
+    tab: 'templates',
     period: '7',
     customStart: null,
     customEnd: null,
@@ -66,7 +66,7 @@ function mountUI(initialOverrides = {}) {
 describe('Activity Templates UI & Runner Integration', () => {
   beforeEach(() => {
     window.localStorage.setItem('time-analytics-consent', 'false');
-    window.location.hash = '#entry';
+    window.location.hash = '#templates';
   });
 
   it('creates an ordered activity sequence template manually via modal (trajet -> prière -> doha)', async () => {

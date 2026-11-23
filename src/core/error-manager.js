@@ -101,12 +101,18 @@ export function createErrorManager({ onErrorChanged } = {}) {
       }
     },
 
-    notifySuccess(message, autoDismissMs = 3000) {
-      currentNotice = { type: 'success', message, timestamp: Date.now() };
+    notifySuccess(message, autoDismissMs = 3000, options = {}) {
+      const notice = {
+        type: 'success',
+        message,
+        timestamp: Date.now(),
+        action: options?.action || null,
+      };
+      currentNotice = notice;
       notify();
       if (autoDismissMs > 0 && typeof setTimeout !== 'undefined') {
         setTimeout(() => {
-          if (currentNotice?.message === message) {
+          if (currentNotice?.timestamp === notice.timestamp) {
             currentNotice = null;
             notify();
           }
@@ -114,12 +120,18 @@ export function createErrorManager({ onErrorChanged } = {}) {
       }
     },
 
-    notifyInfo(message, autoDismissMs = 4000) {
-      currentNotice = { type: 'info', message, timestamp: Date.now() };
+    notifyInfo(message, autoDismissMs = 4000, options = {}) {
+      const notice = {
+        type: 'info',
+        message,
+        timestamp: Date.now(),
+        action: options?.action || null,
+      };
+      currentNotice = notice;
       notify();
       if (autoDismissMs > 0 && typeof setTimeout !== 'undefined') {
         setTimeout(() => {
-          if (currentNotice?.message === message) {
+          if (currentNotice?.timestamp === notice.timestamp) {
             currentNotice = null;
             notify();
           }

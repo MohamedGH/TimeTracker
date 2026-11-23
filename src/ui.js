@@ -16,6 +16,7 @@ import {
   authEventPayload,
   syncEventPayload,
   templateEventPayload,
+  itemRestoredPayload,
 } from './core/analytics/events.js';
 import {
   initBehaviorTracking,
@@ -103,9 +104,20 @@ import {
 import {
   NAV_LAYOUTS,
   NAV_ROUTES,
+  PAGES_HUB_ROUTE,
+  WIDGET_PAGES,
+  isWidgetOrPagesRoute,
   createDeviceNavigationController,
   resolveRouteShortcutKey,
 } from './core/device-navigation.js';
+import {
+  TRASH_ITEM_KINDS,
+  createTrashRecord,
+  normalizeTrashList,
+  pushTrashRecord,
+  removeTrashRecord,
+  restoreTrashRecord,
+} from './core/trash-manager.js';
 
 export function createUI({
   root,
@@ -192,6 +204,7 @@ export function createUI({
   });
   state.activityTemplates = normalizeTemplatesList(state.activityTemplates, state.categories);
   state.activeTemplateRun = normalizeActiveTemplateRun(state.activeTemplateRun);
+  state.deletedItems = normalizeTrashList(state.deletedItems);
 
   const quickTilesBridge = quickTilesBridgeFactory();
 
@@ -799,18 +812,87 @@ export function createUI({
     }
   }
 
+  function syncCollectionRefsToStateManager() {
+    if (!_stateManager?.getState) return;
+    const smState = _stateManager.getState();
+    if (smState !== state) {
+      smState.entries = state.entries;
+      smState.activities = state.activities;
+      smState.categories = state.categories;
+      smState.activityTemplates = state.activityTemplates;
+      smState.deletedItems = state.deletedItems;
+    }
+  }
+
+  function recordDeletedItem({ kind, item, related = null }) {
+    const record = createTrashRecord({ kind, item, related });
+    if (!record) return null;
+    state.deletedItems = pushTrashRecord(state.deletedItems, record);
+    syncCollectionRefsToStateManager();
+    return record;
+  }
+
+  async function handleRestoreDeletedItem(trashId = null) {
+    const { nextState, restoredRecord } = restoreTrashRecord(state, trashId);
+    if (!restoredRecord) return;
+    state.entries = nextState.entries;
+    state.activities = nextState.activities;
+    state.categories = nextState.categories;
+    state.activityTemplates = nextState.activityTemplates;
+    state.deletedItems = nextState.deletedItems;
+    syncCollectionRefsToStateManager();
+    await persist();
+    await syncQuickTilesToNative();
+    trackEvent(ANALYTICS_EVENTS.ITEM_RESTORED, itemRestoredPayload({ kind: restoredRecord.kind }));
+    errorManager.notifySuccess(`« ${restoredRecord.label} » restauré.`);
+    rerender();
+  }
+
+  async function handlePurgeTrashItem(trashId) {
+    state.deletedItems = removeTrashRecord(state.deletedItems, trashId);
+    syncCollectionRefsToStateManager();
+    await persist();
+    errorManager.notifyInfo('Élément supprimé définitivement de la corbeille.');
+    rerender();
+  }
+
+  async function handleEmptyTrash() {
+    if (!state.deletedItems?.length) return;
+    state.deletedItems = [];
+    syncCollectionRefsToStateManager();
+    await persist();
+    errorManager.notifyInfo('Corbeille vidée.');
+    rerender();
+  }
+
   async function handleDeleteTemplate(templateId) {
     const existing = (state.activityTemplates || []).find(t => t.id === templateId);
+    const trashRec = existing
+      ? recordDeletedItem({ kind: TRASH_ITEM_KINDS.TEMPLATE, item: existing })
+      : null;
     state.activityTemplates = deleteActivityTemplate(state.activityTemplates || [], templateId);
     if (state.activeTemplateRun?.templateId === templateId && !state.activeTimer) {
       state.activeTemplateRun = null;
     }
+    syncCollectionRefsToStateManager();
     await persist();
     trackEvent(
       ANALYTICS_EVENTS.TEMPLATE_DELETED,
       templateEventPayload({ stepCount: existing?.steps?.length || 0 })
     );
-    errorManager.notifyInfo(existing ? `Gabarit « ${existing.name} » supprimé.` : 'Gabarit supprimé.');
+    errorManager.notifyInfo(
+      existing ? `Gabarit « ${existing.name} » supprimé.` : 'Gabarit supprimé.',
+      6000,
+      trashRec
+        ? {
+            action: {
+              label: 'Annuler',
+              behaviorTarget: 'notice-undo-delete',
+              onAction: () => handleRestoreDeletedItem(trashRec.id),
+            },
+          }
+        : {}
+    );
     rerender();
   }
 
@@ -900,6 +982,7 @@ export function createUI({
       errorManager.notifySuccess(
         `Gabarit « ${template.name} » lancé — Étape 1/${run.steps.length} : ${firstStep.activity}`
       );
+      routeManager.navigate('entry');
       rerender();
     } catch (err) {
       errorManager.handleError(err, 'template');
@@ -1109,7 +1192,17 @@ export function createUI({
     main.append(
       state.tab === 'entry' ? entryPage() :
       state.tab === 'dashboard' ? dashboardPage() :
-      categoriesPage()
+      state.tab === 'categories' ? categoriesPage() :
+      state.tab === 'pages' ? pagesHubPage() :
+      state.tab === 'templates' ? renderWidgetSubpage('templates', templatesCard()) :
+      state.tab === 'activities' ? renderWidgetSubpage('activities', activitiesCard()) :
+      state.tab === 'entries' ? entriesPage() :
+      state.tab === 'data' ? dataPage() :
+      state.tab === 'sync' ? renderWidgetSubpage('sync', syncCard()) :
+      state.tab === 'account' ? renderWidgetSubpage('account', accountCard()) :
+      state.tab === 'mobile' ? renderWidgetSubpage('mobile', mobileAppCard()) :
+      state.tab === 'tiles' ? renderWidgetSubpage('tiles', quickTilesCard()) :
+      entryPage()
     );
 
     // If timer is running and user is on another tab, show floating mini-timer bar
@@ -1155,8 +1248,10 @@ export function createUI({
     existingToast?.remove();
 
     if (state.error) {
-      const toast = node('div', 'app-notice-toast error', state.error);
+      const toast = node('div', 'app-notice-toast error');
+      toast.appendChild(node('span', 'toast-message', state.error));
       const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
       closeBtn.className = 'toast-close-btn';
       closeBtn.textContent = '×';
       closeBtn.onclick = () => {
@@ -1169,8 +1264,26 @@ export function createUI({
     }
 
     if (state.notice) {
-      const toast = node('div', `app-notice-toast ${state.notice.type}`, state.notice.message);
+      const toast = node('div', `app-notice-toast ${state.notice.type}`);
+      toast.appendChild(node('span', 'toast-message', state.notice.message));
+
+      if (state.notice.action?.label) {
+        const actionBtn = document.createElement('button');
+        actionBtn.type = 'button';
+        actionBtn.className = 'toast-undo-btn';
+        actionBtn.dataset.behaviorTarget = state.notice.action.behaviorTarget || 'notice-undo-delete';
+        actionBtn.textContent = state.notice.action.label;
+        actionBtn.onclick = () => {
+          const handler = state.notice?.action?.onAction;
+          errorManager.clearNotice();
+          toast.remove();
+          handler?.();
+        };
+        toast.appendChild(actionBtn);
+      }
+
       const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
       closeBtn.className = 'toast-close-btn';
       closeBtn.textContent = '×';
       closeBtn.onclick = () => {
@@ -1309,6 +1422,49 @@ export function createUI({
       <path d="M10 3L8 21"/>
       <path d="M16 3l-2 18"/>
     </svg>`,
+    pages: `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+      <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+      <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+      <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+    </svg>`,
+    templates: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/>
+      <path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>
+    </svg>`,
+    activities: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </svg>`,
+    entries: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+      <path d="M3 3v5h5"/>
+      <path d="M12 7v5l4 2"/>
+    </svg>`,
+    data: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M3 5v14a9 3 0 0 0 18 0V5"/>
+      <path d="M3 12a9 3 0 0 0 18 0"/>
+    </svg>`,
+    sync: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+      <path d="M3 3v5h5"/>
+      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+      <path d="M16 16h5v5"/>
+    </svg>`,
+    account: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 21a8 8 0 0 0-16 0"/>
+      <circle cx="12" cy="8" r="4"/>
+    </svg>`,
+    mobile: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="6" y="2" width="12" height="20" rx="2"/>
+      <line x1="12" y1="18" x2="12.01" y2="18"/>
+    </svg>`,
+    tiles: `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="8" height="8" rx="1"/>
+      <rect x="13" y="3" width="8" height="8" rx="1"/>
+      <rect x="3" y="13" width="8" height="8" rx="1"/>
+      <rect x="13" y="13" width="8" height="8" rx="1"/>
+    </svg>`,
   };
 
   function navigationBar(navProfile) {
@@ -1349,6 +1505,59 @@ export function createUI({
       };
       nav.appendChild(b);
     });
+
+    if (navProfile.navLayout === NAV_LAYOUTS.SIDE_RAIL) {
+      nav.appendChild(node('div', 'app-nav-section-title', 'Pages & Outils'));
+      const secondaryList = node('div', 'app-nav-secondary-list');
+      const trashCount = state.deletedItems?.length || 0;
+
+      WIDGET_PAGES.forEach(({ id, label: pageLabel, shortLabel }) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.id = `nav-${id}`;
+        const isActive = state.tab === id;
+        b.className = `app-nav-item app-nav-item--secondary tab-btn ${isActive ? 'active' : ''}`.trim();
+        b.dataset.behaviorTarget = `nav-${id}`;
+        b.setAttribute('aria-label', pageLabel);
+        if (isActive) b.setAttribute('aria-current', 'page');
+
+        const iconWrap = node('span', 'mobile-tab-icon');
+        iconWrap.innerHTML = NAV_ICONS[id] || '';
+        const labelSpan = node('span', 'mobile-tab-label', shortLabel || pageLabel);
+        b.append(iconWrap, labelSpan);
+
+        if (id === 'data' && trashCount > 0) {
+          b.appendChild(node('span', 'nav-trash-count', String(trashCount)));
+        }
+
+        b.onclick = () => {
+          routeManager.navigate(id);
+        };
+        secondaryList.appendChild(b);
+      });
+      nav.appendChild(secondaryList);
+    } else {
+      const hubBtn = document.createElement('button');
+      hubBtn.type = 'button';
+      hubBtn.id = `nav-${PAGES_HUB_ROUTE.id}`;
+      const isActive = isWidgetOrPagesRoute(state.tab);
+      hubBtn.className = `mobile-tab-item app-nav-item tab-btn ${isActive ? 'active' : ''}`.trim();
+      hubBtn.dataset.behaviorTarget = `nav-${PAGES_HUB_ROUTE.id}`;
+      hubBtn.setAttribute('aria-label', PAGES_HUB_ROUTE.label);
+      if (isActive) hubBtn.setAttribute('aria-current', 'page');
+
+      const iconWrap = node('span', 'mobile-tab-icon');
+      iconWrap.innerHTML = NAV_ICONS.pages;
+      if ((state.deletedItems?.length || 0) > 0) {
+        iconWrap.appendChild(node('span', 'tab-trash-dot'));
+      }
+      const text = navProfile.showFullLabels ? PAGES_HUB_ROUTE.label : PAGES_HUB_ROUTE.shortLabel;
+      hubBtn.append(iconWrap, node('span', 'mobile-tab-label', text));
+      hubBtn.onclick = () => {
+        routeManager.navigate(PAGES_HUB_ROUTE.id);
+      };
+      nav.appendChild(hubBtn);
+    }
 
     return nav;
   }
@@ -1420,17 +1629,140 @@ export function createUI({
     f.append(
       timerCard(),
       quickStartCard(),
-      templatesCard(),
-      entryCard(),
-      activitiesCard(),
-      entriesCard(),
-      dataCard(),
-      syncCard(),
-      accountCard(),
-      mobileAppCard(),
-      quickTilesCard()
+      entryCard()
     );
     return f;
+  }
+
+  function renderWidgetSubpage(pageId, contentNode) {
+    const meta = WIDGET_PAGES.find(p => p.id === pageId);
+    const f = document.createDocumentFragment();
+    const subHeader = node('div', 'subpage-header');
+    subHeader.dataset.subpageHeader = pageId;
+
+    const navActions = node('div', 'subpage-nav-actions');
+    const backEntryBtn = button('← Chrono', 'small secondary subpage-back-btn', 'subpage-back-entry');
+    backEntryBtn.onclick = () => routeManager.navigate('entry');
+    const allPagesBtn = button('Toutes les pages', 'small secondary subpage-hub-btn', 'subpage-open-hub');
+    allPagesBtn.onclick = () => routeManager.navigate('pages');
+    navActions.append(backEntryBtn, allPagesBtn);
+
+    const heading = node('div', 'subpage-heading');
+    heading.appendChild(node('h2', 'subpage-title', meta?.label || pageId));
+    if (meta?.description) {
+      heading.appendChild(node('p', 'muted subpage-subtitle', meta.description));
+    }
+
+    subHeader.append(navActions, heading);
+    f.append(subHeader, contentNode);
+    return f;
+  }
+
+  function formatWidgetPageMetaSummary(pageId) {
+    if (pageId === 'templates') {
+      const n = state.activityTemplates?.length || 0;
+      return `${n} gabarit${n > 1 ? 's' : ''}`;
+    }
+    if (pageId === 'activities') {
+      const n = state.activities?.length || 0;
+      return `${n} activité${n > 1 ? 's' : ''}`;
+    }
+    if (pageId === 'entries') {
+      const n = state.entries?.length || 0;
+      return `${n} session${n > 1 ? 's' : ''}`;
+    }
+    if (pageId === 'data') {
+      const trashCount = state.deletedItems?.length || 0;
+      return trashCount > 0
+        ? `Export/Import · ${trashCount} dans la corbeille`
+        : 'Export/Import · GPS · Corbeille';
+    }
+    if (pageId === 'sync') {
+      const p2pSnap = p2pManager.getSnapshot();
+      return p2pSnap.isConnected ? 'Pair P2P connecté' : 'Google Drive & P2P';
+    }
+    if (pageId === 'account') {
+      return state.authUser ? (state.authUser.email || state.authUser.name || 'Connecté') : 'Non connecté';
+    }
+    if (pageId === 'mobile') {
+      const snap = pwaController.getSnapshot();
+      return snap.isNative ? `Natif ${snap.nativePlatform}` : snap.isInstalled ? 'Installée (PWA)' : 'Web / PWA';
+    }
+    if (pageId === 'tiles') {
+      const slots = state.quickTilesConfig?.slots || [];
+      const configured = slots.filter(s => Boolean(s.activity)).length;
+      return `${configured} / ${slots.length || 6} tuiles`;
+    }
+    return '';
+  }
+
+  function pagesHubPage() {
+    const f = document.createDocumentFragment();
+    const headerBox = node('section', 'card pages-hub-card');
+    headerBox.appendChild(node('h2', 'card-title', 'Pages & Outils'));
+    headerBox.appendChild(
+      node('p', 'muted pages-hub-intro', 'Accédez directement à chaque module dédié de TimeTracker.')
+    );
+
+    const grid = node('div', 'pages-hub-grid');
+    for (const page of WIDGET_PAGES) {
+      const tileBtn = document.createElement('button');
+      tileBtn.type = 'button';
+      tileBtn.className = 'pages-hub-item';
+      tileBtn.dataset.behaviorTarget = `hub-open-${page.id}`;
+      tileBtn.dataset.pageRoute = page.id;
+
+      const topRow = node('div', 'pages-hub-item-top');
+      const iconWrap = node('span', 'pages-hub-item-icon');
+      iconWrap.setAttribute('aria-hidden', 'true');
+      iconWrap.innerHTML = NAV_ICONS[page.id] || '';
+      topRow.append(iconWrap, node('strong', 'pages-hub-item-title', page.label));
+
+      const desc = node('span', 'pages-hub-item-desc', page.description);
+      const summary = node('span', 'pages-hub-item-meta', formatWidgetPageMetaSummary(page.id));
+
+      tileBtn.append(topRow, desc, summary);
+      tileBtn.onclick = () => routeManager.navigate(page.id);
+      grid.appendChild(tileBtn);
+    }
+
+    headerBox.appendChild(grid);
+    f.appendChild(headerBox);
+    return f;
+  }
+
+  function entriesPage() {
+    const frag = document.createDocumentFragment();
+    const wrap = document.createDocumentFragment();
+    const trashCount = state.deletedItems?.length || 0;
+    if (trashCount > 0) {
+      const undoBar = node('div', 'trash-inline-banner');
+      undoBar.dataset.trashBanner = 'true';
+      undoBar.appendChild(
+        node(
+          'span',
+          'trash-inline-text',
+          `${trashCount} élément${trashCount > 1 ? 's' : ''} supprimé${trashCount > 1 ? 's' : ''} restaurable${trashCount > 1 ? 's' : ''}`
+        )
+      );
+      const actions = node('div', 'trash-inline-actions');
+      const undoLastBtn = button('Annuler la dernière', 'small secondary', 'trash-undo-last');
+      undoLastBtn.onclick = () => handleRestoreDeletedItem(null);
+      const openTrashBtn = button('Corbeille →', 'small secondary', 'trash-open-data');
+      openTrashBtn.onclick = () => routeManager.navigate('data');
+      actions.append(undoLastBtn, openTrashBtn);
+      undoBar.appendChild(actions);
+      wrap.appendChild(undoBar);
+    }
+    wrap.appendChild(entriesCard());
+    frag.appendChild(renderWidgetSubpage('entries', wrap));
+    return frag;
+  }
+
+  function dataPage() {
+    const wrap = document.createDocumentFragment();
+    wrap.append(dataCard(), trashCard());
+    return renderWidgetSubpage('data', wrap);
   }
 
   function renderGeoOptInControl() {
@@ -2154,10 +2486,25 @@ export function createUI({
       };
       const del = button('×', 'small danger', 'activity-delete');
       del.onclick = async () => {
+        const trashRec = recordDeletedItem({ kind: TRASH_ITEM_KINDS.ACTIVITY, item: a });
         state.activities = state.activities.filter(x => x.id !== a.id);
+        syncCollectionRefsToStateManager();
         await persist();
         syncQuickTilesToNative();
         trackEvent('saved_activity_deleted');
+        errorManager.notifyInfo(
+          `Activité « ${a.label || a.activity || ''} » supprimée.`,
+          6000,
+          trashRec
+            ? {
+                action: {
+                  label: 'Annuler',
+                  behaviorTarget: 'notice-undo-delete',
+                  onAction: () => handleRestoreDeletedItem(trashRec.id),
+                },
+              }
+            : {}
+        );
         rerender();
       };
       r.append(go, del);
@@ -2230,6 +2577,7 @@ export function createUI({
 
       const edit = button('Modifier', 'small', 'entry-edit');
       edit.onclick = () => {
+        routeManager.navigate('entry');
         state.editingEntryId = e.id;
         entryFormMode = 'manual';
         rerender();
@@ -2238,10 +2586,24 @@ export function createUI({
 
       const del = button('Supprimer', 'small danger', 'entry-delete');
       del.onclick = async () => {
+        const trashRec = recordDeletedItem({ kind: TRASH_ITEM_KINDS.ENTRY, item: e });
         state.entries = state.entries.filter(x => x.id !== e.id);
+        syncCollectionRefsToStateManager();
         await persist();
         trackEvent('time_entry_deleted');
-        errorManager.notifySuccess('Entrée supprimée.');
+        errorManager.notifySuccess(
+          'Entrée supprimée.',
+          6000,
+          trashRec
+            ? {
+                action: {
+                  label: 'Annuler',
+                  behaviorTarget: 'notice-undo-delete',
+                  onAction: () => handleRestoreDeletedItem(trashRec.id),
+                },
+              }
+            : {}
+        );
         rerender();
       };
 
@@ -2702,7 +3064,41 @@ export function createUI({
     }
 
     if (m.type === 'custom-category-delete-confirm') {
-      return renderCategoryDeleteConfirmModal({ state, modal: m, persist, rerender });
+      return renderCategoryDeleteConfirmModal({
+        state,
+        modal: m,
+        persist,
+        rerender,
+        onCategoryDeleted: ({
+          category,
+          descendants,
+          reassignedEntryCategoryIds,
+          reassignedActivityCategoryIds,
+        }) => {
+          const trashRec = recordDeletedItem({
+            kind: TRASH_ITEM_KINDS.CATEGORY,
+            item: category,
+            related: {
+              descendants,
+              reassignedEntryCategoryIds,
+              reassignedActivityCategoryIds,
+            },
+          });
+          errorManager.notifyInfo(
+            `Catégorie « ${category.label} » supprimée.`,
+            6000,
+            trashRec
+              ? {
+                  action: {
+                    label: 'Annuler',
+                    behaviorTarget: 'notice-undo-delete',
+                    onAction: () => handleRestoreDeletedItem(trashRec.id),
+                  },
+                }
+              : {}
+          );
+        },
+      });
     }
 
     if (m.type === 'template-editor') {
@@ -2941,6 +3337,84 @@ export function createUI({
 
     c.appendChild(row);
     c.appendChild(renderGeoOptInControl());
+    return c;
+  }
+
+  const TRASH_KIND_LABELS = {
+    entry: 'Entrée',
+    activity: 'Activité',
+    template: 'Gabarit',
+    category: 'Catégorie',
+  };
+
+  function trashCard() {
+    const c = node('section', 'card trash-card');
+    c.dataset.trashCard = 'true';
+
+    const items = Array.isArray(state.deletedItems) ? state.deletedItems : [];
+    const headerRow = node('div', 'trash-card-header');
+    const titleGroup = node('div', 'trash-card-title-group');
+    titleGroup.appendChild(node('h2', 'card-title', 'Corbeille & Restauration'));
+    titleGroup.appendChild(
+      node(
+        'span',
+        'muted trash-card-subtitle',
+        items.length
+          ? `${items.length} suppression${items.length > 1 ? 's' : ''} restaurable${items.length > 1 ? 's' : ''}`
+          : 'Historique local (30 jours)'
+      )
+    );
+    headerRow.appendChild(titleGroup);
+
+    if (items.length > 0) {
+      const emptyBtn = button('Vider la corbeille', 'small danger', 'trash-empty');
+      emptyBtn.onclick = handleEmptyTrash;
+      headerRow.appendChild(emptyBtn);
+    }
+    c.appendChild(headerRow);
+
+    if (!items.length) {
+      c.appendChild(
+        node(
+          'p',
+          'empty',
+          'Aucune suppression récente. Les entrées, activités, gabarits ou catégories supprimés peuvent être annulés ou restaurés ici.'
+        )
+      );
+      return c;
+    }
+
+    const list = node('div', 'trash-list');
+    for (const rec of items) {
+      const row = node('div', 'trash-row');
+      row.dataset.trashId = rec.id;
+      row.dataset.trashKind = rec.kind;
+
+      const info = node('div', 'trash-row-info');
+      const titleLine = node('div', 'trash-row-title-line');
+      titleLine.appendChild(node('span', 'trash-kind-label', TRASH_KIND_LABELS[rec.kind] || 'Élément'));
+      titleLine.appendChild(node('strong', 'trash-row-label', rec.label));
+      info.appendChild(titleLine);
+
+      const metaParts = [];
+      if (rec.subtitle) metaParts.push(rec.subtitle);
+      metaParts.push(`Supprimé le ${formatSyncTimestamp(new Date(rec.deletedAt).toISOString())}`);
+      info.appendChild(node('div', 'trash-row-meta', metaParts.join(' · ')));
+
+      const actions = node('div', 'trash-row-actions');
+      const restoreBtn = button('Restaurer', 'small primary', 'trash-restore');
+      restoreBtn.dataset.trashRestoreId = rec.id;
+      restoreBtn.onclick = () => handleRestoreDeletedItem(rec.id);
+
+      const purgeBtn = button('×', 'small secondary', 'trash-purge');
+      purgeBtn.setAttribute('aria-label', `Supprimer définitivement ${rec.label}`);
+      purgeBtn.onclick = () => handlePurgeTrashItem(rec.id);
+
+      actions.append(restoreBtn, purgeBtn);
+      row.append(info, actions);
+      list.appendChild(row);
+    }
+    c.appendChild(list);
     return c;
   }
 
@@ -3695,7 +4169,7 @@ export function createUI({
   }
 
   function openQuickTilesConfigSection() {
-    routeManager.navigate('entry');
+    routeManager.navigate('tiles');
     state.modal = null;
     rerender();
     root.querySelector('#quick-tiles-card')?.scrollIntoView?.({ behavior: 'smooth' });
@@ -3901,6 +4375,7 @@ export function createUI({
       state.activities = [];
       state.categories = DEFAULT_CATEGORIES.map(c => ({ ...c }));
       state.activityTemplates = [];
+      state.deletedItems = [];
       state.activeTemplateRun = null;
       state.activeTimer = null;
       state.timerUpdatedAt = Date.now();

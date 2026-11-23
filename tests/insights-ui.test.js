@@ -86,16 +86,21 @@ describe('Insights & viaTimer UI integration', () => {
     root.querySelector('[data-behavior-target="timer-stop"]').click();
     await vi.waitFor(() => {
       expect(state.entries).toHaveLength(2);
-      expect(root.querySelectorAll('[data-behavior-target="entry-edit"]')).toHaveLength(2);
     });
     expect(state.entries[0].activity).toBe('Chrono direct');
     expect(state.entries[0].viaTimer).toBe(true);
 
-    // 3. Edit the timer entry manually -> must preserve viaTimer: true
+    // Navigate to Dernières entrées dedicated page
+    root.querySelector('#nav-entries').click();
+    expect(state.tab).toBe('entries');
+    expect(root.querySelectorAll('[data-behavior-target="entry-edit"]')).toHaveLength(2);
+
+    // 3. Edit the timer entry manually -> returns to Chrono & Saisie form and preserves viaTimer: true
     const editButtons = root.querySelectorAll('[data-behavior-target="entry-edit"]');
     editButtons[0].click();
 
     await vi.waitFor(() => {
+      expect(state.tab).toBe('entry');
       expect(root.querySelector('form.entry-form [data-behavior-field="activity"]').value).toBe('Chrono direct');
     });
     const editForm = root.querySelector('form.entry-form');

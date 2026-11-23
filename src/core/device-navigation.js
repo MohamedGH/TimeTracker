@@ -23,6 +23,67 @@ export const NAV_ROUTES = Object.freeze([
   { id: 'categories', label: 'Catégories', shortLabel: 'Catégories', shortcutHint: 'Alt+3' },
 ]);
 
+export const PAGES_HUB_ROUTE = Object.freeze({
+  id: 'pages',
+  label: 'Pages & Outils',
+  shortLabel: 'Outils',
+});
+
+export const WIDGET_PAGES = Object.freeze([
+  {
+    id: 'templates',
+    label: 'Gabarits d’activité',
+    shortLabel: 'Gabarits',
+    description: 'Enchaînements de chronos ou d’activités',
+  },
+  {
+    id: 'activities',
+    label: 'Activités enregistrées',
+    shortLabel: 'Activités',
+    description: 'Catalogue réutilisable et fusion d’activités',
+  },
+  {
+    id: 'entries',
+    label: 'Dernières entrées',
+    shortLabel: 'Entrées',
+    description: 'Historique récent, positions GPS et modifications',
+  },
+  {
+    id: 'data',
+    label: 'Gestion des données',
+    shortLabel: 'Données',
+    description: 'Export/import JSON, corbeille et options GPS',
+  },
+  {
+    id: 'sync',
+    label: 'Synchronisation multi-appareils',
+    shortLabel: 'Synchro',
+    description: 'Google Drive privé et connexion directe P2P',
+  },
+  {
+    id: 'account',
+    label: 'Compte & Authentification',
+    shortLabel: 'Compte',
+    description: 'Session Google OAuth 2.0 / OpenID Connect',
+  },
+  {
+    id: 'mobile',
+    label: 'Application mobile',
+    shortLabel: 'Mobile',
+    description: 'Installation PWA hors ligne et mode Capacitor',
+  },
+  {
+    id: 'tiles',
+    label: 'Tuiles Android & Écran verrouillé',
+    shortLabel: 'Tuiles',
+    description: 'Réglages rapides et chrono sur écran verrouillé',
+  },
+]);
+
+export function isWidgetOrPagesRoute(routeId) {
+  return routeId === PAGES_HUB_ROUTE.id || WIDGET_PAGES.some(page => page.id === routeId);
+}
+
 /**
  * Pure classification of device form-factor from viewport and input capabilities.
  */

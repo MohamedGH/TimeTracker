@@ -24,7 +24,7 @@ function createBaseState(overrides = {}) {
 describe('Multi-device sync UI integration (Drive & P2P)', () => {
   beforeEach(() => {
     window.localStorage.setItem('time-analytics-consent', 'false');
-    window.location.hash = '#entry';
+    window.location.hash = '#sync';
   });
 
   it('triggers Google Drive sync and toggles auto-sync from UI', async () => {
@@ -45,7 +45,7 @@ describe('Multi-device sync UI integration (Drive & P2P)', () => {
 
     const ui = createUI({
       root,
-      state: createBaseState(),
+      state: createBaseState({ tab: 'sync' }),
       persist: vi.fn().mockResolvedValue(undefined),
       getSyncMeta: () => meta,
       saveSyncMeta,
@@ -106,7 +106,7 @@ describe('Multi-device sync UI integration (Drive & P2P)', () => {
 
     const ui = createUI({
       root,
-      state: createBaseState(),
+      state: createBaseState({ tab: 'sync' }),
       persist: vi.fn().mockResolvedValue(undefined),
       p2pManagerFactory,
       authClient: { isConfigured: () => true, signOut: vi.fn() },

@@ -86,9 +86,10 @@ describe('Mobile & PWA UI integration (install button, iOS guide, offline banner
       shouldShowHeaderInstall: true,
     });
 
+    window.location.hash = '#mobile';
     const ui = createUI({
       root,
-      state: createBaseState(),
+      state: createBaseState({ tab: 'mobile' }),
       persist: vi.fn().mockResolvedValue(undefined),
       authClient: { isConfigured: () => false, signOut: vi.fn() },
       pwaControllerFactory: pwaMock.factory,
@@ -119,9 +120,10 @@ describe('Mobile & PWA UI integration (install button, iOS guide, offline banner
       shouldShowHeaderInstall: false,
     });
 
+    window.location.hash = '#mobile';
     const ui = createUI({
       root,
-      state: createBaseState(),
+      state: createBaseState({ tab: 'mobile' }),
       persist: vi.fn().mockResolvedValue(undefined),
       authClient: { isConfigured: () => false, signOut: vi.fn() },
       pwaControllerFactory: pwaMock.factory,

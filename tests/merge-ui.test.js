@@ -97,13 +97,14 @@ describe('Merge Modal & UI Integration', () => {
     expect(targetSel.value).toBe('dev');
   });
 
-  it('merges two activities from the Entry tab UI and syncs stateManager, persistence, and Quick Tiles', async () => {
+  it('merges two activities from the Activités enregistrées page UI and syncs stateManager, persistence, and Quick Tiles', async () => {
     const root = document.createElement('div');
     document.body.appendChild(root);
+    window.location.hash = '#activities';
 
     const persist = vi.fn().mockResolvedValue(undefined);
     const stateManager = createStateManager({
-      initialState: createSampleState(),
+      initialState: createSampleState({ tab: 'activities' }),
       persistFn: persist,
     });
     const bridgeMock = {

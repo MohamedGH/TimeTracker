@@ -377,7 +377,11 @@ describe('UI Chrono Opt-in, Non-blocking Start & Stop Capture, Deletion & Dashbo
     expect(state.entries[0].startLocation).toMatchObject({ latitude: 50.6292, longitude: 3.0573 });
     expect(state.entries[0].endLocation).toMatchObject({ latitude: 50.63, longitude: 3.058 });
 
-    // Open Dashboard map from entry badge
+    // Open Dernières entrées dedicated page to use entry map-jump badge
+    root.querySelector('#nav-entries').click();
+    await flushAsync();
+    expect(state.tab).toBe('entries');
+
     const mapJumpBtn = root.querySelector('[data-behavior-target="entry-open-map"]');
     expect(mapJumpBtn).toBeTruthy();
     mapJumpBtn.click();
@@ -386,11 +390,10 @@ describe('UI Chrono Opt-in, Non-blocking Start & Stop Capture, Deletion & Dashbo
     expect(state.tab).toBe('dashboard');
     expect(root.querySelector('[data-activity-map-card="true"]')).toBeTruthy();
 
-    // Clear all GPS locations via Data card while keeping time entries intact
-    const entryTabBtn = root.querySelector('[data-behavior-target="nav-entry"]');
-    expect(entryTabBtn).toBeTruthy();
-    entryTabBtn.click();
+    // Clear all GPS locations via Gestion des données dedicated page while keeping time entries intact
+    root.querySelector('#nav-data').click();
     await flushAsync();
+    expect(state.tab).toBe('data');
 
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const clearGeoBtn = root.querySelector('[data-behavior-target="data-clear-geo"]');

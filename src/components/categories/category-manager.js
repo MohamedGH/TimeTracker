@@ -933,7 +933,13 @@ export function renderCategoryEditorModal({ state, modal, persist, rerender }) {
 /**
  * Renders the category delete confirmation modal dialog.
  */
-export function renderCategoryDeleteConfirmModal({ state, modal, persist, rerender }) {
+export function renderCategoryDeleteConfirmModal({
+  state,
+  modal,
+  persist,
+  rerender,
+  onCategoryDeleted = null,
+}) {
   const { category, descendants, entryCount, activityCount } = modal;
 
   const overlay = document.createElement('div');
@@ -1025,15 +1031,32 @@ export function renderCategoryDeleteConfirmModal({ state, modal, persist, rerend
 
   confirmBtn.onclick = async () => {
     const allIdsToDelete = new Set([category.id, ...descendants.map(d => d.id)]);
+    const reassignedEntryCategoryIds = {};
+    const reassignedActivityCategoryIds = {};
+
+    state.entries = state.entries.map((e) => {
+      if (!allIdsToDelete.has(e.categoryId)) return e;
+      reassignedEntryCategoryIds[e.id] = e.categoryId;
+      return { ...e, categoryId: null };
+    });
+    state.activities = state.activities.map((a) => {
+      if (!allIdsToDelete.has(a.categoryId)) return a;
+      reassignedActivityCategoryIds[a.id] = a.categoryId;
+      return { ...a, categoryId: null };
+    });
     state.categories = deleteCategory(state.categories, category.id, { cascade: true });
-    state.entries = state.entries.map(e => allIdsToDelete.has(e.categoryId) ? { ...e, categoryId: null } : e);
-    state.activities = state.activities.map(a => allIdsToDelete.has(a.categoryId) ? { ...a, categoryId: null } : a);
 
     if (state.activeTimer && allIdsToDelete.has(state.activeTimer.categoryId)) {
       state.activeTimer = { ...state.activeTimer, categoryId: null };
     }
 
     state.modal = null;
+    await onCategoryDeleted?.({
+      category,
+      descendants,
+      reassignedEntryCategoryIds,
+      reassignedActivityCategoryIds,
+    });
     await persist();
     trackEvent('category_deleted', categoryDeletedPayload({ cascade: true, descendantCount: descendants.length }));
     rerender();

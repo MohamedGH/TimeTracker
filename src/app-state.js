@@ -16,6 +16,7 @@ import {
   normalizeTemplatesList,
   normalizeActiveTemplateRun,
 } from './state/template-actions.js';
+import { normalizeTrashList } from './core/trash-manager.js';
 
 export async function createAppState() {
   await migratePersistedData();
@@ -33,6 +34,7 @@ export async function createAppState() {
     storedAuthSession,
     storedTombstones,
     storedSyncMeta,
+    storedTrash,
   ] = await Promise.all([
     getValue(STORAGE_KEYS.entries, []),
     getValue(STORAGE_KEYS.activities, []),
@@ -46,6 +48,7 @@ export async function createAppState() {
     getValue(STORAGE_KEYS.authSession, null),
     getValue(STORAGE_KEYS.syncTombstones, null),
     getValue(STORAGE_KEYS.syncMeta, null),
+    getValue(STORAGE_KEYS.trash, []),
   ]);
 
   const categories = mergeCategories(
@@ -115,6 +118,7 @@ export async function createAppState() {
     activities: normalizedActivities,
     categories,
     activityTemplates: normalizedTemplates,
+    deletedItems: normalizeTrashList(storedTrash),
     activeTemplateRun: normalizedActiveTemplateRun,
     activeTimer: activeTimer || null,
     timerUpdatedAt: initialTimerUpdatedAt,
@@ -172,6 +176,7 @@ export async function createAppState() {
       setValue(STORAGE_KEYS.quickTilesConfig, s.quickTilesConfig || normalizedQuickTilesConfig),
       setValue(STORAGE_KEYS.geoTrackingEnabled, Boolean(s.geoTrackingEnabled)),
       setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
+      setValue(STORAGE_KEYS.trash, normalizeTrashList(s.deletedItems)),
     ]);
   }
 

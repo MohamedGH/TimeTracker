@@ -82,6 +82,10 @@ describe('Google OAuth 2.0 / OIDC UI integration', () => {
 
     expect(saveAuthSession).toHaveBeenCalledWith(mockSession);
     expect(root.querySelector('[data-behavior-target="account-open"]').textContent).toContain('Marie');
+
+    // Open dedicated Account page and verify profile + sign out
+    root.querySelector('#nav-account').click();
+    expect(state.tab).toBe('account');
     expect(root.querySelector('.auth-profile-email')?.textContent).toBe('marie@example.com');
 
     // Sign out from Account card
@@ -102,13 +106,14 @@ describe('Google OAuth 2.0 / OIDC UI integration', () => {
   it('displays auth errors via errorManager when Google sign-in fails', async () => {
     const root = document.createElement('div');
     document.body.appendChild(root);
+    window.location.hash = '#account';
 
     const authClient = {
       isConfigured: () => true,
       signIn: vi.fn().mockRejectedValue(new Error('Fenêtre de connexion Google fermée avant la fin.')),
       signOut: vi.fn(),
     };
-    const state = createBaseState();
+    const state = createBaseState({ tab: 'account' });
 
     const ui = createUI({
       root,

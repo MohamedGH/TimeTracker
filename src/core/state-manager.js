@@ -23,6 +23,13 @@ import {
   reassignActivityInTemplates,
   buildEntriesFromTemplate,
 } from '../state/template-actions.js';
+import {
+  TRASH_ITEM_KINDS,
+  createTrashRecord,
+  pushTrashRecord,
+  removeTrashRecord,
+  restoreTrashRecord,
+} from './trash-manager.js';
 
 export const ACTION_TYPES = Object.freeze({
   SET_TAB: 'SET_TAB',
@@ -60,6 +67,11 @@ export const ACTION_TYPES = Object.freeze({
   CLEAR_ERROR: 'CLEAR_ERROR',
   SET_NOTICE: 'SET_NOTICE',
   CLEAR_NOTICE: 'CLEAR_NOTICE',
+  PUSH_TRASH_RECORD: 'PUSH_TRASH_RECORD',
+  RESTORE_DELETED_ITEM: 'RESTORE_DELETED_ITEM',
+  RESTORE_LAST_DELETED: 'RESTORE_LAST_DELETED',
+  PURGE_TRASH_ITEM: 'PURGE_TRASH_ITEM',
+  EMPTY_TRASH: 'EMPTY_TRASH',
   RESTORE_DATA: 'RESTORE_DATA',
   CLEAR_ALL: 'CLEAR_ALL',
   SET_AUTH_USER: 'SET_AUTH_USER',
@@ -279,12 +291,16 @@ export function appReducer(state, action) {
       };
     }
 
-    case ACTION_TYPES.DELETE_ENTRY:
+    case ACTION_TYPES.DELETE_ENTRY: {
+      const target = state.entries.find(e => e.id === action.payload);
+      const record = target ? createTrashRecord({ kind: TRASH_ITEM_KINDS.ENTRY, item: target }) : null;
       return {
         ...state,
         entries: state.entries.filter(e => e.id !== action.payload),
+        deletedItems: record ? pushTrashRecord(state.deletedItems, record) : (state.deletedItems || []),
         editingEntryId: state.editingEntryId === action.payload ? null : state.editingEntryId,
       };
+    }
 
     case ACTION_TYPES.ADD_ACTIVITY: {
       const { id = crypto.randomUUID(), label, categoryId = null } = action.payload;
@@ -302,11 +318,15 @@ export function appReducer(state, action) {
       };
     }
 
-    case ACTION_TYPES.DELETE_ACTIVITY:
+    case ACTION_TYPES.DELETE_ACTIVITY: {
+      const target = state.activities.find(a => a.id === action.payload);
+      const record = target ? createTrashRecord({ kind: TRASH_ITEM_KINDS.ACTIVITY, item: target }) : null;
       return {
         ...state,
         activities: state.activities.filter(a => a.id !== action.payload),
+        deletedItems: record ? pushTrashRecord(state.deletedItems, record) : (state.deletedItems || []),
       };
+    }
 
     case ACTION_TYPES.SET_CATEGORIES:
       return {
@@ -391,11 +411,15 @@ export function appReducer(state, action) {
       };
     }
 
-    case ACTION_TYPES.DELETE_TEMPLATE:
+    case ACTION_TYPES.DELETE_TEMPLATE: {
+      const target = (state.activityTemplates || []).find(t => t.id === action.payload);
+      const record = target ? createTrashRecord({ kind: TRASH_ITEM_KINDS.TEMPLATE, item: target }) : null;
       return {
         ...state,
         activityTemplates: deleteActivityTemplate(state.activityTemplates || [], action.payload),
+        deletedItems: record ? pushTrashRecord(state.deletedItems, record) : (state.deletedItems || []),
       };
+    }
 
     case ACTION_TYPES.START_TEMPLATE_RUN: {
       const { template, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
@@ -542,6 +566,34 @@ export function appReducer(state, action) {
         notice: null,
       };
 
+    case ACTION_TYPES.PUSH_TRASH_RECORD:
+      return {
+        ...state,
+        deletedItems: pushTrashRecord(state.deletedItems, action.payload),
+      };
+
+    case ACTION_TYPES.RESTORE_DELETED_ITEM: {
+      const { nextState } = restoreTrashRecord(state, action.payload);
+      return nextState;
+    }
+
+    case ACTION_TYPES.RESTORE_LAST_DELETED: {
+      const { nextState } = restoreTrashRecord(state, null);
+      return nextState;
+    }
+
+    case ACTION_TYPES.PURGE_TRASH_ITEM:
+      return {
+        ...state,
+        deletedItems: removeTrashRecord(state.deletedItems, action.payload),
+      };
+
+    case ACTION_TYPES.EMPTY_TRASH:
+      return {
+        ...state,
+        deletedItems: [],
+      };
+
     case ACTION_TYPES.RESTORE_DATA: {
       const { entries, activities, categories, activityTemplates } = action.payload;
       return {
@@ -563,6 +615,7 @@ export function appReducer(state, action) {
         activities: [],
         categories: DEFAULT_CATEGORIES.map(c => ({ ...c })),
         activityTemplates: [],
+        deletedItems: [],
         activeTemplateRun: null,
         activeTimer: null,
         geoTrackingEnabled: false,
@@ -642,6 +695,7 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     activities: [],
     categories: [...DEFAULT_CATEGORIES],
     activityTemplates: [],
+    deletedItems: [],
     activeTemplateRun: null,
     activeTimer: null,
     timerUpdatedAt: 0,
@@ -673,6 +727,7 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       prevState.activities !== nextState.activities ||
       prevState.categories !== nextState.categories ||
       prevState.activityTemplates !== nextState.activityTemplates ||
+      prevState.deletedItems !== nextState.deletedItems ||
       prevState.activeTemplateRun !== nextState.activeTemplateRun ||
       prevState.activeTimer !== nextState.activeTimer ||
       prevState.quickTilesConfig !== nextState.quickTilesConfig ||
@@ -811,6 +866,21 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       clearNotice() {
         return dispatch({ type: ACTION_TYPES.CLEAR_NOTICE });
+      },
+      pushTrashRecord(record) {
+        return dispatch({ type: ACTION_TYPES.PUSH_TRASH_RECORD, payload: record });
+      },
+      restoreDeletedItem(trashId) {
+        return dispatch({ type: ACTION_TYPES.RESTORE_DELETED_ITEM, payload: trashId });
+      },
+      restoreLastDeleted() {
+        return dispatch({ type: ACTION_TYPES.RESTORE_LAST_DELETED });
+      },
+      purgeTrashItem(trashId) {
+        return dispatch({ type: ACTION_TYPES.PURGE_TRASH_ITEM, payload: trashId });
+      },
+      emptyTrash() {
+        return dispatch({ type: ACTION_TYPES.EMPTY_TRASH });
       },
       setAuthUser(user) {
         return dispatch({ type: ACTION_TYPES.SET_AUTH_USER, payload: user });

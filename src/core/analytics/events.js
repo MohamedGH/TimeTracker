@@ -35,6 +35,7 @@ export const ANALYTICS_EVENTS = Object.freeze({
   TEMPLATE_STEP_ADVANCED: 'template_step_advanced',
   TEMPLATE_COMPLETED: 'template_completed',
   TEMPLATE_LOGGED_MANUAL: 'template_logged_manual',
+  ITEM_RESTORED: 'item_restored',
   DASHBOARD_PERIOD_CHANGED: 'dashboard_period_changed',
   GEO_TRACKING_TOGGLED: 'geo_tracking_toggled',
   DATA_EXPORTED: 'data_exported',
@@ -47,10 +48,28 @@ export const ANALYTICS_EVENTS = Object.freeze({
   PWA_INSTALLED: 'pwa_installed',
 });
 
-const VALID_TABS = new Set(['entry', 'dashboard', 'categories']);
+const VALID_TABS = new Set([
+  'entry',
+  'dashboard',
+  'categories',
+  'pages',
+  'templates',
+  'activities',
+  'entries',
+  'data',
+  'sync',
+  'account',
+  'mobile',
+  'tiles',
+]);
 
 export function pageViewPayload(tab) {
   return { page_title: VALID_TABS.has(tab) ? tab : 'unknown' };
+}
+
+export function itemRestoredPayload({ kind = 'unknown' } = {}) {
+  const allowed = new Set(['entry', 'activity', 'template', 'category']);
+  return { kind: allowed.has(kind) ? kind : 'unknown' };
 }
 
 export function timerStartedPayload({ hasCategory, hasLocation = false }) {

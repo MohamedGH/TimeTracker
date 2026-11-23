@@ -397,9 +397,11 @@ describe('Quick Settings Tiles UI & Android lock-screen integration', () => {
     const root = document.createElement('div');
     document.body.appendChild(root);
 
+    window.location.hash = '#tiles';
     const sim = createSimulatedAndroidTileBridge({ apiLevel: 34, isDeviceLocked: true });
     const persist = vi.fn().mockResolvedValue(undefined);
     const state = createBaseState({
+      tab: 'tiles',
       activities: [
         { id: 'a-work', label: 'Travail', categoryId: 'travail', useCount: 8 },
         { id: 'a-study', label: 'Étude', categoryId: 'etude', useCount: 5 },
@@ -489,8 +491,10 @@ describe('Quick Settings Tiles UI & Android lock-screen integration', () => {
     const root = document.createElement('div');
     document.body.appendChild(root);
 
+    window.location.hash = '#tiles';
     const sim = createSimulatedAndroidTileBridge({ apiLevel: 34, isDeviceLocked: true });
     const state = createBaseState({
+      tab: 'tiles',
       activities: [{ id: 'a1', label: 'Travail', categoryId: 'travail', useCount: 1 }],
     });
 
@@ -559,7 +563,7 @@ describe('Quick Settings Tiles UI & Android lock-screen integration', () => {
     });
 
     await vi.waitFor(() => {
-      expect(state.tab).toBe('entry');
+      expect(state.tab).toBe('tiles');
       expect(root.querySelector('#quick-tiles-card')).toBeTruthy();
     });
 
@@ -595,12 +599,14 @@ describe('Quick Settings Tiles UI & Android lock-screen integration', () => {
     const root = document.createElement('div');
     document.body.appendChild(root);
 
+    window.location.hash = '#tiles';
     const sim = createSimulatedAndroidTileBridge({
       apiLevel: 34,
       isDeviceLocked: false,
       notificationsEnabled: false,
     });
     const state = createBaseState({
+      tab: 'tiles',
       activeTimer: {
         activity: 'Travail',
         categoryId: 'travail',

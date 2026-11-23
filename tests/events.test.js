@@ -14,6 +14,7 @@ import {
   dashboardPeriodChangedPayload,
   dataExportedPayload,
   dataImportedPayload,
+  itemRestoredPayload,
 } from '../src/core/analytics/events.js';
 
 describe('events catalog', () => {
@@ -23,14 +24,23 @@ describe('events catalog', () => {
     expect(names).toContain('page_view');
     expect(names).toContain('timer_started');
     expect(names).toContain('time_entry_created');
+    expect(names).toContain('item_restored');
   });
 });
 
 describe('pageViewPayload', () => {
-  it('accepts known tabs', () => {
+  it('accepts known tabs and dedicated widget pages', () => {
     expect(pageViewPayload('entry')).toEqual({ page_title: 'entry' });
     expect(pageViewPayload('dashboard')).toEqual({ page_title: 'dashboard' });
     expect(pageViewPayload('categories')).toEqual({ page_title: 'categories' });
+    expect(pageViewPayload('pages')).toEqual({ page_title: 'pages' });
+    expect(pageViewPayload('templates')).toEqual({ page_title: 'templates' });
+    expect(pageViewPayload('tiles')).toEqual({ page_title: 'tiles' });
+  });
+
+  it('builds item_restored payload safely', () => {
+    expect(itemRestoredPayload({ kind: 'entry' })).toEqual({ kind: 'entry' });
+    expect(itemRestoredPayload({ kind: 'other' })).toEqual({ kind: 'unknown' });
   });
 
   it('falls back to "unknown" for unexpected values', () => {
