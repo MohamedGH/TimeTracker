@@ -6,11 +6,12 @@ import { normalizeLocation } from './geo/geo-location.js';
 
 export function createTimerState(timer = null) {
   if (!timer) return null;
-  const location = normalizeLocation(timer.location);
+  const startLocation = normalizeLocation(timer.startLocation ?? timer.location);
+  const { location: _legacyLoc, ...rest } = timer;
   return {
-    ...timer,
+    ...rest,
     categoryId: timer.categoryId ?? timer.cat ?? null,
-    ...(location ? { location } : {}),
+    ...(startLocation ? { startLocation } : {}),
   };
 }
 
@@ -21,13 +22,14 @@ export function createActiveTimer({
   startTs = Date.now(),
   startTime,
   date,
+  startLocation = null,
   location = null,
 }) {
   const resolvedCategoryId = categoryId ?? cat;
   if (!activity || !resolvedCategoryId || !Number.isFinite(startTs) || !startTime || !date) {
     throw new Error('Timer invalide.');
   }
-  const normalizedLocation = normalizeLocation(location);
+  const normalizedStart = normalizeLocation(startLocation ?? location);
   return {
     activity,
     categoryId: resolvedCategoryId,
@@ -35,7 +37,7 @@ export function createActiveTimer({
     startTs,
     startTime,
     date,
-    ...(normalizedLocation ? { location: normalizedLocation } : {}),
+    ...(normalizedStart ? { startLocation: normalizedStart } : {}),
   };
 }
 
@@ -49,9 +51,10 @@ export function elapsedSeconds(timer, now = Date.now()) {
   return Math.max(0, Math.floor((now - timer.startTs) / 1000));
 }
 
-export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID()) {
+export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID(), endLocation = null) {
   if (!timer) throw new Error('Aucun timer actif.');
-  const normalizedLocation = normalizeLocation(timer.location);
+  const startLocation = normalizeLocation(timer.startLocation ?? timer.location);
+  const normalizedEnd = normalizeLocation(endLocation);
   return {
     id,
     activity: timer.activity,
@@ -62,6 +65,7 @@ export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID()) 
     ...(endDate ? { endDate } : {}),
     mins: elapsedMinutes(timer),
     viaTimer: true,
-    ...(normalizedLocation ? { location: normalizedLocation } : {}),
+    ...(startLocation ? { startLocation } : {}),
+    ...(normalizedEnd ? { endLocation: normalizedEnd } : {}),
   };
 }

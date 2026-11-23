@@ -11,7 +11,7 @@
  */
 window.__TIME_TRACKER_ENV__ = {
   GA4_MEASUREMENT_ID: '', // e.g. "G-XXXXXXXXXX"
-  GOOGLE_CLIENT_ID: '', // e.g. "1234567890-abc.apps.googleusercontent.com"
-  GOOGLE_MAPS_API_KEY: '', // e.g. "AIza..."
-  GOOGLE_MAPS_MAP_ID: '', // optional Cloud Map ID (defaults to DEMO_MAP_ID)
+  GOOGLE_CLIENT_ID: '', // Google OAuth Client ID for Drive sync ONLY (never use for Maps)
+  GOOGLE_MAPS_API_KEY: '', // Dedicated Google Maps JavaScript API key (VITE_GOOGLE_MAPS_API_KEY)
+  GOOGLE_MAPS_MAP_ID: '', // Optional Cloud Map ID (defaults to DEMO_MAP_ID for AdvancedMarkerElement)
 };

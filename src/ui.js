@@ -40,8 +40,13 @@ import {
 } from './components/map/activity-map.js';
 import {
   captureCurrentLocation,
+  getGeoPermissionState,
   formatCoordinates,
   normalizeLocation,
+  hasEntryGeoLocations,
+  resolveEntryGeoLocations,
+  stripEntryGeoLocations,
+  buildGoogleMapsUrl,
   QUOTA_HELP_URL,
 } from './core/geo/index.js';
 import { isolateModalEvents } from './core/modal-events.js';
@@ -153,11 +158,15 @@ export function createUI({
   let destroyed = false;
   let mapsQuotaExceeded = false;
   let mapCategoryFilter = 'all';
+  let mapPointTypeFilter = 'all';
   let mapShowRoutePath = true;
   let mapFocusClusterId = null;
-  let manualLocationOverride = undefined;
+  let manualStartLocationOverride = undefined;
+  let manualEndLocationOverride = undefined;
   let manualLocationEditingId = null;
-  let geoCaptureState = { startTs: null, status: 'idle', promise: null };
+  let geoCaptureState = { startTs: null, status: 'idle' };
+  let geoPermissionInfo = { state: 'unknown', inIframe: false, isSecureContext: true };
+  const pendingStartEntryByStartTs = new Map();
   let quickTilesCapabilities = {
     supported: false,
     platform: 'web',
@@ -247,20 +256,54 @@ export function createUI({
   const rerender = () => render();
 
   function formatTimerGeoStatusText(timer, captureStatus) {
-    if (timer?.location) {
-      const coords = formatCoordinates(timer.location, 4);
-      const acc = Number.isFinite(timer.location.accuracy) ? ` (±${timer.location.accuracy} m)` : '';
-      return `📍 Position enregistrée : ${coords}${acc}`;
+    const startLoc = timer?.startLocation || timer?.location;
+    if (startLoc) {
+      const coords = formatCoordinates(startLoc, 4);
+      const acc = Number.isFinite(startLoc.accuracy) ? ` (±${startLoc.accuracy} m)` : '';
+      return `📍 Départ : ${coords}${acc}`;
     }
     if (!state.geoTrackingEnabled && captureStatus === 'idle') {
       return '📍 Position non enregistrée';
     }
-    if (captureStatus === 'capturing') return '📍 Acquisition GPS en cours…';
-    if (captureStatus === 'denied') return '📍 Permission GPS refusée';
-    if (captureStatus === 'timeout') return '📍 Délai GPS dépassé';
+    if (captureStatus === 'capturing') return '📍 Acquisition GPS démarrage…';
+    if (captureStatus === 'policy-blocked') return '📍 GPS bloqué par cet aperçu intégré (iframe)';
+    if (captureStatus === 'insecure-origin') return '📍 GPS impossible hors HTTPS';
+    if (captureStatus === 'denied') return '📍 Permission GPS refusée (chrono actif)';
+    if (captureStatus === 'timeout') return '📍 Délai GPS dépassé (chrono actif)';
     if (captureStatus === 'unsupported') return '📍 GPS indisponible sur cet appareil';
     if (captureStatus === 'unavailable') return '📍 Position temporairement indisponible';
     return '📍 En attente de position';
+  }
+
+  function refreshGeoPermissionStateAsync() {
+    return getGeoPermissionState({ geolocation })
+      .then((info) => {
+        if (destroyed || !info) return info;
+        const changed =
+          geoPermissionInfo.state !== info.state ||
+          geoPermissionInfo.inIframe !== info.inIframe ||
+          geoPermissionInfo.isSecureContext !== info.isSecureContext;
+        geoPermissionInfo = info;
+        if (changed && !state.modal && document.activeElement?.tagName !== 'INPUT') {
+          rerender();
+        }
+        return info;
+      })
+      .catch(() => geoPermissionInfo);
+  }
+
+  function syncGeoPermissionFromResult(res) {
+    if (!res) return;
+    if (res.ok) {
+      geoPermissionInfo = { ...geoPermissionInfo, state: 'granted' };
+    } else if (
+      res.reason === 'denied' ||
+      res.reason === 'policy-blocked' ||
+      res.reason === 'insecure-origin' ||
+      res.reason === 'unsupported'
+    ) {
+      geoPermissionInfo = { ...geoPermissionInfo, state: res.reason };
+    }
   }
 
   function refreshTimerGeoBadgeDom() {
@@ -273,65 +316,189 @@ export function createUI({
     }
   }
 
+  function notifyGeoUnavailable(reason, phaseLabel = 'démarrage') {
+    if (reason === 'policy-blocked') {
+      errorManager.notifyInfo(
+        'Géolocalisation bloquée par l’aperçu intégré (iframe). Ouvrez l’application dans un nouvel onglet pour que le navigateur demande l’autorisation.'
+      );
+    } else if (reason === 'insecure-origin') {
+      errorManager.notifyInfo(
+        'La géolocalisation nécessite une adresse sécurisée HTTPS (ou localhost).'
+      );
+    } else if (reason === 'denied') {
+      errorManager.notifyInfo(
+        `Permission GPS refusée (${phaseLabel}). Vérifiez l’icône 🔒 dans la barre d’adresse → Position → Autoriser.`
+      );
+    } else if (reason === 'unsupported') {
+      errorManager.notifyInfo(
+        'Géolocalisation indisponible sur cet appareil : l’activité est enregistrée sans position.'
+      );
+    } else if (reason === 'timeout' || reason === 'unavailable') {
+      errorManager.notifyInfo(
+        `Signal GPS indisponible (${phaseLabel}) : session enregistrée sans ces coordonnées.`
+      );
+    }
+  }
+
   function captureTimerLocationAsync(targetStartTs, { force = false } = {}) {
     if (!targetStartTs || (!force && !state.geoTrackingEnabled)) {
       return Promise.resolve({ ok: false, location: null, reason: 'disabled' });
     }
-    const promise = captureCurrentLocation({ geolocation }).then(async (res) => {
+    geoCaptureState = { startTs: targetStartTs, status: 'capturing' };
+    refreshTimerGeoBadgeDom();
+
+    return captureCurrentLocation({ geolocation }).then(async (res) => {
       if (destroyed) return res;
+      syncGeoPermissionFromResult(res);
+
       if (state.activeTimer && state.activeTimer.startTs === targetStartTs) {
         if (res.ok && res.location) {
           state.activeTimer = {
             ...state.activeTimer,
-            location: res.location,
+            startLocation: res.location,
           };
           _stateManager?.actions?.setActiveTimerLocation?.({
             startTs: targetStartTs,
-            location: res.location,
+            startLocation: res.location,
           });
-          geoCaptureState = { startTs: targetStartTs, status: 'captured', promise: null };
+          geoCaptureState = { startTs: targetStartTs, status: 'captured' };
           await persist().catch(() => {});
           refreshTimerGeoBadgeDom();
           if (state.tab === 'entry' && !state.modal && document.activeElement?.tagName !== 'INPUT') {
             rerender();
           }
         } else {
-          geoCaptureState = { startTs: targetStartTs, status: res.reason || 'unavailable', promise: null };
+          geoCaptureState = { startTs: targetStartTs, status: res.reason || 'unavailable' };
           refreshTimerGeoBadgeDom();
+          if (force || res.reason === 'denied' || res.reason === 'policy-blocked' || res.reason === 'insecure-origin') {
+            notifyGeoUnavailable(res.reason, 'démarrage');
+          }
+        }
+        return res;
+      }
+
+      // If timer already stopped before start GPS resolved, attach startLocation to the recorded entry
+      const completedEntryId = pendingStartEntryByStartTs.get(targetStartTs);
+      pendingStartEntryByStartTs.delete(targetStartTs);
+      if (completedEntryId && res.ok && res.location) {
+        let updated = false;
+        state.entries = state.entries.map((item) => {
+          if (item.id !== completedEntryId) return item;
+          updated = true;
+          return { ...item, startLocation: res.location };
+        });
+        if (updated) {
+          _stateManager?.actions?.patchEntryLocation?.({
+            entryId: completedEntryId,
+            startLocation: res.location,
+          });
+          await persist().catch(() => {});
+          if (!state.modal && document.activeElement?.tagName !== 'INPUT') {
+            rerender();
+          }
         }
       }
       return res;
     });
-
-    geoCaptureState = { startTs: targetStartTs, status: 'capturing', promise };
-    refreshTimerGeoBadgeDom();
-    return promise;
   }
 
-  async function settlePendingTimerLocation(targetStartTs) {
-    if (!targetStartTs || state.activeTimer?.location) return;
-    if (geoCaptureState.startTs === targetStartTs && geoCaptureState.promise) {
-      await Promise.race([
-        geoCaptureState.promise.catch(() => null),
-        new Promise(resolve => setTimeout(resolve, 650)),
-      ]);
+  function captureEntryEndLocationAsync(entryId, { force = false } = {}) {
+    if (!entryId || (!force && !state.geoTrackingEnabled)) {
+      return Promise.resolve({ ok: false, location: null, reason: 'disabled' });
     }
+    return captureCurrentLocation({ geolocation }).then(async (res) => {
+      if (destroyed) return res;
+      syncGeoPermissionFromResult(res);
+      if (res.ok && res.location) {
+        let updated = false;
+        state.entries = state.entries.map((item) => {
+          if (item.id !== entryId) return item;
+          updated = true;
+          return { ...item, endLocation: res.location };
+        });
+        if (updated) {
+          _stateManager?.actions?.patchEntryLocation?.({
+            entryId,
+            endLocation: res.location,
+          });
+          await persist().catch(() => {});
+          if (!state.modal && document.activeElement?.tagName !== 'INPUT') {
+            rerender();
+          }
+        }
+      } else if (force || res.reason === 'denied' || res.reason === 'policy-blocked' || res.reason === 'insecure-origin') {
+        notifyGeoUnavailable(res.reason, 'arrêt');
+      }
+      return res;
+    });
+  }
+
+  function requestGeoPermissionNow({ silentSuccess = false } = {}) {
+    // Initiate getCurrentPosition synchronously inside the user gesture so browsers show the permission dialog.
+    const targetStartTs = state.activeTimer && !state.activeTimer.startLocation && !state.activeTimer.location
+      ? state.activeTimer.startTs
+      : null;
+
+    const capturePromise = targetStartTs
+      ? captureTimerLocationAsync(targetStartTs, { force: true })
+      : captureCurrentLocation({ geolocation });
+
+    return capturePromise.then((res) => {
+      if (destroyed) return res;
+      syncGeoPermissionFromResult(res);
+      if (res.ok && res.location) {
+        if (!silentSuccess) {
+          errorManager.notifySuccess(`Autorisation GPS accordée (${formatCoordinates(res.location, 4)}).`);
+        }
+      } else if (!targetStartTs) {
+        notifyGeoUnavailable(res.reason || 'unavailable', 'autorisation');
+      }
+      if (!state.modal && document.activeElement?.tagName !== 'INPUT') {
+        rerender();
+      }
+      return res;
+    });
   }
 
   async function handleToggleGeoTracking(nextEnabled) {
     const enabled = Boolean(nextEnabled);
     state.geoTrackingEnabled = enabled;
     _stateManager?.actions?.setGeoTracking?.(enabled);
+
+    // Start browser/native permission prompt synchronously inside this user interaction before await persist().
+    const permissionRequestPromise = enabled
+      ? requestGeoPermissionNow({ silentSuccess: true })
+      : null;
+
+    if (enabled) {
+      errorManager.notifySuccess('Enregistrement automatique de la position activé.');
+    } else {
+      errorManager.notifyInfo('Enregistrement automatique de la position désactivé.');
+    }
+
     await persist();
     trackEvent(ANALYTICS_EVENTS.GEO_TRACKING_TOGGLED, { enabled });
-    if (enabled) {
-      errorManager.notifySuccess('Géolocalisation des chronos activée.');
-      if (state.activeTimer && !state.activeTimer.location) {
-        captureTimerLocationAsync(state.activeTimer.startTs, { force: true });
-      }
-    } else {
-      errorManager.notifyInfo('Géolocalisation des chronos désactivée.');
+    if (permissionRequestPromise) {
+      permissionRequestPromise.catch(() => {});
     }
+    rerender();
+  }
+
+  async function handleClearAllGeoLocations() {
+    if (!window.confirm('Supprimer toutes les coordonnées GPS enregistrées ? Vos entrées de temps seront conservées.')) {
+      return;
+    }
+    state.entries = state.entries.map(stripEntryGeoLocations);
+    if (state.activeTimer) {
+      const { startLocation: _s, location: _l, ...restTimer } = state.activeTimer;
+      state.activeTimer = restTimer;
+    }
+    manualStartLocationOverride = undefined;
+    manualEndLocationOverride = undefined;
+    mapFocusClusterId = null;
+    _stateManager?.actions?.clearAllGeoLocations?.();
+    await persist();
+    errorManager.notifyInfo('Toutes les coordonnées GPS ont été supprimées.');
     rerender();
   }
 
@@ -652,7 +819,7 @@ export function createUI({
     if (!t) return null;
     const endDate = t.date === today() ? t.date : today();
     const durationMinutes = elapsedMinutes(t, nowTs);
-    const location = normalizeLocation(t.location);
+    const startLocation = normalizeLocation(t.startLocation ?? t.location);
     const entry = createTimeEntry({
       id: crypto.randomUUID(),
       activity: t.activity,
@@ -663,8 +830,11 @@ export function createUI({
       endDate,
       mins: durationMinutes,
       viaTimer: true,
-      location,
+      startLocation,
     });
+    if (!startLocation && t.startTs) {
+      pendingStartEntryByStartTs.set(t.startTs, entry.id);
+    }
     state.entries = [entry, ...state.entries];
     const actIdx = state.activities.findIndex(a => (a.label || a.activity) === t.activity);
     if (actIdx >= 0) {
@@ -674,13 +844,13 @@ export function createUI({
     trackEvent('timer_stopped', timerStoppedPayload({
       durationMinutes,
       hasCategory: Boolean(t.categoryId ?? t.cat),
-      hasLocation: Boolean(entry.location),
+      hasLocation: Boolean(entry.startLocation || entry.endLocation),
     }));
     trackEvent('time_entry_created', timeEntryCreatedPayload({
       durationMinutes,
       hasCategory: Boolean(t.categoryId ?? t.cat),
       viaTimer: true,
-      hasLocation: Boolean(entry.location),
+      hasLocation: Boolean(entry.startLocation || entry.endLocation),
     }));
     return { entry, durationMinutes, activity: t.activity };
   }
@@ -694,9 +864,10 @@ export function createUI({
       const clockNow = nowTime();
       const currentDay = today();
 
+      let closedEntryId = null;
       if (state.activeTimer) {
-        await settlePendingTimerLocation(state.activeTimer.startTs);
-        recordRunningTimerIntoEntries(nowTs, clockNow);
+        const closed = recordRunningTimerIntoEntries(nowTs, clockNow);
+        closedEntryId = closed?.entry?.id || null;
       }
 
       const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(nowTs).toISOString() });
@@ -712,11 +883,12 @@ export function createUI({
       state.activityTemplates = recordTemplateUse(state.activityTemplates || [], template.id, nowTs);
       state.error = null;
 
-      await persist();
-      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
       if (state.geoTrackingEnabled) {
+        if (closedEntryId) captureEntryEndLocationAsync(closedEntryId);
         captureTimerLocationAsync(nowTs);
       }
+      await persist();
+      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
       trackEvent(
         ANALYTICS_EVENTS.TEMPLATE_STARTED,
         templateEventPayload({ stepCount: run.steps.length })
@@ -742,9 +914,10 @@ export function createUI({
     const currentDay = today();
     const templateName = state.activeTemplateRun.templateName;
 
+    let closedEntryId = null;
     if (recordCurrent && state.activeTimer) {
-      await settlePendingTimerLocation(state.activeTimer.startTs);
-      recordRunningTimerIntoEntries(nowTs, clockNow);
+      const closed = recordRunningTimerIntoEntries(nowTs, clockNow);
+      closedEntryId = closed?.entry?.id || null;
     }
 
     const transition = advanceTemplateRun(state.activeTemplateRun, { recordedStep: recordCurrent });
@@ -760,11 +933,12 @@ export function createUI({
       state.timerUpdatedAt = nowTs;
       state.activeTemplateRun = transition.nextRun;
 
-      await persist();
-      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
       if (state.geoTrackingEnabled) {
+        if (closedEntryId) captureEntryEndLocationAsync(closedEntryId);
         captureTimerLocationAsync(nowTs);
       }
+      await persist();
+      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
       trackEvent(
         ANALYTICS_EVENTS.TEMPLATE_STEP_ADVANCED,
         templateEventPayload({ stepCount: transition.nextRun.steps.length })
@@ -784,6 +958,9 @@ export function createUI({
     state.timerUpdatedAt = nowTs;
     state.activeTemplateRun = null;
 
+    if (state.geoTrackingEnabled && closedEntryId) {
+      captureEntryEndLocationAsync(closedEntryId);
+    }
     await persist();
     pushActiveTimerToNative(null, nowTs).catch(() => {});
     trackEvent(
@@ -803,9 +980,10 @@ export function createUI({
     const clockNow = nowTime();
     const currentDay = today();
 
+    let closedEntryId = null;
     if (state.activeTimer) {
-      await settlePendingTimerLocation(state.activeTimer.startTs);
-      recordRunningTimerIntoEntries(nowTs, clockNow);
+      const closed = recordRunningTimerIntoEntries(nowTs, clockNow);
+      closedEntryId = closed?.entry?.id || null;
     }
 
     state.activeTimer = createActiveTimer({
@@ -818,11 +996,12 @@ export function createUI({
     state.timerUpdatedAt = nowTs;
     state.activeTemplateRun = resumed.nextRun;
 
-    await persist();
-    pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
     if (state.geoTrackingEnabled) {
+      if (closedEntryId) captureEntryEndLocationAsync(closedEntryId);
       captureTimerLocationAsync(nowTs);
     }
+    await persist();
+    pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
     trackEvent('timer_started', timerStartedPayload({
       hasCategory: Boolean(resumed.currentStep.categoryId),
       hasLocation: Boolean(state.geoTrackingEnabled),
@@ -1268,12 +1447,46 @@ export function createUI({
 
     const textCol = node('span', 'geo-consent-text');
     textCol.append(
-      node('strong', 'geo-consent-title', '📍 Géolocaliser chaque chrono'),
-      node('span', 'geo-consent-sub muted', 'Position stockée localement sur votre appareil (révocable)')
+      node('strong', 'geo-consent-title', '📍 Enregistrer automatiquement la position de mes activités'),
+      node('span', 'geo-consent-sub muted', 'Capture ponctuelle au démarrage et à l’arrêt (stockée localement, révocable, désactivée par défaut)')
     );
 
     labelEl.append(cb, textCol);
     wrap.appendChild(labelEl);
+
+    if (state.geoTrackingEnabled) {
+      const permRow = node('div', 'geo-consent-actions');
+      const permState = geoPermissionInfo.state;
+
+      if (permState === 'granted') {
+        permRow.appendChild(node('span', 'geo-perm-status is-ok', '✓ Permission GPS accordée'));
+      } else if (permState === 'policy-blocked') {
+        permRow.appendChild(
+          node('span', 'geo-perm-status is-err', '⚠ Bloqué par cet aperçu iframe — ouvrez l’app dans un nouvel onglet')
+        );
+      } else if (permState === 'insecure-origin') {
+        permRow.appendChild(
+          node('span', 'geo-perm-status is-err', '⚠ HTTPS requis pour la géolocalisation')
+        );
+      } else if (permState === 'denied') {
+        permRow.appendChild(
+          node('span', 'geo-perm-status is-err', '⚠ Refusé dans le navigateur (icône 🔒 → Position → Autoriser)')
+        );
+      } else {
+        permRow.appendChild(
+          node('span', 'geo-perm-status is-warn', 'Autorisation navigateur requise')
+        );
+      }
+
+      if (permState !== 'granted' && permState !== 'unsupported') {
+        const askBtn = button('Autoriser le GPS', 'small secondary', 'geo-request-permission');
+        askBtn.onclick = () => requestGeoPermissionNow();
+        permRow.appendChild(askBtn);
+      }
+
+      wrap.appendChild(permRow);
+    }
+
     return wrap;
   }
 
@@ -1354,8 +1567,9 @@ export function createUI({
     const captureStatus = geoCaptureState.startTs === t.startTs ? geoCaptureState.status : 'idle';
     const geoStatusEl = node('span', 'timer-geo-status', formatTimerGeoStatusText(t, captureStatus));
     geoStatusEl.dataset.timerGeoStatus = 'true';
+    const hasStartLoc = Boolean(t.startLocation || t.location);
     const geoActionBtn = button(
-      t.location ? 'Actualiser GPS' : 'Localiser maintenant',
+      hasStartLoc ? 'Actualiser GPS' : 'Localiser maintenant',
       'small secondary',
       'timer-geo-capture'
     );
@@ -1663,45 +1877,80 @@ export function createUI({
     const targetEditingId = old?.id || null;
     if (manualLocationEditingId !== targetEditingId) {
       manualLocationEditingId = targetEditingId;
-      manualLocationOverride = undefined;
+      manualStartLocationOverride = undefined;
+      manualEndLocationOverride = undefined;
     }
-    const activeManualLoc = manualLocationOverride !== undefined
-      ? manualLocationOverride
-      : (old?.location || null);
+    const oldGeo = resolveEntryGeoLocations(old);
+    const activeManualStartLoc = manualStartLocationOverride !== undefined
+      ? manualStartLocationOverride
+      : oldGeo.startLocation;
+    const activeManualEndLoc = manualEndLocationOverride !== undefined
+      ? manualEndLocationOverride
+      : oldGeo.endLocation;
 
-    const manualGeoRow = node('div', 'manual-geo-row');
-    manualGeoRow.appendChild(
-      node(
-        'span',
-        'manual-geo-label',
-        activeManualLoc ? `📍 GPS : ${formatCoordinates(activeManualLoc, 4)}` : '📍 Aucune position GPS'
-      )
-    );
-    const captureManualBtn = button(
-      activeManualLoc ? 'Actualiser GPS' : 'Ajouter position GPS',
-      'small secondary',
-      'entry-geo-capture'
-    );
-    captureManualBtn.onclick = async () => {
-      const res = await captureCurrentLocation({ geolocation });
-      if (res.ok && res.location) {
-        manualLocationOverride = res.location;
-        errorManager.notifySuccess('Position GPS ajoutée à la session.');
-        rerender();
-      } else {
-        errorManager.handleError(new Error('Impossible d’obtenir la position GPS.'), 'geo');
-      }
-    };
-    manualGeoRow.appendChild(captureManualBtn);
-    if (activeManualLoc) {
-      const clearLocBtn = button('Retirer', 'small danger', 'entry-geo-clear');
-      clearLocBtn.onclick = () => {
-        manualLocationOverride = null;
-        rerender();
+    const buildManualGeoControl = ({
+      labelPrefix,
+      loc,
+      captureTarget,
+      clearTarget,
+      onCaptured,
+      onCleared,
+    }) => {
+      const geoRow = node('div', 'manual-geo-row');
+      geoRow.appendChild(
+        node(
+          'span',
+          'manual-geo-label',
+          loc ? `📍 ${labelPrefix} : ${formatCoordinates(loc, 4)}` : `📍 ${labelPrefix} : aucune`
+        )
+      );
+      const captureBtn = button(
+        loc ? 'Actualiser' : 'Ajouter GPS',
+        'small secondary',
+        captureTarget
+      );
+      captureBtn.onclick = async () => {
+        const res = await captureCurrentLocation({ geolocation });
+        if (res.ok && res.location) {
+          onCaptured(res.location);
+          errorManager.notifySuccess(`${labelPrefix} enregistrée.`);
+          rerender();
+        } else {
+          notifyGeoUnavailable(res.reason, labelPrefix.toLowerCase());
+        }
       };
-      manualGeoRow.appendChild(clearLocBtn);
-    }
-    manualFieldsWrap.appendChild(manualGeoRow);
+      geoRow.appendChild(captureBtn);
+      if (loc) {
+        const clearBtn = button('Retirer', 'small danger', clearTarget);
+        clearBtn.onclick = () => {
+          onCleared();
+          rerender();
+        };
+        geoRow.appendChild(clearBtn);
+      }
+      return geoRow;
+    };
+
+    manualFieldsWrap.appendChild(
+      buildManualGeoControl({
+        labelPrefix: 'Position départ',
+        loc: activeManualStartLoc,
+        captureTarget: 'entry-geo-capture',
+        clearTarget: 'entry-geo-clear',
+        onCaptured: (loc) => { manualStartLocationOverride = loc; },
+        onCleared: () => { manualStartLocationOverride = null; },
+      })
+    );
+    manualFieldsWrap.appendChild(
+      buildManualGeoControl({
+        labelPrefix: 'Position arrêt',
+        loc: activeManualEndLoc,
+        captureTarget: 'entry-geo-end-capture',
+        clearTarget: 'entry-geo-end-clear',
+        onCaptured: (loc) => { manualEndLocationOverride = loc; },
+        onCleared: () => { manualEndLocationOverride = null; },
+      })
+    );
 
     form.appendChild(manualFieldsWrap);
 
@@ -1729,7 +1978,8 @@ export function createUI({
       const cancel = button('Annuler', 'secondary', 'entry-cancel');
       cancel.onclick = () => {
         state.editingEntryId = null;
-        manualLocationOverride = undefined;
+        manualStartLocationOverride = undefined;
+        manualEndLocationOverride = undefined;
         rerender();
       };
       form.appendChild(cancel);
@@ -1737,9 +1987,12 @@ export function createUI({
 
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const resolvedLocation = manualLocationOverride !== undefined
-        ? manualLocationOverride
-        : (old?.location || null);
+      const resolvedStartLoc = manualStartLocationOverride !== undefined
+        ? manualStartLocationOverride
+        : oldGeo.startLocation;
+      const resolvedEndLoc = manualEndLocationOverride !== undefined
+        ? manualEndLocationOverride
+        : oldGeo.endLocation;
       const value = createTimeEntry({
         id: old?.id || crypto.randomUUID(),
         activity: activity.input.value,
@@ -1748,7 +2001,8 @@ export function createUI({
         start: start.input.value,
         end: end.input.value,
         viaTimer: old ? old.viaTimer : false,
-        location: resolvedLocation,
+        startLocation: resolvedStartLoc,
+        endLocation: resolvedEndLoc,
       });
 
       if (!value.activity || value.mins <= 0) {
@@ -1759,7 +2013,8 @@ export function createUI({
 
       state.entries = old ? state.entries.map(x => x.id === old.id ? value : x) : [value, ...state.entries];
       state.editingEntryId = null;
-      manualLocationOverride = undefined;
+      manualStartLocationOverride = undefined;
+      manualEndLocationOverride = undefined;
       state.error = null;
       await persist();
       trackEvent(
@@ -1768,13 +2023,13 @@ export function createUI({
           ? timeEntryUpdatedPayload({
               durationMinutes: value.mins,
               hasCategory: Boolean(value.categoryId),
-              hasLocation: Boolean(value.location),
+              hasLocation: Boolean(value.startLocation || value.endLocation),
             })
           : timeEntryCreatedPayload({
               durationMinutes: value.mins,
               hasCategory: Boolean(value.categoryId),
               viaTimer: Boolean(value.viaTimer),
-              hasLocation: Boolean(value.location),
+              hasLocation: Boolean(value.startLocation || value.endLocation),
             })
       );
       getBehaviorTracking()?.tracker.trackFormResult('entry-form', 'success', { object: 'time_entry' });
@@ -1929,12 +2184,15 @@ export function createUI({
 
       const meta = node('div', 'entry-meta');
       meta.appendChild(document.createTextNode(`${e.date} · ${e.start}–${e.end} · ${formatDuration(e.mins)}`));
-      if (e.location) {
+      if (hasEntryGeoLocations(e)) {
+        const { startLocation, endLocation } = resolveEntryGeoLocations(e);
+        const displayLoc = startLocation || endLocation;
         const mapJumpBtn = document.createElement('button');
         mapJumpBtn.type = 'button';
         mapJumpBtn.className = 'entry-geo-link';
         mapJumpBtn.dataset.behaviorTarget = 'entry-open-map';
-        mapJumpBtn.textContent = `📍 ${formatCoordinates(e.location, 3)}`;
+        const suffix = startLocation && endLocation ? ' (D→A)' : (endLocation ? ' (Arrêt)' : '');
+        mapJumpBtn.textContent = `📍 ${formatCoordinates(displayLoc, 3)}${suffix}`;
         mapJumpBtn.title = 'Voir cette session sur la carte';
         mapJumpBtn.onclick = () => {
           const mapModel = buildActivityMapModel({
@@ -1942,17 +2200,31 @@ export function createUI({
             categories: state.categories,
             period: state.period,
             categoryFilter: 'all',
+            pointTypeFilter: 'all',
           });
           const matchedCluster = mapModel.clusters.find(cl => cl.entries.some(item => item.id === e.id));
           if (!matchedCluster) {
             state.period = 'all';
           }
           mapCategoryFilter = 'all';
+          mapPointTypeFilter = 'all';
           mapFocusClusterId = matchedCluster?.id || null;
           routeManager.navigate('dashboard');
           rerender();
         };
         meta.appendChild(mapJumpBtn);
+
+        const extUrl = buildGoogleMapsUrl(startLocation, endLocation);
+        if (extUrl) {
+          const extAnchor = document.createElement('a');
+          extAnchor.href = extUrl;
+          extAnchor.target = '_blank';
+          extAnchor.rel = 'noopener noreferrer';
+          extAnchor.className = 'entry-geo-ext-link';
+          extAnchor.textContent = 'Maps ↗';
+          extAnchor.title = 'Ouvrir dans Google Maps';
+          meta.appendChild(extAnchor);
+        }
       }
       info.appendChild(meta);
 
@@ -2024,18 +2296,25 @@ export function createUI({
     );
     f.appendChild(kpiGrid);
 
-    // Interactive Activity Map filtered by active period & category
+    // Interactive Activity Map filtered by active period, category, and point type
     const { card: mapCard } = renderActivityMapCard({
       entries: state.entries,
       categories: state.categories,
       period: state.period,
       categoryFilter: mapCategoryFilter,
+      pointTypeFilter: mapPointTypeFilter,
       showRoutePath: mapShowRoutePath,
       geoTrackingEnabled: state.geoTrackingEnabled,
+      mapsQuotaExceeded,
       focusClusterId: mapFocusClusterId,
       onToggleGeoTracking: handleToggleGeoTracking,
       onChangeCategoryFilter: (nextFilter) => {
         mapCategoryFilter = nextFilter || 'all';
+        mapFocusClusterId = null;
+        rerender();
+      },
+      onChangePointTypeFilter: (nextPointType) => {
+        mapPointTypeFilter = nextPointType || 'all';
         mapFocusClusterId = null;
         rerender();
       },
@@ -2652,7 +2931,16 @@ export function createUI({
     clear.onclick = clearData;
 
     row.append(exp, imp, clear);
+
+    const hasGeoData = state.entries.some(hasEntryGeoLocations) || Boolean(state.activeTimer?.startLocation || state.activeTimer?.location);
+    if (hasGeoData) {
+      const clearGeo = button('Effacer les positions GPS', 'secondary', 'data-clear-geo');
+      clearGeo.onclick = handleClearAllGeoLocations;
+      row.appendChild(clearGeo);
+    }
+
     c.appendChild(row);
+    c.appendChild(renderGeoOptInControl());
     return c;
   }
 
@@ -3618,7 +3906,8 @@ export function createUI({
       state.timerUpdatedAt = Date.now();
       state.quickTilesConfig = createDefaultQuickTilesConfig();
       state.geoTrackingEnabled = false;
-      manualLocationOverride = undefined;
+      manualStartLocationOverride = undefined;
+      manualEndLocationOverride = undefined;
       manualLocationEditingId = null;
       mapFocusClusterId = null;
       state.authUser = null;
@@ -3653,11 +3942,11 @@ export function createUI({
       date: date || today(),
     });
     state.timerUpdatedAt = nowTs;
-    await persist();
-    pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
     if (state.geoTrackingEnabled) {
       captureTimerLocationAsync(nowTs);
     }
+    await persist();
+    pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
     trackEvent('timer_started', timerStartedPayload({
       hasCategory: Boolean(categoryId),
       hasLocation: Boolean(state.geoTrackingEnabled),
@@ -3669,7 +3958,6 @@ export function createUI({
   async function stopTimer() {
     const t = state.activeTimer;
     if (!t) return;
-    await settlePendingTimerLocation(t.startTs);
     const nowTs = Date.now();
     const recorded = recordRunningTimerIntoEntries(nowTs, nowTime());
     state.activeTimer = null;
@@ -3688,6 +3976,9 @@ export function createUI({
       }
     }
 
+    if (state.geoTrackingEnabled && recorded?.entry?.id) {
+      captureEntryEndLocationAsync(recorded.entry.id);
+    }
     await persist();
     pushActiveTimerToNative(null, nowTs).catch(() => {});
     if (nextPausedStepName) {
@@ -3739,6 +4030,7 @@ export function createUI({
         categories: state.categories,
         period: state.period,
         categoryFilter: mapCategoryFilter,
+        pointTypeFilter: mapPointTypeFilter,
       });
       mountMapFn({
         container: mapCanvas,
@@ -3854,11 +4146,13 @@ export function createUI({
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       reconcileFromNative().catch(() => {});
       refreshNativeCapabilitiesOnResume();
+      if (state.geoTrackingEnabled) refreshGeoPermissionStateAsync();
     }
   };
   const handleFocusReconcile = () => {
     reconcileFromNative().catch(() => {});
     refreshNativeCapabilitiesOnResume();
+    if (state.geoTrackingEnabled) refreshGeoPermissionStateAsync();
   };
 
   const handleMapsQuotaExceeded = () => {
@@ -3879,6 +4173,7 @@ export function createUI({
 
   // Initialize native Quick Settings bridge & reconcile any background/lockscreen tile events
   Promise.resolve().then(async () => {
+    refreshGeoPermissionStateAsync();
     const caps = await quickTilesBridge.getCapabilities();
     if (destroyed) return;
     quickTilesCapabilities = caps;

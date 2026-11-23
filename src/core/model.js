@@ -23,6 +23,8 @@ export function isValidEntry(entry) {
     (entry.categoryId === null || typeof entry.categoryId === 'string') && typeof entry.date === 'string' &&
     typeof entry.start === 'string' && typeof entry.end === 'string' && Number.isFinite(entry.mins) &&
     (entry.viaTimer === undefined || typeof entry.viaTimer === 'boolean') &&
+    (entry.startLocation === undefined || entry.startLocation === null || isValidCoordinates(entry.startLocation)) &&
+    (entry.endLocation === undefined || entry.endLocation === null || isValidCoordinates(entry.endLocation)) &&
     (entry.location === undefined || entry.location === null || isValidCoordinates(entry.location)));
 }
 
@@ -31,15 +33,17 @@ export function normalizeEntries(value, categories = [], legacySubCategories = [
   return migrateEntriesToCategoryId(value, categories, legacySubCategories)
     .filter(isValidEntry)
     .map(entry => {
-      const normalizedLocation = normalizeLocation(entry.location);
-      const { location: _rawLocation, ...rest } = entry;
+      const normalizedStart = normalizeLocation(entry.startLocation ?? entry.location);
+      const normalizedEnd = normalizeLocation(entry.endLocation);
+      const { location: _rawLocation, startLocation: _rawStart, endLocation: _rawEnd, ...rest } = entry;
       return {
         ...rest,
         activity: entry.activity.trim(),
         categoryId: entry.categoryId ?? null,
         mins: Math.max(0, Number(entry.mins)),
         ...(typeof entry.viaTimer === 'boolean' ? { viaTimer: entry.viaTimer } : {}),
-        ...(normalizedLocation ? { location: normalizedLocation } : {}),
+        ...(normalizedStart ? { startLocation: normalizedStart } : {}),
+        ...(normalizedEnd ? { endLocation: normalizedEnd } : {}),
       };
     });
 }

@@ -4,6 +4,8 @@ import { isValidCoordinates, normalizeLocation } from './geo/geo-location.js';
 /**
  * Canonical TimeEntry domain factory.
  * Categories are identified exclusively by categoryId, regardless of depth.
+ * Supports optional `startLocation` and `endLocation` (and migrates legacy `location`
+ * to `startLocation` when `startLocation` is absent).
  */
 export function createTimeEntry({
   id,
@@ -15,10 +17,13 @@ export function createTimeEntry({
   endDate,
   mins,
   viaTimer,
+  startLocation,
+  endLocation,
   location,
 } = {}) {
   const duration = Number.isFinite(mins) ? Math.max(0, mins) : durationBetween(start, end);
-  const normalizedLocation = normalizeLocation(location);
+  const resolvedStartLoc = normalizeLocation(startLocation ?? location);
+  const resolvedEndLoc = normalizeLocation(endLocation);
 
   return {
     id,
@@ -30,12 +35,17 @@ export function createTimeEntry({
     ...(endDate ? { endDate } : {}),
     mins: duration,
     ...(typeof viaTimer === 'boolean' ? { viaTimer } : {}),
-    ...(normalizedLocation ? { location: normalizedLocation } : {}),
+    ...(resolvedStartLoc ? { startLocation: resolvedStartLoc } : {}),
+    ...(resolvedEndLoc ? { endLocation: resolvedEndLoc } : {}),
   };
 }
 
 export function updateTimeEntry(entry, changes = {}) {
-  return createTimeEntry({ ...entry, ...changes });
+  const merged = { ...entry, ...changes };
+  if ('startLocation' in changes && !changes.startLocation) {
+    delete merged.location;
+  }
+  return createTimeEntry(merged);
 }
 
 export function isTimeEntry(value) {
@@ -49,6 +59,8 @@ export function isTimeEntry(value) {
     Number.isFinite(value.mins) &&
     (value.categoryId === null || typeof value.categoryId === 'string') &&
     (value.viaTimer === undefined || typeof value.viaTimer === 'boolean') &&
+    (value.startLocation === undefined || value.startLocation === null || isValidCoordinates(value.startLocation)) &&
+    (value.endLocation === undefined || value.endLocation === null || isValidCoordinates(value.endLocation)) &&
     (value.location === undefined || value.location === null || isValidCoordinates(value.location)),
   );
 }

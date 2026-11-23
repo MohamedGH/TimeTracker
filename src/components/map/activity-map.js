@@ -1,7 +1,8 @@
 /**
  * Activity Map Component — Interactive Google Map displaying geolocated TimeTracker
- * sessions filtered by period and category, with clustering, chronological route lines,
- * and reusable InfoWindow popups.
+ * start/stop positions filtered by period, category, and point type (`start` / `end`),
+ * with spatial clustering, chronological route lines, reusable InfoWindow popups,
+ * and standard Google Maps URL fallbacks when API key is missing or invalid.
  */
 
 import {
@@ -16,7 +17,7 @@ import {
   getGoogleMapsMapId,
   loadGoogleMapsLibraries,
 } from '../../core/geo/maps-loader.js';
-import { filterEntriesByPeriod, formatDuration } from '../../core/statistics.js';
+import { filterEntriesByPeriod } from '../../core/statistics.js';
 import { getContrastYIQ } from '../../core/category-palette.js';
 
 let activeMapController = null;
@@ -27,6 +28,12 @@ const PERIOD_LABELS = {
   '30': '30 jours',
   month: 'Ce mois',
   all: 'Tout',
+};
+
+const POINT_TYPE_LABELS = {
+  all: 'Toutes positions',
+  start: 'Démarrages',
+  end: 'Arrêts',
 };
 
 function el(tag, className, text) {
@@ -41,7 +48,8 @@ function buildInfoWindowNodes(cluster) {
   const dot = el('span', 'map-infowindow-dot');
   dot.style.backgroundColor = cluster.color;
   const title = el('strong', 'map-infowindow-title', cluster.primaryActivity);
-  header.append(dot, title);
+  const roleBadge = el('span', `map-infowindow-role is-${cluster.markerRole}`, cluster.roleLabel);
+  header.append(dot, title, roleBadge);
 
   const body = el('div', 'map-infowindow-body');
   const summary = el(
@@ -61,19 +69,30 @@ function buildInfoWindowNodes(cluster) {
   }
   body.appendChild(actList);
 
-  const recentLabel = el('div', 'map-infowindow-recent-title', 'Dernières sessions');
+  const recentLabel = el('div', 'map-infowindow-recent-title', 'Détails des sessions');
   body.appendChild(recentLabel);
 
   const recentList = el('ul', 'map-infowindow-sessions');
-  for (const entry of cluster.entries.slice(0, 4)) {
+  for (const pt of cluster.points.slice(0, 5)) {
     const li = el('li', 'map-infowindow-session-item');
-    li.textContent = `${entry.date} · ${entry.start}–${entry.end} · ${entry.activity} (${formatDuration(entry.mins)})`;
+    const accLabel = Number.isFinite(pt.accuracy) ? ` · ±${pt.accuracy} m` : '';
+    li.textContent = `[${pt.kindLabel}] ${pt.date} · ${pt.start}–${pt.end} · ${pt.activity} (${pt.formattedDuration}${accLabel})`;
     recentList.appendChild(li);
   }
   body.appendChild(recentList);
 
-  const coordsNote = el('div', 'map-infowindow-coords', `GPS : ${cluster.coordinatesLabel}`);
-  body.appendChild(coordsNote);
+  const footer = el('div', 'map-infowindow-footer');
+  footer.appendChild(el('span', 'map-infowindow-coords', `GPS : ${cluster.coordinatesLabel}`));
+  if (cluster.googleMapsUrl) {
+    const extLink = document.createElement('a');
+    extLink.href = cluster.googleMapsUrl;
+    extLink.target = '_blank';
+    extLink.rel = 'noopener noreferrer';
+    extLink.className = 'map-infowindow-ext-link';
+    extLink.textContent = 'Ouvrir dans Google Maps ↗';
+    footer.appendChild(extLink);
+  }
+  body.appendChild(footer);
 
   return { header, body };
 }
@@ -82,6 +101,34 @@ function formatDistanceLabel(meters) {
   if (!Number.isFinite(meters) || meters <= 0) return '';
   if (meters < 1000) return `${meters} m`;
   return `${(meters / 1000).toFixed(1)} km`;
+}
+
+function resolvePinStyle(cluster) {
+  if (cluster.markerRole === 'end') {
+    return {
+      background: '#232821',
+      borderColor: cluster.color,
+      glyphText: cluster.glyphText,
+      glyphColor: '#F5F0E4',
+      scale: cluster.pointCount > 1 ? 1.15 : 1,
+    };
+  }
+  if (cluster.markerRole === 'both') {
+    return {
+      background: cluster.color,
+      borderColor: '#B3833C',
+      glyphText: cluster.glyphText,
+      glyphColor: getContrastYIQ(cluster.color),
+      scale: 1.18,
+    };
+  }
+  return {
+    background: cluster.color,
+    borderColor: '#1E241E',
+    glyphText: cluster.glyphText,
+    glyphColor: getContrastYIQ(cluster.color),
+    scale: cluster.pointCount > 1 ? 1.15 : 1,
+  };
 }
 
 /**
@@ -106,14 +153,18 @@ export function buildActivityMapModel({
   categories = [],
   period = '7',
   categoryFilter = 'all',
+  pointTypeFilter = 'all',
   refDate,
 } = {}) {
   const periodEntries = filterEntriesByPeriod(entries, period, refDate);
   const geolocatedEntries = filterGeolocatedEntries(entries, period, refDate, {
     categoryId: categoryFilter,
     categories,
+    pointType: pointTypeFilter,
   });
-  const clusters = clusterOrGroupLocations(geolocatedEntries, categories);
+  const clusters = clusterOrGroupLocations(geolocatedEntries, categories, {
+    pointType: pointTypeFilter,
+  });
   const route = buildGeoRoutePath(geolocatedEntries);
   const stats = computeGeoStats({
     allEntries: entries,
@@ -126,6 +177,7 @@ export function buildActivityMapModel({
     period,
     periodLabel: PERIOD_LABELS[period] || String(period),
     categoryFilter,
+    pointTypeFilter,
     periodEntries,
     geolocatedEntries,
     clusters,
@@ -142,11 +194,14 @@ export function renderActivityMapCard({
   categories = [],
   period = '7',
   categoryFilter = 'all',
+  pointTypeFilter = 'all',
   showRoutePath = true,
   geoTrackingEnabled = false,
+  mapsQuotaExceeded = false,
   focusClusterId = null,
   onToggleGeoTracking = () => {},
   onChangeCategoryFilter = () => {},
+  onChangePointTypeFilter = () => {},
   onToggleRoutePath = () => {},
   onSelectPeriodAll = () => {},
 } = {}) {
@@ -155,9 +210,11 @@ export function renderActivityMapCard({
     categories,
     period,
     categoryFilter,
+    pointTypeFilter,
   });
 
   const apiKey = getGoogleMapsApiKey();
+  const canRenderInteractiveMap = Boolean(apiKey && !mapsQuotaExceeded);
   const card = el('section', 'card activity-map-card');
   card.dataset.activityMapCard = 'true';
   card.dataset.period = String(period);
@@ -170,7 +227,7 @@ export function renderActivityMapCard({
     el(
       'span',
       'activity-map-subtitle',
-      `${model.periodLabel} · ${model.stats.placesCount} lieu${model.stats.placesCount > 1 ? 'x' : ''} · ${model.stats.geolocatedPeriodEntriesCount} session${model.stats.geolocatedPeriodEntriesCount > 1 ? 's' : ''} localisée${model.stats.geolocatedPeriodEntriesCount > 1 ? 's' : ''}`
+      `${model.periodLabel} · ${model.stats.placesCount} lieu${model.stats.placesCount > 1 ? 'x' : ''} · ${model.stats.geolocatedPeriodEntriesCount} session${model.stats.geolocatedPeriodEntriesCount > 1 ? 's' : ''} (${model.stats.startPointsCount} départ${model.stats.startPointsCount > 1 ? 's' : ''}, ${model.stats.endPointsCount} arrêt${model.stats.endPointsCount > 1 ? 's' : ''})`
     )
   );
 
@@ -179,13 +236,16 @@ export function renderActivityMapCard({
   geoSwitchBtn.className = `btn small geo-consent-pill-btn ${geoTrackingEnabled ? 'is-enabled' : ''}`.trim();
   geoSwitchBtn.dataset.behaviorTarget = 'map-geo-toggle';
   geoSwitchBtn.setAttribute('aria-pressed', String(Boolean(geoTrackingEnabled)));
-  geoSwitchBtn.textContent = geoTrackingEnabled ? '📍 GPS chronos : Actif' : '📍 GPS chronos : Inactif';
+  geoSwitchBtn.textContent = geoTrackingEnabled
+    ? '📍 Position auto : Active'
+    : '📍 Position auto : Inactive';
+  geoSwitchBtn.title = 'Enregistrer automatiquement la position de mes activités';
   geoSwitchBtn.onclick = () => onToggleGeoTracking(!geoTrackingEnabled);
 
   head.append(titleGroup, geoSwitchBtn);
   card.appendChild(head);
 
-  // Controls row
+  // Controls row: category filter + point type filter (All / Start / End) + route/recenter
   const controls = el('div', 'activity-map-controls');
 
   const catWrap = el('div', 'activity-map-filter-wrap');
@@ -221,6 +281,22 @@ export function renderActivityMapCard({
   controls.appendChild(catWrap);
 
   const toggleGroup = el('div', 'activity-map-toggle-group');
+
+  // Point role filter chips
+  const roleFilterGroup = el('div', 'activity-map-role-filters');
+  roleFilterGroup.setAttribute('role', 'group');
+  roleFilterGroup.setAttribute('aria-label', 'Filtrer par type de position');
+  for (const key of ['all', 'start', 'end']) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `btn small ${pointTypeFilter === key ? 'active' : 'secondary'}`.trim();
+    btn.dataset.behaviorTarget = `map-point-filter-${key}`;
+    btn.textContent = POINT_TYPE_LABELS[key];
+    btn.onclick = () => onChangePointTypeFilter(key);
+    roleFilterGroup.appendChild(btn);
+  }
+  toggleGroup.appendChild(roleFilterGroup);
+
   if (model.route.stopsCount >= 2) {
     const routeBtn = document.createElement('button');
     routeBtn.type = 'button';
@@ -235,7 +311,7 @@ export function renderActivityMapCard({
     toggleGroup.appendChild(routeBtn);
   }
 
-  if (model.clusters.length > 0 && apiKey) {
+  if (model.clusters.length > 0 && canRenderInteractiveMap) {
     const recenterBtn = document.createElement('button');
     recenterBtn.type = 'button';
     recenterBtn.className = 'btn small secondary';
@@ -248,6 +324,17 @@ export function renderActivityMapCard({
   controls.appendChild(toggleGroup);
   card.appendChild(controls);
 
+  // Legend when geolocated points exist
+  if (model.clusters.length > 0) {
+    const legend = el('div', 'activity-map-legend');
+    legend.append(
+      el('span', 'activity-map-legend-item is-start', '▶ Position de démarrage'),
+      el('span', 'activity-map-legend-item is-end', '■ Position d’arrêt'),
+      el('span', 'activity-map-legend-item is-both', '● Lieux regroupés')
+    );
+    card.appendChild(legend);
+  }
+
   // Empty state or Google Map Canvas
   if (!model.clusters.length) {
     const emptyBox = el('div', 'activity-map-empty');
@@ -255,7 +342,7 @@ export function renderActivityMapCard({
     const hasHistoryElsewhere = model.stats.totalAllGeolocatedCount > 0 && period !== 'all';
     const msg = hasHistoryElsewhere
       ? `Aucune session géolocalisée sur la période « ${model.periodLabel} » (${model.stats.totalAllGeolocatedCount} sur l’historique complet).`
-      : 'Aucune activité géolocalisée pour cette période. Activez le GPS sur vos chronomètres pour situer vos sessions sur la carte.';
+      : 'Aucune activité géolocalisée pour cette période. Activez « Enregistrer automatiquement la position de mes activités » pour situer vos sessions.';
     emptyBox.appendChild(el('p', 'muted', msg));
 
     const emptyActions = el('div', 'activity-map-empty-actions');
@@ -264,7 +351,7 @@ export function renderActivityMapCard({
       enableBtn.type = 'button';
       enableBtn.className = 'btn small primary';
       enableBtn.dataset.behaviorTarget = 'map-enable-geo-cta';
-      enableBtn.textContent = '📍 Activer la géolocalisation des chronos';
+      enableBtn.textContent = '📍 Activer l’enregistrement de position';
       enableBtn.onclick = () => onToggleGeoTracking(true);
       emptyActions.appendChild(enableBtn);
     }
@@ -282,11 +369,13 @@ export function renderActivityMapCard({
     }
     card.appendChild(emptyBox);
   } else {
-    if (!apiKey) {
+    if (!canRenderInteractiveMap) {
       const configNotice = el(
         'div',
         'activity-map-config-note',
-        'Carte Google Maps non chargée : renseignez VITE_GOOGLE_MAPS_API_KEY dans votre environnement. Vos lieux enregistrés restent listés ci-dessous.'
+        !apiKey
+          ? 'Carte interactive Google Maps non configurée (clé VITE_GOOGLE_MAPS_API_KEY absente). Vous pouvez consulter chaque position directement via les liens « Ouvrir dans Google Maps » ci-dessous.'
+          : 'Carte interactive Google Maps temporairement indisponible (clé invalide ou quota atteint). Utilisez les liens « Ouvrir dans Google Maps » ci-dessous pour visualiser vos lieux.'
       );
       configNotice.dataset.activityMapMissingKey = 'true';
       card.appendChild(configNotice);
@@ -305,7 +394,7 @@ export function renderActivityMapCard({
       card.appendChild(mapStage);
     }
 
-    // Interactive places summary list
+    // Interactive places summary list (always available, includes standard Google Maps external link)
     const placesHeading = el(
       'h3',
       'chart-title activity-map-places-title',
@@ -315,17 +404,19 @@ export function renderActivityMapCard({
 
     const placesList = el('div', 'activity-map-places-list');
     for (const cluster of model.clusters) {
-      const itemBtn = document.createElement('button');
-      itemBtn.type = 'button';
-      itemBtn.className = `activity-map-place-card ${focusClusterId === cluster.id ? 'is-focused' : ''}`.trim();
-      itemBtn.dataset.geoClusterId = cluster.id;
-      itemBtn.dataset.behaviorTarget = 'map-place-focus';
+      const itemWrap = el('div', `activity-map-place-card ${focusClusterId === cluster.id ? 'is-focused' : ''}`.trim());
+      itemWrap.dataset.geoClusterId = cluster.id;
+
+      const focusBtn = document.createElement('button');
+      focusBtn.type = 'button';
+      focusBtn.className = 'activity-map-place-focus-btn';
+      focusBtn.dataset.behaviorTarget = 'map-place-focus';
 
       const left = el('div', 'activity-map-place-left');
       const dot = el('span', 'activity-map-place-dot');
       dot.style.backgroundColor = cluster.color;
       const textWrap = el('div', 'activity-map-place-text');
-      const primary = el('strong', 'activity-map-place-name', cluster.primaryActivity);
+      const primary = el('strong', 'activity-map-place-name', `${cluster.primaryActivity} · ${cluster.roleLabel}`);
       const sub = el(
         'span',
         'activity-map-place-meta',
@@ -340,14 +431,28 @@ export function renderActivityMapCard({
         el('span', 'activity-map-place-date', cluster.latestDate)
       );
 
-      itemBtn.append(left, right);
-      itemBtn.onclick = () => {
+      focusBtn.append(left, right);
+      focusBtn.onclick = () => {
         activeMapController?.focusCluster?.(cluster.id);
         placesList.querySelectorAll('.activity-map-place-card').forEach(node => {
           node.classList.toggle('is-focused', node.dataset.geoClusterId === cluster.id);
         });
       };
-      placesList.appendChild(itemBtn);
+      itemWrap.appendChild(focusBtn);
+
+      if (cluster.googleMapsUrl) {
+        const extLink = document.createElement('a');
+        extLink.href = cluster.googleMapsUrl;
+        extLink.target = '_blank';
+        extLink.rel = 'noopener noreferrer';
+        extLink.className = 'activity-map-external-link';
+        extLink.dataset.behaviorTarget = 'map-external-link';
+        extLink.textContent = 'Google Maps ↗';
+        extLink.title = `Ouvrir ${cluster.coordinatesLabel} dans Google Maps`;
+        itemWrap.appendChild(extLink);
+      }
+
+      placesList.appendChild(itemWrap);
     }
     card.appendChild(placesList);
   }
@@ -356,7 +461,7 @@ export function renderActivityMapCard({
   const footerNote = el(
     'p',
     'activity-map-privacy-note',
-    'Vos coordonnées GPS restent locales sur cet appareil (capture révocable à tout moment). Cartographie fournie via Google Maps.'
+    'Vos coordonnées GPS restent locales sur cet appareil (option révocable et effaçable à tout moment, aucun envoi vers Google Analytics). Cartographie via Google Maps.'
   );
   card.appendChild(footerNote);
 
@@ -392,7 +497,7 @@ export async function mountActivityMap({
     focusCluster(clusterId) {
       const target = markerEntries.get(clusterId);
       if (!target || !map) return;
-      map.panTo({ lat: target.cluster.lat, lng: target.cluster.lng });
+      map.panTo({ lat: target.cluster.latitude, lng: target.cluster.longitude });
       if ((map.getZoom() ?? 0) < 15) {
         map.setZoom(15);
       }
@@ -406,7 +511,7 @@ export async function mountActivityMap({
     fitAllBounds() {
       if (!map) return;
       if (clusters.length === 1) {
-        map.panTo({ lat: clusters[0].lat, lng: clusters[0].lng });
+        map.panTo({ lat: clusters[0].latitude, lng: clusters[0].longitude });
         map.setZoom(15);
         return;
       }
@@ -444,7 +549,7 @@ export async function mountActivityMap({
     const { AdvancedMarkerElement, PinElement } = markerLib;
     const LatLngBoundsCtor = coreLib?.LatLngBounds || mapsLib?.LatLngBounds || window.google?.maps?.LatLngBounds;
 
-    const initialCenter = { lat: clusters[0].lat, lng: clusters[0].lng };
+    const initialCenter = { lat: clusters[0].latitude, lng: clusters[0].longitude };
 
     map = new GoogleMap(container, {
       center: initialCenter,
@@ -458,7 +563,7 @@ export async function mountActivityMap({
     });
 
     infoWindow = new InfoWindow({
-      maxWidth: 320,
+      maxWidth: 330,
       ariaLabel: 'Détails des activités à cet emplacement',
     });
 
@@ -467,21 +572,15 @@ export async function mountActivityMap({
     }
 
     for (const cluster of clusters) {
-      const position = { lat: cluster.lat, lng: cluster.lng };
+      const position = { lat: cluster.latitude, lng: cluster.longitude };
       boundsInstance?.extend?.(position);
 
-      const pin = new PinElement({
-        background: cluster.color,
-        borderColor: '#1E241E',
-        glyphText: cluster.glyphText,
-        glyphColor: getContrastYIQ(cluster.color),
-        scale: cluster.sessionCount > 1 ? 1.15 : 1,
-      });
+      const pin = new PinElement(resolvePinStyle(cluster));
 
       const marker = new AdvancedMarkerElement({
         map,
         position,
-        title: `${cluster.primaryActivity} · ${cluster.formattedTotal}`,
+        title: `${cluster.roleLabel} · ${cluster.primaryActivity} (${cluster.formattedTotal})`,
       });
       if (typeof marker.append === 'function') {
         marker.append(pin);
@@ -523,7 +622,13 @@ export async function mountActivityMap({
     return controller;
   } catch (err) {
     if (statusNode && !unmounted) {
-      statusNode.textContent = err?.message || 'Impossible de charger Google Maps.';
+      statusNode.replaceChildren();
+      const errMsg = el(
+        'div',
+        'activity-map-error-box',
+        `Impossible d’afficher la carte Google Maps (${err?.message || 'clé invalide ou erreur réseau'}). Vous pouvez ouvrir les positions dans Google Maps depuis la liste ci-dessous.`
+      );
+      statusNode.appendChild(errMsg);
       statusNode.classList.add('is-error');
     }
     return null;

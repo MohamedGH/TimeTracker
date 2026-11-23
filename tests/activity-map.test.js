@@ -12,12 +12,12 @@ function createBaseState(overrides = {}) {
   return {
     entries: [],
     activities: [
-      { id: 'act-1', label: 'Mosquée trajet', categoryId: 'transport', useCount: 2 },
+      { id: 'act-1', label: 'Développement', categoryId: 'informatique', useCount: 2 },
       { id: 'act-2', label: 'Mosquée prière', categoryId: 'autre', useCount: 2 },
     ],
     categories: [
+      { id: 'informatique', label: 'Informatique', color: '#3F7068', parentId: null, builtin: true },
       { id: 'transport', label: 'Transport', color: '#8B93A1', parentId: null, builtin: true },
-      { id: 'etude', label: 'Étude', color: '#3F7068', parentId: null, builtin: true },
       { id: 'autre', label: 'Autre', color: '#948C7E', parentId: null, builtin: true },
     ],
     activityTemplates: [],
@@ -39,7 +39,7 @@ function createBaseState(overrides = {}) {
   };
 }
 
-const flushAsync = () => new Promise(resolve => setTimeout(resolve, 0));
+const flushAsync = () => new Promise(resolve => setTimeout(resolve, 10));
 
 function mountUI(initialOverrides = {}, { geolocation = null, mountMapFn = vi.fn().mockResolvedValue(null) } = {}) {
   const root = document.createElement('div');
@@ -70,36 +70,53 @@ function mountUI(initialOverrides = {}, { geolocation = null, mountMapFn = vi.fn
   return { root, state, stateManager, persist, ui, mountMapFn };
 }
 
-describe('StateManager geolocation actions', () => {
-  it('handles SET_GEO_TRACKING and SET_ACTIVE_TIMER_LOCATION cleanly', () => {
+describe('StateManager geolocation actions (startLocation, endLocation, patch, clear)', () => {
+  it('handles SET_GEO_TRACKING, SET_ACTIVE_TIMER_LOCATION, STOP_TIMER, PATCH_ENTRY_LOCATION & CLEAR_ALL_GEO_LOCATIONS', () => {
     const base = createBaseState();
+    expect(base.geoTrackingEnabled).toBe(false);
+
     const s1 = appReducer(base, { type: ACTION_TYPES.SET_GEO_TRACKING, payload: true });
     expect(s1.geoTrackingEnabled).toBe(true);
 
     const s2 = appReducer(s1, {
       type: ACTION_TYPES.START_TIMER,
       payload: {
-        activity: 'Lecture',
-        categoryId: 'etude',
-        date: '2026-11-22',
-        startTime: '10:00',
+        activity: 'Développement',
+        categoryId: 'informatique',
+        date: '2026-11-23',
+        startTime: '09:00',
         startTs: 1000,
       },
     });
-    expect(s2.activeTimer.location).toBeUndefined();
+    expect(s2.activeTimer.startLocation).toBeUndefined();
 
-    const loc = { lat: 48.8566, lng: 2.3522, accuracy: 10, source: 'gps' };
+    const startLoc = { latitude: 50.6292, longitude: 3.0573, accuracy: 15, source: 'gps' };
+    const endLoc = { latitude: 50.63, longitude: 3.058, accuracy: 12, source: 'gps' };
+
     const s3 = appReducer(s2, {
       type: ACTION_TYPES.SET_ACTIVE_TIMER_LOCATION,
-      payload: { startTs: 1000, location: loc },
+      payload: { startTs: 1000, startLocation: startLoc },
     });
-    expect(s3.activeTimer.location).toEqual(loc);
+    expect(s3.activeTimer.startLocation).toEqual(startLoc);
 
     const s4 = appReducer(s3, {
       type: ACTION_TYPES.STOP_TIMER,
-      payload: { end: '10:30' },
+      payload: { end: '11:30', endLocation: endLoc },
     });
-    expect(s4.entries[0].location).toEqual(loc);
+    expect(s4.entries[0].startLocation).toEqual(startLoc);
+    expect(s4.entries[0].endLocation).toEqual(endLoc);
+
+    const entryId = s4.entries[0].id;
+    const s5 = appReducer(s4, {
+      type: ACTION_TYPES.PATCH_ENTRY_LOCATION,
+      payload: { entryId, endLocation: null },
+    });
+    expect(s5.entries[0].startLocation).toEqual(startLoc);
+    expect(s5.entries[0].endLocation).toBeUndefined();
+
+    const s6 = appReducer(s5, { type: ACTION_TYPES.CLEAR_ALL_GEO_LOCATIONS });
+    expect(s6.entries[0].startLocation).toBeUndefined();
+    expect(s6.entries[0].endLocation).toBeUndefined();
   });
 });
 
@@ -114,19 +131,20 @@ describe('Activity Map Component & Google Maps SDK Integration', () => {
     delete window.__TIME_TRACKER_ENV__;
   });
 
-  it('filters places by period and renders graceful missing-API-key fallback', () => {
+  it('filters places by period and pointType and renders missing-key fallback with standard Google Maps links', () => {
     const todayIso = new Date().toISOString().slice(0, 10);
     const oldDate = '2024-01-10';
     const entries = [
       {
         id: 'recent-1',
-        activity: 'Mosquée prière',
-        categoryId: 'autre',
+        activity: 'Développement',
+        categoryId: 'informatique',
         date: todayIso,
-        start: '06:15',
-        end: '06:35',
-        mins: 20,
-        location: { lat: 48.8566, lng: 2.3522, source: 'gps' },
+        start: '09:00',
+        end: '11:30',
+        mins: 150,
+        startLocation: { latitude: 50.6292, longitude: 3.0573, accuracy: 15, source: 'gps' },
+        endLocation: { latitude: 50.635, longitude: 3.068, accuracy: 12, source: 'gps' },
       },
       {
         id: 'old-1',
@@ -136,22 +154,33 @@ describe('Activity Map Component & Google Maps SDK Integration', () => {
         start: '14:00',
         end: '15:00',
         mins: 60,
-        location: { lat: 45.764, lng: 4.8357, source: 'gps' },
+        startLocation: { latitude: 45.764, longitude: 4.8357, source: 'gps' },
       },
     ];
     const categories = createBaseState().categories;
 
     const todayCard = renderActivityMapCard({ entries, categories, period: 'today' });
-    expect(todayCard.model.clusters).toHaveLength(1);
-    expect(todayCard.card.querySelectorAll('.activity-map-place-card')).toHaveLength(1);
+    expect(todayCard.model.clusters).toHaveLength(2); // start cluster + end cluster
+    expect(todayCard.card.querySelectorAll('.activity-map-place-card')).toHaveLength(2);
     expect(todayCard.card.querySelector('[data-activity-map-missing-key="true"]')).toBeTruthy();
+    const extLinks = todayCard.card.querySelectorAll('[data-behavior-target="map-external-link"]');
+    expect(extLinks.length).toBe(2);
+    expect(extLinks[0].href).toContain('https://www.google.com/maps/search/?api=1&query=');
+
+    const endOnlyCard = renderActivityMapCard({
+      entries,
+      categories,
+      period: 'today',
+      pointTypeFilter: 'end',
+    });
+    expect(endOnlyCard.model.clusters).toHaveLength(1);
+    expect(endOnlyCard.model.clusters[0].markerRole).toBe('end');
 
     const allCard = renderActivityMapCard({ entries, categories, period: 'all' });
-    expect(allCard.model.clusters).toHaveLength(2);
-    expect(allCard.card.querySelectorAll('.activity-map-place-card')).toHaveLength(2);
+    expect(allCard.model.clusters).toHaveLength(3);
   });
 
-  it('mounts Google Map with DEMO_MAP_ID, attribution ID, PinElement, AdvancedMarkerElement, InfoWindow & Polyline', async () => {
+  it('mounts Google Map lazily with distinct start vs end PinElements, AdvancedMarkerElement, InfoWindow & Polyline', async () => {
     window.__TIME_TRACKER_ENV__ = { GOOGLE_MAPS_API_KEY: 'AIzaMockKey' };
 
     const mapInstances = [];
@@ -220,23 +249,14 @@ describe('Activity Map Component & Google Maps SDK Integration', () => {
     const entries = [
       {
         id: 'e1',
-        activity: 'Mosquée trajet',
-        categoryId: 'transport',
+        activity: 'Développement',
+        categoryId: 'informatique',
         date: todayIso,
-        start: '06:00',
-        end: '06:15',
-        mins: 15,
-        location: { lat: 48.8566, lng: 2.3522, source: 'gps' },
-      },
-      {
-        id: 'e2',
-        activity: 'Mosquée doha',
-        categoryId: 'etude',
-        date: todayIso,
-        start: '06:40',
-        end: '07:10',
-        mins: 30,
-        location: { lat: 48.8666, lng: 2.3622, source: 'gps' },
+        start: '09:00',
+        end: '11:30',
+        mins: 150,
+        startLocation: { latitude: 50.6292, longitude: 3.0573, accuracy: 15, source: 'gps' },
+        endLocation: { latitude: 50.635, longitude: 3.068, accuracy: 12, source: 'gps' },
       },
     ];
 
@@ -268,25 +288,24 @@ describe('Activity Map Component & Google Maps SDK Integration', () => {
     expect(mapInstances[0].fitBounds).toHaveBeenCalledTimes(1);
 
     expect(markerInstances).toHaveLength(2);
-    expect(pinInstances[0].options.glyphText).toBeTruthy();
-    expect(markerInstances[0].append).toHaveBeenCalledTimes(1);
+    const glyphs = pinInstances.map(p => p.options.glyphText);
+    expect(glyphs).toContain('▶');
+    expect(glyphs).toContain('■');
     expect(polylineInstances).toHaveLength(1);
     expect(polylineInstances[0].options.path).toHaveLength(2);
 
-    // Click marker opens single InfoWindow safely
     markerInstances[0].listeners.click();
     expect(infoWindowInstances[0].setHeaderContent).toHaveBeenCalledTimes(1);
     expect(infoWindowInstances[0].setContent).toHaveBeenCalledTimes(1);
     expect(infoWindowInstances[0].open).toHaveBeenCalledTimes(1);
 
-    // Destroy cleans up markers & polyline
     destroyActivityMap();
     expect(markerInstances[0].map).toBeNull();
     expect(polylineInstances[0].setMap).toHaveBeenCalledWith(null);
   });
 });
 
-describe('UI Chrono Geolocation Opt-in, Capture & Dashboard Map Navigation', () => {
+describe('UI Chrono Opt-in, Non-blocking Start & Stop Capture, Deletion & Dashboard Navigation', () => {
   beforeEach(() => {
     window.localStorage.setItem('time-analytics-consent', 'false');
     window.location.hash = '#entry';
@@ -297,48 +316,68 @@ describe('UI Chrono Geolocation Opt-in, Capture & Dashboard Map Navigation', () 
     destroyActivityMap();
   });
 
-  it('requires explicit opt-in before capturing GPS on timer start and attaches location to stopped entry', async () => {
+  it('captures both startLocation and endLocation non-blockingly when opted in, and never calls map loader when off', async () => {
+    let callIdx = 0;
+    const coordsSequence = [
+      { latitude: 50.6292, longitude: 3.0573, accuracy: 15 }, // opt-in permission check
+      { latitude: 50.6292, longitude: 3.0573, accuracy: 15 }, // chrono start
+      { latitude: 50.63, longitude: 3.058, accuracy: 12 }, // chrono stop
+    ];
     const mockGeo = {
       getCurrentPosition: vi.fn((success) => {
-        success({
-          coords: { latitude: 48.8566, longitude: 2.3522, accuracy: 10 },
-        });
+        const next = coordsSequence[Math.min(callIdx, coordsSequence.length - 1)];
+        callIdx += 1;
+        success({ coords: next });
       }),
     };
+    const mountMapFn = vi.fn().mockResolvedValue(null);
 
-    const { root, state } = mountUI({}, { geolocation: mockGeo });
+    const { root, state, ui } = mountUI({}, { geolocation: mockGeo, mountMapFn });
 
-    // Opt-in toggle starts disabled
+    // Never mounts Google Maps before Dashboard map view is opened
+    expect(mountMapFn).not.toHaveBeenCalled();
+
     const geoCheckbox = root.querySelector('[data-behavior-target="timer-geo-toggle"]');
     expect(geoCheckbox).toBeTruthy();
     expect(geoCheckbox.checked).toBe(false);
+    expect(geoCheckbox.closest('.geo-consent-row').textContent).toContain(
+      'Enregistrer automatiquement la position de mes activités'
+    );
 
-    // Enable GPS capture for chronos
+    // Enable GPS tracking preference — immediately asks browser permission inside user gesture
     geoCheckbox.checked = true;
     geoCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(mockGeo.getCurrentPosition).toHaveBeenCalledTimes(1);
     await flushAsync();
     expect(state.geoTrackingEnabled).toBe(true);
+    expect(root.querySelector('.geo-perm-status')?.textContent).toContain('Permission GPS accordée');
 
-    // Start a chrono via Quick Start shortcut chip
+    // Start chrono via Quick Start shortcut chip
     const quickChip = root.querySelector('.quick-chip');
     expect(quickChip).toBeTruthy();
     quickChip.click();
     await flushAsync();
 
-    expect(mockGeo.getCurrentPosition).toHaveBeenCalledTimes(1);
+    expect(mockGeo.getCurrentPosition).toHaveBeenCalledTimes(2);
     expect(state.activeTimer).toBeTruthy();
-    expect(state.activeTimer.location).toMatchObject({ lat: 48.8566, lng: 2.3522, source: 'gps' });
+    expect(state.activeTimer.startLocation).toMatchObject({
+      latitude: 50.6292,
+      longitude: 3.0573,
+      source: 'gps',
+    });
 
-    // Stop the chrono and confirm saved entry retains coordinates
+    // Stop chrono — immediately stops without waiting, and attaches endLocation in background
     const stopBtn = root.querySelector('[data-behavior-target="timer-stop"]');
     expect(stopBtn).toBeTruthy();
     stopBtn.click();
     await flushAsync();
 
+    expect(mockGeo.getCurrentPosition).toHaveBeenCalledTimes(3);
     expect(state.entries).toHaveLength(1);
-    expect(state.entries[0].location).toMatchObject({ lat: 48.8566, lng: 2.3522, source: 'gps' });
+    expect(state.entries[0].startLocation).toMatchObject({ latitude: 50.6292, longitude: 3.0573 });
+    expect(state.entries[0].endLocation).toMatchObject({ latitude: 50.63, longitude: 3.058 });
 
-    // Clicking the entry's GPS badge navigates to Dashboard map view
+    // Open Dashboard map from entry badge
     const mapJumpBtn = root.querySelector('[data-behavior-target="entry-open-map"]');
     expect(mapJumpBtn).toBeTruthy();
     mapJumpBtn.click();
@@ -346,6 +385,65 @@ describe('UI Chrono Geolocation Opt-in, Capture & Dashboard Map Navigation', () 
 
     expect(state.tab).toBe('dashboard');
     expect(root.querySelector('[data-activity-map-card="true"]')).toBeTruthy();
+
+    // Clear all GPS locations via Data card while keeping time entries intact
+    const entryTabBtn = root.querySelector('[data-behavior-target="nav-entry"]');
+    expect(entryTabBtn).toBeTruthy();
+    entryTabBtn.click();
+    await flushAsync();
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const clearGeoBtn = root.querySelector('[data-behavior-target="data-clear-geo"]');
+    expect(clearGeoBtn).toBeTruthy();
+    clearGeoBtn.click();
+    await flushAsync();
+    confirmSpy.mockRestore();
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0].startLocation).toBeUndefined();
+    expect(state.entries[0].endLocation).toBeUndefined();
+
+    ui.destroy();
+  });
+
+  it('continues timer normally and informs user gracefully when geolocation fails, is denied, or blocked by iframe policy', async () => {
+    const deniedGeo = {
+      getCurrentPosition: vi.fn((_ok, err) => err({ code: 1 })),
+    };
+
+    const { root, state, ui } = mountUI({ geoTrackingEnabled: true }, { geolocation: deniedGeo });
+
+    const quickChip = root.querySelector('.quick-chip');
+    quickChip.click();
+    await flushAsync();
+
+    expect(state.activeTimer).toBeTruthy();
+    expect(state.activeTimer.startLocation).toBeUndefined();
+    expect(root.textContent).toContain('Permission GPS refusée');
+
+    const stopBtn = root.querySelector('[data-behavior-target="timer-stop"]');
+    stopBtn.click();
+    await flushAsync();
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0].startLocation).toBeUndefined();
+    expect(state.entries[0].endLocation).toBeUndefined();
+
+    ui.destroy();
+
+    const policyGeo = {
+      getCurrentPosition: vi.fn((_ok, err) =>
+        err({ code: 1, message: 'Geolocation has been disabled in this document by permissions policy.' })
+      ),
+    };
+    const { root: root2, ui: ui2 } = mountUI({ geoTrackingEnabled: false }, { geolocation: policyGeo });
+    const cb2 = root2.querySelector('[data-behavior-target="timer-geo-toggle"]');
+    cb2.checked = true;
+    cb2.dispatchEvent(new Event('change', { bubbles: true }));
+    await flushAsync();
+    expect(root2.querySelector('.geo-perm-status')?.textContent).toContain('aperçu iframe');
+    expect(root2.textContent).toContain('aperçu intégré (iframe)');
+    ui2.destroy();
   });
 
   it('displays Google Maps quota warning banner cleanly when gmp-quota-exceeded event fires', async () => {

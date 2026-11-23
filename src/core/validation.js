@@ -24,6 +24,8 @@ export function isTimeEntry(value) {
     && isFiniteNumber(value.mins)
     && value.mins >= 0
     && (value.viaTimer === undefined || typeof value.viaTimer === 'boolean')
+    && (value.startLocation === undefined || value.startLocation === null || isValidCoordinates(value.startLocation))
+    && (value.endLocation === undefined || value.endLocation === null || isValidCoordinates(value.endLocation))
     && (value.location === undefined || value.location === null || isValidCoordinates(value.location))
   );
 }

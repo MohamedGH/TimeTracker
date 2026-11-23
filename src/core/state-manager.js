@@ -8,6 +8,7 @@ import { createTimeEntry } from './time-entry.js';
 import { createActiveTimer, elapsedMinutes } from './timer.js';
 import { today } from './time.js';
 import { createDefaultQuickTilesConfig } from './mobile/quick-tiles.js';
+import { normalizeLocation, stripEntryGeoLocations } from './geo/geo-location.js';
 import { mergeCategoriesState } from '../state/category-actions.js';
 import { mergeActivitiesState } from '../state/activity-actions.js';
 import {
@@ -35,6 +36,8 @@ export const ACTION_TYPES = Object.freeze({
   STOP_TIMER: 'STOP_TIMER',
   SET_GEO_TRACKING: 'SET_GEO_TRACKING',
   SET_ACTIVE_TIMER_LOCATION: 'SET_ACTIVE_TIMER_LOCATION',
+  PATCH_ENTRY_LOCATION: 'PATCH_ENTRY_LOCATION',
+  CLEAR_ALL_GEO_LOCATIONS: 'CLEAR_ALL_GEO_LOCATIONS',
   SET_QUICK_TILES_CONFIG: 'SET_QUICK_TILES_CONFIG',
   RECONCILE_NATIVE_TIMER: 'RECONCILE_NATIVE_TIMER',
   UPSERT_ENTRY: 'UPSERT_ENTRY',
@@ -117,14 +120,14 @@ export function appReducer(state, action) {
       };
 
     case ACTION_TYPES.START_TIMER: {
-      const { activity, categoryId, date, startTime, startTs = Date.now(), updatedAt, location = null } = action.payload;
+      const { activity, categoryId, date, startTime, startTs = Date.now(), updatedAt, startLocation = null, location = null } = action.payload;
       const timer = createActiveTimer({
         activity,
         categoryId,
         date: date || today(),
         startTime: startTime || formatCurrentClock(),
         startTs,
-        location,
+        startLocation: startLocation ?? location,
       });
       return {
         ...state,
@@ -140,7 +143,7 @@ export function appReducer(state, action) {
       const end = action.payload?.end || formatCurrentClock();
       const durationMinutes = elapsedMinutes(t);
       const entry = createTimeEntry({
-        id: crypto.randomUUID(),
+        id: action.payload?.entryId || crypto.randomUUID(),
         activity: t.activity,
         categoryId: t.categoryId ?? t.cat ?? null,
         date: t.date,
@@ -149,7 +152,8 @@ export function appReducer(state, action) {
         endDate: t.date === today() ? t.date : today(),
         mins: durationMinutes,
         viaTimer: true,
-        location: action.payload?.location ?? t.location ?? null,
+        startLocation: t.startLocation ?? t.location ?? null,
+        endLocation: action.payload?.endLocation ?? action.payload?.location ?? null,
       });
 
       // Update or record the activity usage metadata
@@ -180,14 +184,55 @@ export function appReducer(state, action) {
 
     case ACTION_TYPES.SET_ACTIVE_TIMER_LOCATION: {
       if (!state.activeTimer) return state;
-      const { startTs, location } = action.payload || {};
+      const { startTs, startLocation, location } = action.payload || {};
       if (startTs !== undefined && state.activeTimer.startTs !== startTs) return state;
+      const normalized = normalizeLocation(startLocation ?? location);
+      if (!normalized) return state;
       return {
         ...state,
         activeTimer: {
           ...state.activeTimer,
-          ...(location ? { location } : {}),
+          startLocation: normalized,
         },
+      };
+    }
+
+    case ACTION_TYPES.PATCH_ENTRY_LOCATION: {
+      const { entryId, startLocation, endLocation } = action.payload || {};
+      if (!entryId) return state;
+      let changed = false;
+      const nextEntries = state.entries.map((entry) => {
+        if (entry.id !== entryId) return entry;
+        changed = true;
+        const updated = { ...entry };
+        if (startLocation !== undefined) {
+          const normStart = normalizeLocation(startLocation);
+          delete updated.location;
+          if (normStart) updated.startLocation = normStart;
+          else delete updated.startLocation;
+        }
+        if (endLocation !== undefined) {
+          const normEnd = normalizeLocation(endLocation);
+          if (normEnd) updated.endLocation = normEnd;
+          else delete updated.endLocation;
+        }
+        return updated;
+      });
+      return changed ? { ...state, entries: nextEntries } : state;
+    }
+
+    case ACTION_TYPES.CLEAR_ALL_GEO_LOCATIONS: {
+      const nextEntries = state.entries.map(stripEntryGeoLocations);
+      const nextTimer = state.activeTimer
+        ? (() => {
+            const { startLocation: _s, location: _l, ...rest } = state.activeTimer;
+            return rest;
+          })()
+        : null;
+      return {
+        ...state,
+        entries: nextEntries,
+        activeTimer: nextTimer,
       };
     }
 
@@ -353,7 +398,7 @@ export function appReducer(state, action) {
       };
 
     case ACTION_TYPES.START_TEMPLATE_RUN: {
-      const { template, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), location = null } = action.payload || {};
+      const { template, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
       const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(startTs).toISOString() });
       const timer = createActiveTimer({
         activity: firstStep.activity,
@@ -361,7 +406,7 @@ export function appReducer(state, action) {
         date,
         startTime,
         startTs,
-        location,
+        startLocation: startLocation ?? location,
       });
       return {
         ...state,
@@ -374,7 +419,7 @@ export function appReducer(state, action) {
     }
 
     case ACTION_TYPES.ADVANCE_TEMPLATE_RUN: {
-      const { recordCurrent = true, end, startTime = formatCurrentClock(), date = today(), nowTs = Date.now(), location = null } = action.payload || {};
+      const { recordCurrent = true, end, startTime = formatCurrentClock(), date = today(), nowTs = Date.now(), startLocation = null, endLocation = null, location = null } = action.payload || {};
       let nextEntries = state.entries;
       let nextActivities = state.activities;
 
@@ -391,7 +436,8 @@ export function appReducer(state, action) {
           endDate: t.date === date ? t.date : date,
           mins: durationMinutes,
           viaTimer: true,
-          location: t.location ?? null,
+          startLocation: t.startLocation ?? t.location ?? null,
+          endLocation,
         });
         nextEntries = [entry, ...state.entries];
         nextActivities = updateActivityUsage(state.activities, t.activity, t.categoryId, durationMinutes);
@@ -405,7 +451,7 @@ export function appReducer(state, action) {
             date,
             startTime,
             startTs: nowTs,
-            location,
+            startLocation: startLocation ?? location,
           })
         : null;
 
@@ -431,14 +477,14 @@ export function appReducer(state, action) {
     case ACTION_TYPES.RESUME_TEMPLATE_RUN: {
       const resumed = resumeReadyTemplateRun(state.activeTemplateRun);
       if (!resumed) return state;
-      const { date = today(), startTime = formatCurrentClock(), startTs = Date.now(), location = null } = action.payload || {};
+      const { date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
       const timer = createActiveTimer({
         activity: resumed.currentStep.activity,
         categoryId: resumed.currentStep.categoryId,
         date,
         startTime,
         startTs,
-        location,
+        startLocation: startLocation ?? location,
       });
       return {
         ...state,
@@ -519,6 +565,7 @@ export function appReducer(state, action) {
         activityTemplates: [],
         activeTemplateRun: null,
         activeTimer: null,
+        geoTrackingEnabled: false,
         editingEntryId: null,
         modal: null,
         error: null,
@@ -689,6 +736,12 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       setActiveTimerLocation(payload) {
         return dispatch({ type: ACTION_TYPES.SET_ACTIVE_TIMER_LOCATION, payload });
+      },
+      patchEntryLocation(payload) {
+        return dispatch({ type: ACTION_TYPES.PATCH_ENTRY_LOCATION, payload });
+      },
+      clearAllGeoLocations() {
+        return dispatch({ type: ACTION_TYPES.CLEAR_ALL_GEO_LOCATIONS });
       },
       setQuickTilesConfig(config) {
         return dispatch({ type: ACTION_TYPES.SET_QUICK_TILES_CONFIG, payload: config });

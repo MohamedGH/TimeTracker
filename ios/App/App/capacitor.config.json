@@ -16,5 +16,7 @@
 			"backgroundColor": "#232821"
 		}
 	},
-	"packageClassList": []
+	"packageClassList": [
+		"GeolocationPlugin"
+	]
 }

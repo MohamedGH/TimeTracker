@@ -375,6 +375,7 @@ export function applyTileTapTransition({
     endDate: date,
     mins: closedDuration,
     viaTimer: true,
+    startLocation: activeTimer.startLocation || activeTimer.location || null,
   });
 
   if (isSameTimerTarget(activeTimer, cleanActivity, tileCategoryId)) {
@@ -451,7 +452,8 @@ export function reconcileNativeTimerSnapshot({
       endDate: raw.endDate || raw.date,
       mins: Number.isFinite(Number(raw.mins)) ? Math.max(0, Number(raw.mins)) : undefined,
       viaTimer: true,
-      location: raw.location || null,
+      startLocation: raw.startLocation || raw.location || null,
+      endLocation: raw.endLocation || null,
     });
 
     existingIds.add(entry.id);
@@ -511,7 +513,7 @@ export function reconcileNativeTimerSnapshot({
         startTs: Number(t.startTs) || nativeUpdatedAt,
         startTime: t.startTime,
         date: t.date,
-        location: t.location || null,
+        startLocation: t.startLocation || t.location || null,
       });
     } else {
       nextActiveTimer = null;

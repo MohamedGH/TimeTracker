@@ -1,9 +1,8 @@
 /**
  * Google Maps Platform JS API Loader & Case A Demo Quota Defense.
- * Uses `@googlemaps/js-api-loader` functional API (`setOptions` + `importLibrary`).
+ * Lazy-loads `@googlemaps/js-api-loader` (`setOptions` + `importLibrary`) only when
+ * the Dashboard map feature is mounted and a valid API key is present.
  */
-
-import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
 
 export const GOOGLE_MAPS_USAGE_ATTRIBUTION_ID = 'gmp_mcp_codeassist_v1_aistudio';
 export const DEFAULT_GOOGLE_MAPS_MAP_ID = 'DEMO_MAP_ID';
@@ -27,7 +26,7 @@ function readRuntimeGlobal(key) {
 }
 
 /**
- * Resolves the Google Maps JavaScript API key from Vite build env or runtime globals.
+ * Resolves the dedicated Google Maps JavaScript API key (never falls back to OAuth Client ID).
  */
 export function getGoogleMapsApiKey() {
   const fromVite = normalizeEnvString(
@@ -117,22 +116,32 @@ export function installMapsQuotaListener(win = typeof window !== 'undefined' ? w
 }
 
 /**
- * Loads modern Maps JS libraries (`core`, `maps`, `marker`) using `@googlemaps/js-api-loader`.
+ * Lazily imports `@googlemaps/js-api-loader` and loads `core`, `maps`, and `marker`.
+ * The Google Maps script is never downloaded until this function is explicitly called.
  */
 export async function loadGoogleMapsLibraries({
   apiKey = getGoogleMapsApiKey(),
   language = 'fr',
   region = 'FR',
-  setOptionsFn = setOptions,
-  importLibraryFn = importLibrary,
+  setOptionsFn = null,
+  importLibraryFn = null,
 } = {}) {
   if (!apiKey) {
     throw new Error('Clé API Google Maps manquante (VITE_GOOGLE_MAPS_API_KEY).');
   }
 
+  let resolvedSetOptions = setOptionsFn;
+  let resolvedImportLibrary = importLibraryFn;
+
+  if (!resolvedSetOptions || !resolvedImportLibrary) {
+    const loaderMod = await import('@googlemaps/js-api-loader');
+    resolvedSetOptions = resolvedSetOptions || loaderMod.setOptions;
+    resolvedImportLibrary = resolvedImportLibrary || loaderMod.importLibrary;
+  }
+
   const sig = `${apiKey}::${language}::${region}`;
   if (configuredSignature !== sig) {
-    setOptionsFn({
+    resolvedSetOptions({
       key: apiKey,
       v: 'weekly',
       language,
@@ -142,9 +151,9 @@ export async function loadGoogleMapsLibraries({
   }
 
   const [coreLib, mapsLib, markerLib] = await Promise.all([
-    importLibraryFn('core'),
-    importLibraryFn('maps'),
-    importLibraryFn('marker'),
+    resolvedImportLibrary('core'),
+    resolvedImportLibrary('maps'),
+    resolvedImportLibrary('marker'),
   ]);
 
   return {
