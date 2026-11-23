@@ -20,10 +20,12 @@ function resolvePublicEnv(mode) {
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const publicEnv = resolvePublicEnv(mode);
   const isCapacitorBuild = process.env.CAPACITOR_BUILD === 'true';
-  const base = isCapacitorBuild ? './' : (process.env.VITE_BASE_PATH || '/TimeTracker/');
+  const base = isCapacitorBuild
+    ? './'
+    : (process.env.VITE_BASE_PATH || (command === 'build' ? './' : '/'));
 
   return {
     base,
@@ -43,7 +45,8 @@ export default defineConfig(({ mode }) => {
         name: 'time-tracker-runtime-env',
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
-            if (req.url === '/env.js' || req.url === '/TimeTracker/env.js') {
+            const pathname = (req.url || '').split('?')[0];
+            if (pathname === '/env.js' || pathname === '/TimeTracker/env.js') {
               const live = resolvePublicEnv(mode);
               res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
               res.end(`window.__TIME_TRACKER_ENV__ = ${JSON.stringify(live)};\n`);
@@ -54,7 +57,8 @@ export default defineConfig(({ mode }) => {
         },
         configurePreviewServer(server) {
           server.middlewares.use((req, res, next) => {
-            if (req.url === '/env.js' || req.url === '/TimeTracker/env.js') {
+            const pathname = (req.url || '').split('?')[0];
+            if (pathname === '/env.js' || pathname === '/TimeTracker/env.js') {
               const live = resolvePublicEnv(mode);
               res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
               res.end(`window.__TIME_TRACKER_ENV__ = ${JSON.stringify(live)};\n`);
@@ -174,7 +178,7 @@ export default defineConfig(({ mode }) => {
         },
         devOptions: {
           enabled: true,
-          type: 'module',
+          type: 'classic',
         },
       }),
     ],

@@ -71,4 +71,23 @@ describe('PWA manifest, PNG assets, and Capacitor configuration compliance', () 
     expect(capText).toContain("appId: 'com.timetracker.carnetdutemps'");
     expect(capText).toContain("webDir: 'dist'");
   });
+
+  it('ships public/env.js and references env.js relatively in index.html to avoid HTML 404 SyntaxError', () => {
+    const publicEnvPath = resolve(ROOT, 'public/env.js');
+    expect(existsSync(publicEnvPath)).toBe(true);
+    const envContent = readFileSync(publicEnvPath, 'utf8');
+    expect(envContent).toContain('window.__TIME_TRACKER_ENV__');
+
+    const html = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
+    expect(html).toMatch(/<script\s+src="env\.js"><\/script>/);
+    expect(html).not.toMatch(/<script\s+src="\/env\.js"><\/script>/);
+  });
+
+  it('configures Vite base cleanly for dev (/) and portable builds (./) with classic generateSW dev mode', () => {
+    const viteCfg = readFileSync(resolve(ROOT, 'vite.config.js'), 'utf8');
+    expect(viteCfg).toContain("command === 'build' ? './' : '/'");
+    expect(viteCfg).toContain("(req.url || '').split('?')[0]");
+    expect(viteCfg).toContain("type: 'classic'");
+  });
 });
+
