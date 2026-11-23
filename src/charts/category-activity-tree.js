@@ -1205,12 +1205,12 @@ export function renderCategoryActivityTree({
 
   collapseAllBtn.onclick = () => {
     if (!lastRawTree) return;
-    const branchIds = collectNodeIds(
+    const allIds = collectNodeIds(
       lastRawTree,
-      n => n.type !== TREE_NODE_TYPES.ROOT && n.children?.length > 0
+      n => n.type !== TREE_NODE_TYPES.SESSION && n.children?.length > 0
     );
     collapsedIds.clear();
-    branchIds.forEach(id => collapsedIds.add(id));
+    allIds.forEach(id => collapsedIds.add(id));
     updateTree(null, true);
   };
 
