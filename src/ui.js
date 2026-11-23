@@ -2448,40 +2448,51 @@ export function createUI({
 
     const refresh = () => {
       const selectedId = category.select.value;
+      const query = String(activity.input.value || '').trim().toLowerCase();
       datalist.replaceChildren();
       visibleList.replaceChildren();
 
-      if (!selectedId) {
-        visibleList.appendChild(node('p', 'muted', 'Choisissez une catégorie pour voir les activités habituelles.'));
-        return;
-      }
-
-      const allowed = new Set([selectedId, ...getDescendants(state.categories, selectedId).map(x => x.id)]);
+      const allowed = selectedId
+        ? new Set([selectedId, ...getDescendants(state.categories, selectedId).map(x => x.id)])
+        : null;
       const seen = new Set();
       const matches = [];
 
       for (const a of state.activities) {
         const name = String(a.label || a.name || a.activity || '').trim();
         const categoryId = a.categoryId ?? a.cat;
-        if (!name || !categoryId || !allowed.has(categoryId) || seen.has(name.toLowerCase())) continue;
+        if (!name || seen.has(name.toLowerCase())) continue;
+        if (allowed && categoryId && !allowed.has(categoryId)) continue;
+        if (query && !name.toLowerCase().includes(query)) continue;
         seen.add(name.toLowerCase());
         matches.push(name);
       }
 
-      // Also include any activity from entries belonging to this category
+      // Also include any activity from entries
       for (const e of state.entries) {
         const name = String(e.activity || '').trim();
-        if (!name || !e.categoryId || !allowed.has(e.categoryId) || seen.has(name.toLowerCase())) continue;
+        if (!name || seen.has(name.toLowerCase())) continue;
+        if (allowed && e.categoryId && !allowed.has(e.categoryId)) continue;
+        if (query && !name.toLowerCase().includes(query)) continue;
         seen.add(name.toLowerCase());
         matches.push(name);
       }
 
       if (!matches.length) {
-        visibleList.appendChild(node('p', 'muted', 'Aucune activité enregistrée pour cette catégorie.'));
+        if (query) {
+          const info = document.createElement('p');
+          info.className = 'muted';
+          info.textContent = `Aucune suggestion existante pour « ${query} ». Appuyez sur Entrée ou enregistrez pour créer.`;
+          visibleList.appendChild(info);
+        } else if (!selectedId) {
+          visibleList.appendChild(node('p', 'muted', 'Choisissez une catégorie ou commencez à taper un nom d’activité.'));
+        } else {
+          visibleList.appendChild(node('p', 'muted', 'Aucune activité enregistrée pour cette catégorie.'));
+        }
         return;
       }
 
-      for (const name of matches.slice(0, 5)) {
+      for (const name of matches.slice(0, 6)) {
         const option = document.createElement('option');
         option.value = name;
         datalist.appendChild(option);
@@ -2496,12 +2507,14 @@ export function createUI({
             category.select.value = catId;
             category.select.dispatchEvent(new Event('change', { bubbles: true }));
           }
+          refresh();
         };
         visibleList.appendChild(chip);
       }
     };
 
     category.select.addEventListener('change', refresh);
+    activity.input.addEventListener('input', refresh);
     refresh();
   }
 
