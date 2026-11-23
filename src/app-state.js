@@ -57,20 +57,18 @@ export async function createAppState() {
     storedTombstones?.categories || null,
   ).map(c => stampItem(c, 1));
   const categoryIds = new Set(categories.map(category => category.id));
-  const categoryLabels = new Set(categories.map(category => String(category.label || '').trim().toLowerCase()).filter(Boolean));
-
   // Repair data produced by older migration builds. Categories must never be
   // displayed as saved activities.
   const normalizedActivities = Array.isArray(activities)
     ? activities
         .filter(activity => {
           if (!activity?.id) return false;
+          if (activity.builtin === true) return false;
           const label = String(activity.label || activity.name || activity.activity || '').trim();
           if (!label) return false;
           if (categoryIds.has(activity.id)) return false;
           const name = label.toLowerCase();
           if (name === 'sans catégorie') return false;
-          if (categoryLabels.has(name)) return false;
           return true;
         })
         .map(a => stampItem({
@@ -107,11 +105,13 @@ export async function createAppState() {
   }
 
   let lastPersistedSnapshot = {
-    entries: normalizedEntries,
-    activities: normalizedActivities,
-    categories,
-    templates: normalizedTemplates,
+    entries: [...normalizedEntries],
+    activities: normalizedActivities.map(a => ({ ...a })),
+    categories: [...categories],
+    templates: [...normalizedTemplates],
   };
+
+  let persistQueue = Promise.resolve();
 
   const initialRawState = {
     entries: normalizedEntries,
@@ -137,47 +137,69 @@ export async function createAppState() {
     notice: null,
   };
 
+  function runPersistSerialized(task) {
+    const next = persistQueue.then(task, task);
+    persistQueue = next.catch(() => {});
+    return next;
+  }
+
   async function persist(targetState) {
-    const s = targetState || stateManager.getState();
-    const nowMs = Date.now();
+    return runPersistSerialized(async () => {
+      const smState = stateManager.getState();
+      const s = targetState || smState;
+      const nowMs = Date.now();
 
-    const entryDiff = diffAndStampCollection(lastPersistedSnapshot.entries, s.entries, currentTombstones.entries, nowMs);
-    const actDiff = diffAndStampCollection(lastPersistedSnapshot.activities, s.activities, currentTombstones.activities, nowMs);
-    const catDiff = diffAndStampCollection(lastPersistedSnapshot.categories, s.categories, currentTombstones.categories, nowMs);
-    const tplDiff = diffAndStampCollection(lastPersistedSnapshot.templates, s.activityTemplates || [], currentTombstones.templates, nowMs);
+      const entryDiff = diffAndStampCollection(lastPersistedSnapshot.entries, s.entries, currentTombstones.entries, nowMs);
+      const actDiff = diffAndStampCollection(lastPersistedSnapshot.activities, s.activities, currentTombstones.activities, nowMs);
+      const catDiff = diffAndStampCollection(lastPersistedSnapshot.categories, s.categories, currentTombstones.categories, nowMs);
+      const tplDiff = diffAndStampCollection(lastPersistedSnapshot.templates, s.activityTemplates || [], currentTombstones.templates, nowMs);
 
-    s.entries = entryDiff.items;
-    s.activities = actDiff.items;
-    s.categories = catDiff.items;
-    s.activityTemplates = tplDiff.items;
+      s.entries = entryDiff.items;
+      s.activities = actDiff.items;
+      s.categories = catDiff.items;
+      s.activityTemplates = tplDiff.items;
 
-    currentTombstones = {
-      entries: entryDiff.tombstones,
-      activities: actDiff.tombstones,
-      categories: catDiff.tombstones,
-      templates: tplDiff.tombstones,
-    };
+      if (smState && s !== smState) {
+        smState.entries = s.entries;
+        smState.activities = s.activities;
+        smState.categories = s.categories;
+        smState.activityTemplates = s.activityTemplates;
+        smState.deletedItems = s.deletedItems;
+        smState.activeTemplateRun = s.activeTemplateRun;
+        smState.activeTimer = s.activeTimer;
+        smState.timerUpdatedAt = s.timerUpdatedAt;
+        smState.quickTilesConfig = s.quickTilesConfig;
+        smState.geoTrackingEnabled = s.geoTrackingEnabled;
+      }
 
-    lastPersistedSnapshot = {
-      entries: s.entries,
-      activities: s.activities,
-      categories: s.categories,
-      templates: s.activityTemplates,
-    };
+      currentTombstones = {
+        entries: entryDiff.tombstones,
+        activities: actDiff.tombstones,
+        categories: catDiff.tombstones,
+        templates: tplDiff.tombstones,
+      };
 
-    await Promise.all([
-      setValue(STORAGE_KEYS.entries, s.entries),
-      setValue(STORAGE_KEYS.activities, s.activities),
-      setValue(STORAGE_KEYS.categories, s.categories),
-      setValue(STORAGE_KEYS.activityTemplates, s.activityTemplates),
-      setValue(STORAGE_KEYS.activeTemplateRun, s.activeTemplateRun || null),
-      setValue(STORAGE_KEYS.activeTimer, s.activeTimer),
-      setValue(STORAGE_KEYS.timerUpdatedAt, Number(s.timerUpdatedAt) || 0),
-      setValue(STORAGE_KEYS.quickTilesConfig, s.quickTilesConfig || normalizedQuickTilesConfig),
-      setValue(STORAGE_KEYS.geoTrackingEnabled, Boolean(s.geoTrackingEnabled)),
-      setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
-      setValue(STORAGE_KEYS.trash, normalizeTrashList(s.deletedItems)),
-    ]);
+      lastPersistedSnapshot = {
+        entries: [...s.entries],
+        activities: s.activities.map(a => ({ ...a })),
+        categories: [...s.categories],
+        templates: [...s.activityTemplates],
+      };
+
+      await Promise.all([
+        setValue(STORAGE_KEYS.entries, s.entries),
+        setValue(STORAGE_KEYS.activities, s.activities),
+        setValue(STORAGE_KEYS.categories, s.categories),
+        setValue(STORAGE_KEYS.activityTemplates, s.activityTemplates),
+        setValue(STORAGE_KEYS.activeTemplateRun, s.activeTemplateRun || null),
+        setValue(STORAGE_KEYS.activeTimer, s.activeTimer),
+        setValue(STORAGE_KEYS.timerUpdatedAt, Number(s.timerUpdatedAt) || 0),
+        setValue(STORAGE_KEYS.quickTilesConfig, s.quickTilesConfig || normalizedQuickTilesConfig),
+        setValue(STORAGE_KEYS.geoTrackingEnabled, Boolean(s.geoTrackingEnabled)),
+        setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
+        setValue(STORAGE_KEYS.trash, normalizeTrashList(s.deletedItems)),
+      ]);
+    });
   }
 
   function getSyncPayload() {
@@ -193,29 +215,31 @@ export async function createAppState() {
   }
 
   async function applyMergedSyncState(merged) {
-    const s = stateManager.getState();
-    s.entries = Array.isArray(merged?.entries) ? merged.entries : s.entries;
-    s.activities = Array.isArray(merged?.activities) ? merged.activities : s.activities;
-    s.categories = Array.isArray(merged?.categories) ? merged.categories : s.categories;
-    if (Array.isArray(merged?.templates)) {
-      s.activityTemplates = normalizeTemplatesList(merged.templates, s.categories);
-    }
-    currentTombstones = normalizeTombstones(merged?.tombstones || currentTombstones);
+    return runPersistSerialized(async () => {
+      const s = stateManager.getState();
+      s.entries = Array.isArray(merged?.entries) ? merged.entries : s.entries;
+      s.activities = Array.isArray(merged?.activities) ? merged.activities : s.activities;
+      s.categories = Array.isArray(merged?.categories) ? merged.categories : s.categories;
+      if (Array.isArray(merged?.templates)) {
+        s.activityTemplates = normalizeTemplatesList(merged.templates, s.categories);
+      }
+      currentTombstones = normalizeTombstones(merged?.tombstones || currentTombstones);
 
-    lastPersistedSnapshot = {
-      entries: s.entries,
-      activities: s.activities,
-      categories: s.categories,
-      templates: s.activityTemplates || [],
-    };
+      lastPersistedSnapshot = {
+        entries: [...s.entries],
+        activities: s.activities.map(a => ({ ...a })),
+        categories: [...s.categories],
+        templates: [...(s.activityTemplates || [])],
+      };
 
-    await Promise.all([
-      setValue(STORAGE_KEYS.entries, s.entries),
-      setValue(STORAGE_KEYS.activities, s.activities),
-      setValue(STORAGE_KEYS.categories, s.categories),
-      setValue(STORAGE_KEYS.activityTemplates, s.activityTemplates || []),
-      setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
-    ]);
+      await Promise.all([
+        setValue(STORAGE_KEYS.entries, s.entries),
+        setValue(STORAGE_KEYS.activities, s.activities),
+        setValue(STORAGE_KEYS.categories, s.categories),
+        setValue(STORAGE_KEYS.activityTemplates, s.activityTemplates || []),
+        setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
+      ]);
+    });
   }
 
   function getSyncMeta() {
@@ -253,7 +277,7 @@ export async function createAppState() {
   return {
     stateManager,
     state: stateManager.getState(),
-    persist: () => persist(stateManager.getState()),
+    persist: (targetState) => persist(targetState || stateManager.getState()),
     saveAuthSession,
     clearAuthSession,
     getSyncPayload,

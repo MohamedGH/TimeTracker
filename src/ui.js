@@ -123,21 +123,21 @@ export function createUI({
   root,
   state,
   stateManager: _stateManager,
-  persist,
+  persist: persistRaw,
   saveAuthSession = async () => {},
   clearAuthSession = async () => {},
-  getSyncPayload = () => ({
+  getSyncPayload: getSyncPayloadRaw = () => ({
     entries: state.entries,
     activities: state.activities,
     categories: state.categories,
     tombstones: {},
     deviceId: 'local',
   }),
-  applyMergedSyncState = async (merged) => {
+  applyMergedSyncState: applyMergedSyncStateRaw = async (merged) => {
     state.entries = merged.entries;
     state.activities = merged.activities;
     state.categories = merged.categories;
-    await persist();
+    await persistRaw?.(state);
   },
   getSyncMeta = () => ({ deviceId: 'local', lastDriveSyncAt: null, driveAutoSync: false, lastP2pSyncAt: null }),
   saveSyncMeta = async (patch) => ({ ...getSyncMeta(), ...patch }),
@@ -150,6 +150,63 @@ export function createUI({
   geolocation = typeof navigator !== 'undefined' ? navigator.geolocation : null,
   mountMapFn = mountActivityMap,
 }) {
+  function syncStateToStateManager() {
+    if (!_stateManager?.getState) return;
+    const smState = _stateManager.getState();
+    if (smState && smState !== state) {
+      smState.entries = state.entries;
+      smState.activities = state.activities;
+      smState.categories = state.categories;
+      smState.activityTemplates = state.activityTemplates;
+      smState.deletedItems = state.deletedItems;
+      smState.activeTemplateRun = state.activeTemplateRun;
+      smState.activeTimer = state.activeTimer;
+      smState.timerUpdatedAt = state.timerUpdatedAt;
+      smState.quickTilesConfig = state.quickTilesConfig;
+      smState.geoTrackingEnabled = state.geoTrackingEnabled;
+      smState.authUser = state.authUser;
+      smState.tab = state.tab;
+      smState.period = state.period;
+      smState.shortcutCategoryFilter = state.shortcutCategoryFilter;
+      smState.deviceType = state.deviceType;
+    }
+  }
+
+  function syncStateFromStateManager() {
+    if (!_stateManager?.getState) return;
+    const smState = _stateManager.getState();
+    if (smState && smState !== state) {
+      state.entries = smState.entries;
+      state.activities = smState.activities;
+      state.categories = smState.categories;
+      state.activityTemplates = smState.activityTemplates;
+      state.deletedItems = smState.deletedItems;
+    }
+  }
+
+  function dispatchStateAction(fn) {
+    syncStateToStateManager();
+    return fn?.();
+  }
+
+  async function persist() {
+    syncStateToStateManager();
+    if (typeof persistRaw === 'function') {
+      await persistRaw(state);
+    }
+  }
+
+  function getSyncPayload() {
+    syncStateToStateManager();
+    return getSyncPayloadRaw();
+  }
+
+  async function applyMergedSyncState(merged) {
+    syncStateToStateManager();
+    await applyMergedSyncStateRaw(merged);
+    syncStateFromStateManager();
+  }
+
   let ticker;
   let lastTrackedTab = null;
   const insightsState = {
@@ -222,7 +279,7 @@ export function createUI({
   const deviceNavController = deviceNavControllerFactory({
     onChange: (profile) => {
       state.deviceType = profile.deviceType;
-      _stateManager?.actions?.setDeviceType?.(profile.deviceType);
+      dispatchStateAction(() => _stateManager?.actions?.setDeviceType?.(profile.deviceType));
       rerender();
     },
   });
@@ -370,10 +427,10 @@ export function createUI({
             ...state.activeTimer,
             startLocation: res.location,
           };
-          _stateManager?.actions?.setActiveTimerLocation?.({
+          dispatchStateAction(() => _stateManager?.actions?.setActiveTimerLocation?.({
             startTs: targetStartTs,
             startLocation: res.location,
-          });
+          }));
           geoCaptureState = { startTs: targetStartTs, status: 'captured' };
           await persist().catch(() => {});
           refreshTimerGeoBadgeDom();
@@ -401,10 +458,10 @@ export function createUI({
           return { ...item, startLocation: res.location };
         });
         if (updated) {
-          _stateManager?.actions?.patchEntryLocation?.({
+          dispatchStateAction(() => _stateManager?.actions?.patchEntryLocation?.({
             entryId: completedEntryId,
             startLocation: res.location,
-          });
+          }));
           await persist().catch(() => {});
           if (!state.modal && document.activeElement?.tagName !== 'INPUT') {
             rerender();
@@ -430,10 +487,10 @@ export function createUI({
           return { ...item, endLocation: res.location };
         });
         if (updated) {
-          _stateManager?.actions?.patchEntryLocation?.({
+          dispatchStateAction(() => _stateManager?.actions?.patchEntryLocation?.({
             entryId,
             endLocation: res.location,
-          });
+          }));
           await persist().catch(() => {});
           if (!state.modal && document.activeElement?.tagName !== 'INPUT') {
             rerender();
@@ -476,7 +533,7 @@ export function createUI({
   async function handleToggleGeoTracking(nextEnabled) {
     const enabled = Boolean(nextEnabled);
     state.geoTrackingEnabled = enabled;
-    _stateManager?.actions?.setGeoTracking?.(enabled);
+    dispatchStateAction(() => _stateManager?.actions?.setGeoTracking?.(enabled));
 
     // Start browser/native permission prompt synchronously inside this user interaction before await persist().
     const permissionRequestPromise = enabled
@@ -509,7 +566,7 @@ export function createUI({
     manualStartLocationOverride = undefined;
     manualEndLocationOverride = undefined;
     mapFocusClusterId = null;
-    _stateManager?.actions?.clearAllGeoLocations?.();
+    dispatchStateAction(() => _stateManager?.actions?.clearAllGeoLocations?.());
     await persist();
     errorManager.notifyInfo('Toutes les coordonnées GPS ont été supprimées.');
     rerender();
@@ -813,15 +870,7 @@ export function createUI({
   }
 
   function syncCollectionRefsToStateManager() {
-    if (!_stateManager?.getState) return;
-    const smState = _stateManager.getState();
-    if (smState !== state) {
-      smState.entries = state.entries;
-      smState.activities = state.activities;
-      smState.categories = state.categories;
-      smState.activityTemplates = state.activityTemplates;
-      smState.deletedItems = state.deletedItems;
-    }
+    syncStateToStateManager();
   }
 
   function recordDeletedItem({ kind, item, related = null }) {
@@ -920,8 +969,16 @@ export function createUI({
     state.entries = [entry, ...state.entries];
     const actIdx = state.activities.findIndex(a => (a.label || a.activity) === t.activity);
     if (actIdx >= 0) {
-      state.activities[actIdx].useCount = (state.activities[actIdx].useCount || 0) + 1;
-      state.activities[actIdx].lastUsedAt = new Date(nowTs).toISOString();
+      const usedAtIso = new Date(nowTs).toISOString();
+      state.activities = state.activities.map((a, idx) =>
+        idx === actIdx
+          ? {
+              ...a,
+              useCount: (a.useCount || 0) + 1,
+              lastUsedAt: usedAtIso,
+            }
+          : a
+      );
     }
     trackEvent('timer_stopped', timerStoppedPayload({
       durationMinutes,
@@ -2046,7 +2103,7 @@ export function createUI({
 
     const applyShortcutFilter = (filterKey) => {
       state.shortcutCategoryFilter = filterKey;
-      _stateManager?.actions?.setShortcutCategoryFilter?.(filterKey);
+      dispatchStateAction(() => _stateManager?.actions?.setShortcutCategoryFilter?.(filterKey));
       rerender();
     };
 
@@ -3287,13 +3344,16 @@ export function createUI({
         return;
       }
 
-      state.activities.push({
-        id: crypto.randomUUID(),
-        label: labelVal,
-        categoryId: c.select.value || null,
-        useCount: 1,
-        lastUsedAt: new Date().toISOString(),
-      });
+      state.activities = [
+        ...state.activities,
+        {
+          id: crypto.randomUUID(),
+          label: labelVal,
+          categoryId: c.select.value || null,
+          useCount: 1,
+          lastUsedAt: new Date().toISOString(),
+        },
+      ];
       state.modal = null;
       await persist();
       syncQuickTilesToNative();
@@ -4081,7 +4141,7 @@ export function createUI({
       activities: state.activities,
       entries: state.entries,
     });
-    _stateManager?.actions?.setQuickTilesConfig?.(state.quickTilesConfig);
+    dispatchStateAction(() => _stateManager?.actions?.setQuickTilesConfig?.(state.quickTilesConfig));
     await persist();
     await syncQuickTilesToNative();
     rerender();
@@ -4147,8 +4207,7 @@ export function createUI({
           if (!state.activeTimer && state.activeTemplateRun?.stepState === 'running') {
             state.activeTemplateRun = pauseTemplateRunAfterManualStop(state.activeTemplateRun);
           }
-          _stateManager?.actions?.reconcileNativeTimer?.(reconciled);
-
+          dispatchStateAction(() => _stateManager?.actions?.reconcileNativeTimer?.(reconciled));
           await persist();
           if (reconciled.importedEntryIds.length) {
             await quickTilesBridge.acknowledgePendingEntries(reconciled.importedEntryIds);
