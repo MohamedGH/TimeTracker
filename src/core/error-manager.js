@@ -32,6 +32,9 @@ export function normalizeError(error, context = 'general') {
   } else if (context === 'mobile') {
     code = ERROR_CODES.RUNTIME;
     userMessage = rawMessage || 'Impossible d’installer ou de mettre à jour l’application mobile.';
+  } else if (context === 'geo' || context === 'map') {
+    code = ERROR_CODES.RUNTIME;
+    userMessage = rawMessage || 'Impossible d’accéder aux données géographiques ou à la carte.';
   } else if (context === 'timer' || rawMessage.toLowerCase().includes('timer')) {
     code = ERROR_CODES.TIMER;
     userMessage = rawMessage.includes('invalide')

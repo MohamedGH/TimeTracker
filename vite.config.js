@@ -15,6 +15,8 @@ function resolvePublicEnv(mode) {
     GA4_MEASUREMENT_ID: pick('VITE_GA4_MEASUREMENT_ID', 'GA4_MEASUREMENT_ID'),
     GOOGLE_CLIENT_ID: pick('VITE_GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_ID'),
     GOOGLE_REDIRECT_URI: pick('VITE_GOOGLE_REDIRECT_URI', 'GOOGLE_REDIRECT_URI'),
+    GOOGLE_MAPS_API_KEY: pick('VITE_GOOGLE_MAPS_API_KEY', 'GOOGLE_MAPS_API_KEY'),
+    GOOGLE_MAPS_MAP_ID: pick('VITE_GOOGLE_MAPS_MAP_ID', 'GOOGLE_MAPS_MAP_ID'),
   };
 }
 
@@ -31,6 +33,10 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_GOOGLE_REDIRECT_URI': JSON.stringify(publicEnv.GOOGLE_REDIRECT_URI),
       'import.meta.env.GOOGLE_CLIENT_ID': JSON.stringify(publicEnv.GOOGLE_CLIENT_ID),
       'import.meta.env.GOOGLE_REDIRECT_URI': JSON.stringify(publicEnv.GOOGLE_REDIRECT_URI),
+      'import.meta.env.VITE_GOOGLE_MAPS_API_KEY': JSON.stringify(publicEnv.GOOGLE_MAPS_API_KEY),
+      'import.meta.env.GOOGLE_MAPS_API_KEY': JSON.stringify(publicEnv.GOOGLE_MAPS_API_KEY),
+      'import.meta.env.VITE_GOOGLE_MAPS_MAP_ID': JSON.stringify(publicEnv.GOOGLE_MAPS_MAP_ID),
+      'import.meta.env.GOOGLE_MAPS_MAP_ID': JSON.stringify(publicEnv.GOOGLE_MAPS_MAP_ID),
     },
     plugins: [
       {
@@ -59,7 +65,13 @@ export default defineConfig(({ mode }) => {
         },
         transformIndexHtml() {
           const live = resolvePublicEnv(mode);
-          if (!live.GOOGLE_CLIENT_ID && !live.GA4_MEASUREMENT_ID && !live.GOOGLE_REDIRECT_URI) {
+          if (
+            !live.GOOGLE_CLIENT_ID &&
+            !live.GA4_MEASUREMENT_ID &&
+            !live.GOOGLE_REDIRECT_URI &&
+            !live.GOOGLE_MAPS_API_KEY &&
+            !live.GOOGLE_MAPS_MAP_ID
+          ) {
             return [];
           }
           return [

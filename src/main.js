@@ -5,6 +5,9 @@ import { installCategorySelectors } from './category-selector.js';
 import { initAnalytics, hasConsentDecision } from './core/analytics/index.js';
 import { initBehaviorTracking } from './core/behavior/index.js';
 import { registerAppServiceWorker } from './core/mobile/index.js';
+import { installMapsQuotaListener } from './core/geo/index.js';
+
+installMapsQuotaListener();
 
 async function bootstrap() {
   const root = document.getElementById('app');

@@ -36,6 +36,7 @@ export const ANALYTICS_EVENTS = Object.freeze({
   TEMPLATE_COMPLETED: 'template_completed',
   TEMPLATE_LOGGED_MANUAL: 'template_logged_manual',
   DASHBOARD_PERIOD_CHANGED: 'dashboard_period_changed',
+  GEO_TRACKING_TOGGLED: 'geo_tracking_toggled',
   DATA_EXPORTED: 'data_exported',
   DATA_IMPORTED: 'data_imported',
   DATA_CLEARED: 'data_cleared',
@@ -52,30 +53,40 @@ export function pageViewPayload(tab) {
   return { page_title: VALID_TABS.has(tab) ? tab : 'unknown' };
 }
 
-export function timerStartedPayload({ hasCategory }) {
-  return { has_category: Boolean(hasCategory) };
-}
-
-export function timerStoppedPayload({ durationMinutes, hasCategory }) {
+export function timerStartedPayload({ hasCategory, hasLocation = false }) {
   return {
-    duration_minutes: safeNonNegativeInt(durationMinutes),
     has_category: Boolean(hasCategory),
+    has_location: Boolean(hasLocation),
   };
 }
 
-export function timeEntryCreatedPayload({ durationMinutes, hasCategory, viaTimer = false }) {
+export function timerStoppedPayload({ durationMinutes, hasCategory, hasLocation = false }) {
+  return {
+    duration_minutes: safeNonNegativeInt(durationMinutes),
+    has_category: Boolean(hasCategory),
+    has_location: Boolean(hasLocation),
+  };
+}
+
+export function timeEntryCreatedPayload({ durationMinutes, hasCategory, viaTimer = false, hasLocation = false }) {
   return {
     duration_minutes: safeNonNegativeInt(durationMinutes),
     has_category: Boolean(hasCategory),
     via_timer: Boolean(viaTimer),
+    has_location: Boolean(hasLocation),
   };
 }
 
-export function timeEntryUpdatedPayload({ durationMinutes, hasCategory }) {
+export function timeEntryUpdatedPayload({ durationMinutes, hasCategory, hasLocation = false }) {
   return {
     duration_minutes: safeNonNegativeInt(durationMinutes),
     has_category: Boolean(hasCategory),
+    has_location: Boolean(hasLocation),
   };
+}
+
+export function geoTrackingToggledPayload({ enabled }) {
+  return { enabled: Boolean(enabled) };
 }
 
 export function savedActivityCreatedPayload({ hasCategory }) {

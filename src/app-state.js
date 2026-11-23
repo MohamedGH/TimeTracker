@@ -29,6 +29,7 @@ export async function createAppState() {
     activeTimer,
     storedTimerUpdatedAt,
     storedQuickTilesConfig,
+    storedGeoTrackingEnabled,
     storedAuthSession,
     storedTombstones,
     storedSyncMeta,
@@ -41,6 +42,7 @@ export async function createAppState() {
     getValue(STORAGE_KEYS.activeTimer, null),
     getValue(STORAGE_KEYS.timerUpdatedAt, 0),
     getValue(STORAGE_KEYS.quickTilesConfig, null),
+    getValue(STORAGE_KEYS.geoTrackingEnabled, false),
     getValue(STORAGE_KEYS.authSession, null),
     getValue(STORAGE_KEYS.syncTombstones, null),
     getValue(STORAGE_KEYS.syncMeta, null),
@@ -117,6 +119,7 @@ export async function createAppState() {
     activeTimer: activeTimer || null,
     timerUpdatedAt: initialTimerUpdatedAt,
     quickTilesConfig: normalizedQuickTilesConfig,
+    geoTrackingEnabled: Boolean(storedGeoTrackingEnabled),
     authUser: restoredAuthUser,
     tab: 'entry',
     period: '7',
@@ -167,6 +170,7 @@ export async function createAppState() {
       setValue(STORAGE_KEYS.activeTimer, s.activeTimer),
       setValue(STORAGE_KEYS.timerUpdatedAt, Number(s.timerUpdatedAt) || 0),
       setValue(STORAGE_KEYS.quickTilesConfig, s.quickTilesConfig || normalizedQuickTilesConfig),
+      setValue(STORAGE_KEYS.geoTrackingEnabled, Boolean(s.geoTrackingEnabled)),
       setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
     ]);
   }

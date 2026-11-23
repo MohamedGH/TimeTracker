@@ -6,6 +6,7 @@ import {
   timerStoppedPayload,
   timeEntryCreatedPayload,
   timeEntryUpdatedPayload,
+  geoTrackingToggledPayload,
   savedActivityCreatedPayload,
   categoryCreatedPayload,
   categoryMovedPayload,
@@ -40,31 +41,36 @@ describe('pageViewPayload', () => {
 
 describe('timer payloads', () => {
   it('builds timer_started payload', () => {
-    expect(timerStartedPayload({ hasCategory: true })).toEqual({ has_category: true });
-    expect(timerStartedPayload({ hasCategory: false })).toEqual({ has_category: false });
+    expect(timerStartedPayload({ hasCategory: true })).toEqual({ has_category: true, has_location: false });
+    expect(timerStartedPayload({ hasCategory: false, hasLocation: true })).toEqual({ has_category: false, has_location: true });
   });
 
   it('builds timer_stopped payload with a safe, non-negative integer duration', () => {
-    expect(timerStoppedPayload({ durationMinutes: 42.6, hasCategory: true }))
-      .toEqual({ duration_minutes: 43, has_category: true });
+    expect(timerStoppedPayload({ durationMinutes: 42.6, hasCategory: true, hasLocation: true }))
+      .toEqual({ duration_minutes: 43, has_category: true, has_location: true });
     expect(timerStoppedPayload({ durationMinutes: -5, hasCategory: false }))
-      .toEqual({ duration_minutes: 0, has_category: false });
+      .toEqual({ duration_minutes: 0, has_category: false, has_location: false });
     expect(timerStoppedPayload({ durationMinutes: NaN, hasCategory: false }))
-      .toEqual({ duration_minutes: 0, has_category: false });
+      .toEqual({ duration_minutes: 0, has_category: false, has_location: false });
   });
 });
 
 describe('time entry payloads', () => {
-  it('builds time_entry_created payload including via_timer flag', () => {
-    expect(timeEntryCreatedPayload({ durationMinutes: 30, hasCategory: true, viaTimer: true }))
-      .toEqual({ duration_minutes: 30, has_category: true, via_timer: true });
+  it('builds time_entry_created payload including via_timer and has_location flags', () => {
+    expect(timeEntryCreatedPayload({ durationMinutes: 30, hasCategory: true, viaTimer: true, hasLocation: true }))
+      .toEqual({ duration_minutes: 30, has_category: true, via_timer: true, has_location: true });
     expect(timeEntryCreatedPayload({ durationMinutes: 15, hasCategory: false }))
-      .toEqual({ duration_minutes: 15, has_category: false, via_timer: false });
+      .toEqual({ duration_minutes: 15, has_category: false, via_timer: false, has_location: false });
   });
 
   it('builds time_entry_updated payload', () => {
     expect(timeEntryUpdatedPayload({ durationMinutes: 20, hasCategory: true }))
-      .toEqual({ duration_minutes: 20, has_category: true });
+      .toEqual({ duration_minutes: 20, has_category: true, has_location: false });
+  });
+
+  it('builds geo_tracking_toggled payload', () => {
+    expect(geoTrackingToggledPayload({ enabled: true })).toEqual({ enabled: true });
+    expect(geoTrackingToggledPayload({ enabled: 0 })).toEqual({ enabled: false });
   });
 });
 

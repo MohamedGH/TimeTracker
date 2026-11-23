@@ -1,5 +1,6 @@
 import { migrateCategoryTree } from './category-tree.js';
 import { migrateEntriesToCategoryId } from './entry-migration.js';
+import { isValidCoordinates, normalizeLocation } from './geo/geo-location.js';
 
 export const DEFAULT_CATEGORIES = Object.freeze([
   { id: 'travail', label: 'Travail', color: '#4A5A75', parentId: null, builtin: true },
@@ -21,20 +22,26 @@ export function isValidEntry(entry) {
   return Boolean(entry && typeof entry.id === 'string' && typeof entry.activity === 'string' &&
     (entry.categoryId === null || typeof entry.categoryId === 'string') && typeof entry.date === 'string' &&
     typeof entry.start === 'string' && typeof entry.end === 'string' && Number.isFinite(entry.mins) &&
-    (entry.viaTimer === undefined || typeof entry.viaTimer === 'boolean'));
+    (entry.viaTimer === undefined || typeof entry.viaTimer === 'boolean') &&
+    (entry.location === undefined || entry.location === null || isValidCoordinates(entry.location)));
 }
 
 export function normalizeEntries(value, categories = [], legacySubCategories = []) {
   if (!Array.isArray(value)) return [];
   return migrateEntriesToCategoryId(value, categories, legacySubCategories)
     .filter(isValidEntry)
-    .map(entry => ({
-      ...entry,
-      activity: entry.activity.trim(),
-      categoryId: entry.categoryId ?? null,
-      mins: Math.max(0, Number(entry.mins)),
-      ...(typeof entry.viaTimer === 'boolean' ? { viaTimer: entry.viaTimer } : {}),
-    }));
+    .map(entry => {
+      const normalizedLocation = normalizeLocation(entry.location);
+      const { location: _rawLocation, ...rest } = entry;
+      return {
+        ...rest,
+        activity: entry.activity.trim(),
+        categoryId: entry.categoryId ?? null,
+        mins: Math.max(0, Number(entry.mins)),
+        ...(typeof entry.viaTimer === 'boolean' ? { viaTimer: entry.viaTimer } : {}),
+        ...(normalizedLocation ? { location: normalizedLocation } : {}),
+      };
+    });
 }
 
 export function normalizeList(value) { return Array.isArray(value) ? value : []; }

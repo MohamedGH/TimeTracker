@@ -1,4 +1,5 @@
 import { durationBetween } from './time.js';
+import { isValidCoordinates, normalizeLocation } from './geo/geo-location.js';
 
 /**
  * Canonical TimeEntry domain factory.
@@ -14,8 +15,10 @@ export function createTimeEntry({
   endDate,
   mins,
   viaTimer,
+  location,
 } = {}) {
   const duration = Number.isFinite(mins) ? Math.max(0, mins) : durationBetween(start, end);
+  const normalizedLocation = normalizeLocation(location);
 
   return {
     id,
@@ -27,6 +30,7 @@ export function createTimeEntry({
     ...(endDate ? { endDate } : {}),
     mins: duration,
     ...(typeof viaTimer === 'boolean' ? { viaTimer } : {}),
+    ...(normalizedLocation ? { location: normalizedLocation } : {}),
   };
 }
 
@@ -44,6 +48,7 @@ export function isTimeEntry(value) {
     typeof value.end === 'string' &&
     Number.isFinite(value.mins) &&
     (value.categoryId === null || typeof value.categoryId === 'string') &&
-    (value.viaTimer === undefined || typeof value.viaTimer === 'boolean'),
+    (value.viaTimer === undefined || typeof value.viaTimer === 'boolean') &&
+    (value.location === undefined || value.location === null || isValidCoordinates(value.location)),
   );
 }

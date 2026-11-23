@@ -31,10 +31,19 @@ import {
   renderCategoryDeleteConfirmModal,
 } from './components/categories/category-manager.js';
 import { renderMergeModal } from './components/merge/merge-modal.js';
+import { renderTemplateEditorModal, renderTemplateManualLogModal } from './components/templates/template-modal.js';
 import {
-  renderTemplateEditorModal,
-  renderTemplateManualLogModal,
-} from './components/templates/template-modal.js';
+  renderActivityMapCard,
+  mountActivityMap,
+  destroyActivityMap,
+  buildActivityMapModel,
+} from './components/map/activity-map.js';
+import {
+  captureCurrentLocation,
+  formatCoordinates,
+  normalizeLocation,
+  QUOTA_HELP_URL,
+} from './core/geo/index.js';
 import { isolateModalEvents } from './core/modal-events.js';
 import { createRouteManager } from './core/route-manager.js';
 import { createErrorManager } from './core/error-manager.js';
@@ -121,6 +130,8 @@ export function createUI({
   pwaControllerFactory = createPwaInstallController,
   quickTilesBridgeFactory = createQuickTilesBridge,
   deviceNavControllerFactory = createDeviceNavigationController,
+  geolocation = typeof navigator !== 'undefined' ? navigator.geolocation : null,
+  mountMapFn = mountActivityMap,
 }) {
   let ticker;
   let lastTrackedTab = null;
@@ -140,6 +151,13 @@ export function createUI({
   let reconcileBusy = false;
   let reconcileQueued = false;
   let destroyed = false;
+  let mapsQuotaExceeded = false;
+  let mapCategoryFilter = 'all';
+  let mapShowRoutePath = true;
+  let mapFocusClusterId = null;
+  let manualLocationOverride = undefined;
+  let manualLocationEditingId = null;
+  let geoCaptureState = { startTs: null, status: 'idle', promise: null };
   let quickTilesCapabilities = {
     supported: false,
     platform: 'web',
@@ -157,6 +175,7 @@ export function createUI({
   };
   const nativeListenerHandles = [];
 
+  state.geoTrackingEnabled = Boolean(state.geoTrackingEnabled);
   state.quickTilesConfig = normalizeQuickTilesConfig(state.quickTilesConfig, {
     categories: state.categories,
     activities: state.activities,
@@ -226,6 +245,95 @@ export function createUI({
   });
 
   const rerender = () => render();
+
+  function formatTimerGeoStatusText(timer, captureStatus) {
+    if (timer?.location) {
+      const coords = formatCoordinates(timer.location, 4);
+      const acc = Number.isFinite(timer.location.accuracy) ? ` (±${timer.location.accuracy} m)` : '';
+      return `📍 Position enregistrée : ${coords}${acc}`;
+    }
+    if (!state.geoTrackingEnabled && captureStatus === 'idle') {
+      return '📍 Position non enregistrée';
+    }
+    if (captureStatus === 'capturing') return '📍 Acquisition GPS en cours…';
+    if (captureStatus === 'denied') return '📍 Permission GPS refusée';
+    if (captureStatus === 'timeout') return '📍 Délai GPS dépassé';
+    if (captureStatus === 'unsupported') return '📍 GPS indisponible sur cet appareil';
+    if (captureStatus === 'unavailable') return '📍 Position temporairement indisponible';
+    return '📍 En attente de position';
+  }
+
+  function refreshTimerGeoBadgeDom() {
+    const statusEl = root.querySelector('[data-timer-geo-status]');
+    if (statusEl && state.activeTimer) {
+      statusEl.textContent = formatTimerGeoStatusText(
+        state.activeTimer,
+        geoCaptureState.startTs === state.activeTimer.startTs ? geoCaptureState.status : 'idle'
+      );
+    }
+  }
+
+  function captureTimerLocationAsync(targetStartTs, { force = false } = {}) {
+    if (!targetStartTs || (!force && !state.geoTrackingEnabled)) {
+      return Promise.resolve({ ok: false, location: null, reason: 'disabled' });
+    }
+    const promise = captureCurrentLocation({ geolocation }).then(async (res) => {
+      if (destroyed) return res;
+      if (state.activeTimer && state.activeTimer.startTs === targetStartTs) {
+        if (res.ok && res.location) {
+          state.activeTimer = {
+            ...state.activeTimer,
+            location: res.location,
+          };
+          _stateManager?.actions?.setActiveTimerLocation?.({
+            startTs: targetStartTs,
+            location: res.location,
+          });
+          geoCaptureState = { startTs: targetStartTs, status: 'captured', promise: null };
+          await persist().catch(() => {});
+          refreshTimerGeoBadgeDom();
+          if (state.tab === 'entry' && !state.modal && document.activeElement?.tagName !== 'INPUT') {
+            rerender();
+          }
+        } else {
+          geoCaptureState = { startTs: targetStartTs, status: res.reason || 'unavailable', promise: null };
+          refreshTimerGeoBadgeDom();
+        }
+      }
+      return res;
+    });
+
+    geoCaptureState = { startTs: targetStartTs, status: 'capturing', promise };
+    refreshTimerGeoBadgeDom();
+    return promise;
+  }
+
+  async function settlePendingTimerLocation(targetStartTs) {
+    if (!targetStartTs || state.activeTimer?.location) return;
+    if (geoCaptureState.startTs === targetStartTs && geoCaptureState.promise) {
+      await Promise.race([
+        geoCaptureState.promise.catch(() => null),
+        new Promise(resolve => setTimeout(resolve, 650)),
+      ]);
+    }
+  }
+
+  async function handleToggleGeoTracking(nextEnabled) {
+    const enabled = Boolean(nextEnabled);
+    state.geoTrackingEnabled = enabled;
+    _stateManager?.actions?.setGeoTracking?.(enabled);
+    await persist();
+    trackEvent(ANALYTICS_EVENTS.GEO_TRACKING_TOGGLED, { enabled });
+    if (enabled) {
+      errorManager.notifySuccess('Géolocalisation des chronos activée.');
+      if (state.activeTimer && !state.activeTimer.location) {
+        captureTimerLocationAsync(state.activeTimer.startTs, { force: true });
+      }
+    } else {
+      errorManager.notifyInfo('Géolocalisation des chronos désactivée.');
+    }
+    rerender();
+  }
 
   function openCategoryCreateModal(parentId = null) {
     const parentCategory = parentId ? state.categories.find(c => c.id === parentId) : null;
@@ -544,6 +652,7 @@ export function createUI({
     if (!t) return null;
     const endDate = t.date === today() ? t.date : today();
     const durationMinutes = elapsedMinutes(t, nowTs);
+    const location = normalizeLocation(t.location);
     const entry = createTimeEntry({
       id: crypto.randomUUID(),
       activity: t.activity,
@@ -554,6 +663,7 @@ export function createUI({
       endDate,
       mins: durationMinutes,
       viaTimer: true,
+      location,
     });
     state.entries = [entry, ...state.entries];
     const actIdx = state.activities.findIndex(a => (a.label || a.activity) === t.activity);
@@ -564,11 +674,13 @@ export function createUI({
     trackEvent('timer_stopped', timerStoppedPayload({
       durationMinutes,
       hasCategory: Boolean(t.categoryId ?? t.cat),
+      hasLocation: Boolean(entry.location),
     }));
     trackEvent('time_entry_created', timeEntryCreatedPayload({
       durationMinutes,
       hasCategory: Boolean(t.categoryId ?? t.cat),
       viaTimer: true,
+      hasLocation: Boolean(entry.location),
     }));
     return { entry, durationMinutes, activity: t.activity };
   }
@@ -583,6 +695,7 @@ export function createUI({
       const currentDay = today();
 
       if (state.activeTimer) {
+        await settlePendingTimerLocation(state.activeTimer.startTs);
         recordRunningTimerIntoEntries(nowTs, clockNow);
       }
 
@@ -601,11 +714,17 @@ export function createUI({
 
       await persist();
       pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
+      if (state.geoTrackingEnabled) {
+        captureTimerLocationAsync(nowTs);
+      }
       trackEvent(
         ANALYTICS_EVENTS.TEMPLATE_STARTED,
         templateEventPayload({ stepCount: run.steps.length })
       );
-      trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(firstStep.categoryId) }));
+      trackEvent('timer_started', timerStartedPayload({
+        hasCategory: Boolean(firstStep.categoryId),
+        hasLocation: Boolean(state.geoTrackingEnabled),
+      }));
       errorManager.notifySuccess(
         `Gabarit « ${template.name} » lancé — Étape 1/${run.steps.length} : ${firstStep.activity}`
       );
@@ -624,6 +743,7 @@ export function createUI({
     const templateName = state.activeTemplateRun.templateName;
 
     if (recordCurrent && state.activeTimer) {
+      await settlePendingTimerLocation(state.activeTimer.startTs);
       recordRunningTimerIntoEntries(nowTs, clockNow);
     }
 
@@ -642,11 +762,17 @@ export function createUI({
 
       await persist();
       pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
+      if (state.geoTrackingEnabled) {
+        captureTimerLocationAsync(nowTs);
+      }
       trackEvent(
         ANALYTICS_EVENTS.TEMPLATE_STEP_ADVANCED,
         templateEventPayload({ stepCount: transition.nextRun.steps.length })
       );
-      trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(transition.nextStep.categoryId) }));
+      trackEvent('timer_started', timerStartedPayload({
+        hasCategory: Boolean(transition.nextStep.categoryId),
+        hasLocation: Boolean(state.geoTrackingEnabled),
+      }));
       errorManager.notifySuccess(
         `Étape ${transition.nextRun.currentIndex + 1}/${transition.nextRun.steps.length} lancée : ${transition.nextStep.activity}`
       );
@@ -678,6 +804,7 @@ export function createUI({
     const currentDay = today();
 
     if (state.activeTimer) {
+      await settlePendingTimerLocation(state.activeTimer.startTs);
       recordRunningTimerIntoEntries(nowTs, clockNow);
     }
 
@@ -693,7 +820,13 @@ export function createUI({
 
     await persist();
     pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
-    trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(resumed.currentStep.categoryId) }));
+    if (state.geoTrackingEnabled) {
+      captureTimerLocationAsync(nowTs);
+    }
+    trackEvent('timer_started', timerStartedPayload({
+      hasCategory: Boolean(resumed.currentStep.categoryId),
+      hasLocation: Boolean(state.geoTrackingEnabled),
+    }));
     errorManager.notifySuccess(
       `Étape ${resumed.nextRun.currentIndex + 1}/${resumed.nextRun.steps.length} lancée : ${resumed.currentStep.activity}`
     );
@@ -744,8 +877,31 @@ export function createUI({
     onMergeCategory: (sourceCategoryId) => openMergeModal({ mode: 'categories', sourceCategoryId }),
   });
 
+  function mapsQuotaWarningBanner() {
+    const bar = document.createElement('div');
+    bar.className = 'gmp-quota-banner bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm';
+    bar.dataset.gmpQuotaBanner = 'true';
+    bar.setAttribute('role', 'status');
+
+    const text = document.createElement('span');
+    text.appendChild(document.createTextNode('Google Maps Platform quota reached. If you are the app owner, visit '));
+
+    const link = document.createElement('a');
+    link.href = QUOTA_HELP_URL;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.className = 'underline font-semibold text-amber-950 hover:text-amber-800';
+    link.textContent = 'maps developer site';
+
+    text.appendChild(link);
+    text.appendChild(document.createTextNode(' for instructions to update your account.'));
+    bar.appendChild(text);
+    return bar;
+  }
+
   function render() {
     destroyCharts();
+    destroyActivityMap();
     categoryManager.destroy();
 
     const navProfile = deviceNavController.getProfile();
@@ -755,10 +911,12 @@ export function createUI({
     root.classList.remove('app-shell--mobile', 'app-shell--tablet', 'app-shell--desktop');
     root.classList.add('app-shell', navProfile.shellClass);
 
+    root.replaceChildren();
+    if (mapsQuotaExceeded) {
+      root.appendChild(mapsQuotaWarningBanner());
+    }
     if (!hasConsentDecision()) {
-      root.replaceChildren(consentBanner());
-    } else {
-      root.replaceChildren();
+      root.appendChild(consentBanner());
     }
     root.appendChild(header());
     trackTabView();
@@ -1096,6 +1254,29 @@ export function createUI({
     return f;
   }
 
+  function renderGeoOptInControl() {
+    const wrap = node('div', 'geo-consent-row');
+    wrap.dataset.geoConsentControl = 'true';
+
+    const labelEl = document.createElement('label');
+    labelEl.className = 'geo-consent-label';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = Boolean(state.geoTrackingEnabled);
+    cb.dataset.behaviorTarget = 'timer-geo-toggle';
+    cb.onchange = () => handleToggleGeoTracking(cb.checked);
+
+    const textCol = node('span', 'geo-consent-text');
+    textCol.append(
+      node('strong', 'geo-consent-title', '📍 Géolocaliser chaque chrono'),
+      node('span', 'geo-consent-sub muted', 'Position stockée localement sur votre appareil (révocable)')
+    );
+
+    labelEl.append(cb, textCol);
+    wrap.appendChild(labelEl);
+    return wrap;
+  }
+
   function timerCard() {
     const c = card('Chronomètre');
     const runProgress = computeTemplateRunProgress(state.activeTemplateRun);
@@ -1124,10 +1305,12 @@ export function createUI({
         btnRow.append(resumeBtn, quitBtn);
         readyBox.appendChild(btnRow);
         c.appendChild(readyBox);
+        c.appendChild(renderGeoOptInControl());
         return c;
       }
 
       c.appendChild(node('p', 'muted', 'Aucun chronomètre actif. Lancez une activité ou un gabarit en 1 clic ci-dessous.'));
+      c.appendChild(renderGeoOptInControl());
       return c;
     }
 
@@ -1167,7 +1350,19 @@ export function createUI({
     const clockNode = node('div', 't-clock', clock(elapsedSeconds(t)));
     clockNode.dataset.timerClock = '1';
 
-    box.append(metaRow, clockNode);
+    const geoRow = node('div', 'timer-geo-row');
+    const captureStatus = geoCaptureState.startTs === t.startTs ? geoCaptureState.status : 'idle';
+    const geoStatusEl = node('span', 'timer-geo-status', formatTimerGeoStatusText(t, captureStatus));
+    geoStatusEl.dataset.timerGeoStatus = 'true';
+    const geoActionBtn = button(
+      t.location ? 'Actualiser GPS' : 'Localiser maintenant',
+      'small secondary',
+      'timer-geo-capture'
+    );
+    geoActionBtn.onclick = () => captureTimerLocationAsync(t.startTs, { force: true });
+    geoRow.append(geoStatusEl, geoActionBtn);
+
+    box.append(metaRow, clockNode, geoRow);
 
     if (runProgress) {
       const runnerActions = node('div', 'template-runner-actions');
@@ -1200,6 +1395,7 @@ export function createUI({
     }
 
     c.appendChild(box);
+    c.appendChild(renderGeoOptInControl());
     return c;
   }
 
@@ -1463,6 +1659,50 @@ export function createUI({
     const row = node('div', 'row');
     row.append(date.wrap, start.wrap, end.wrap);
     manualFieldsWrap.appendChild(row);
+
+    const targetEditingId = old?.id || null;
+    if (manualLocationEditingId !== targetEditingId) {
+      manualLocationEditingId = targetEditingId;
+      manualLocationOverride = undefined;
+    }
+    const activeManualLoc = manualLocationOverride !== undefined
+      ? manualLocationOverride
+      : (old?.location || null);
+
+    const manualGeoRow = node('div', 'manual-geo-row');
+    manualGeoRow.appendChild(
+      node(
+        'span',
+        'manual-geo-label',
+        activeManualLoc ? `📍 GPS : ${formatCoordinates(activeManualLoc, 4)}` : '📍 Aucune position GPS'
+      )
+    );
+    const captureManualBtn = button(
+      activeManualLoc ? 'Actualiser GPS' : 'Ajouter position GPS',
+      'small secondary',
+      'entry-geo-capture'
+    );
+    captureManualBtn.onclick = async () => {
+      const res = await captureCurrentLocation({ geolocation });
+      if (res.ok && res.location) {
+        manualLocationOverride = res.location;
+        errorManager.notifySuccess('Position GPS ajoutée à la session.');
+        rerender();
+      } else {
+        errorManager.handleError(new Error('Impossible d’obtenir la position GPS.'), 'geo');
+      }
+    };
+    manualGeoRow.appendChild(captureManualBtn);
+    if (activeManualLoc) {
+      const clearLocBtn = button('Retirer', 'small danger', 'entry-geo-clear');
+      clearLocBtn.onclick = () => {
+        manualLocationOverride = null;
+        rerender();
+      };
+      manualGeoRow.appendChild(clearLocBtn);
+    }
+    manualFieldsWrap.appendChild(manualGeoRow);
+
     form.appendChild(manualFieldsWrap);
 
     // Action buttons based on active mode
@@ -1489,6 +1729,7 @@ export function createUI({
       const cancel = button('Annuler', 'secondary', 'entry-cancel');
       cancel.onclick = () => {
         state.editingEntryId = null;
+        manualLocationOverride = undefined;
         rerender();
       };
       form.appendChild(cancel);
@@ -1496,6 +1737,9 @@ export function createUI({
 
     form.onsubmit = async (e) => {
       e.preventDefault();
+      const resolvedLocation = manualLocationOverride !== undefined
+        ? manualLocationOverride
+        : (old?.location || null);
       const value = createTimeEntry({
         id: old?.id || crypto.randomUUID(),
         activity: activity.input.value,
@@ -1504,6 +1748,7 @@ export function createUI({
         start: start.input.value,
         end: end.input.value,
         viaTimer: old ? old.viaTimer : false,
+        location: resolvedLocation,
       });
 
       if (!value.activity || value.mins <= 0) {
@@ -1514,12 +1759,23 @@ export function createUI({
 
       state.entries = old ? state.entries.map(x => x.id === old.id ? value : x) : [value, ...state.entries];
       state.editingEntryId = null;
+      manualLocationOverride = undefined;
       state.error = null;
       await persist();
       trackEvent(
         old ? 'time_entry_updated' : 'time_entry_created',
-        old ? timeEntryUpdatedPayload({ durationMinutes: value.mins, hasCategory: Boolean(value.categoryId) }) :
-              timeEntryCreatedPayload({ durationMinutes: value.mins, hasCategory: Boolean(value.categoryId), viaTimer: Boolean(value.viaTimer) })
+        old
+          ? timeEntryUpdatedPayload({
+              durationMinutes: value.mins,
+              hasCategory: Boolean(value.categoryId),
+              hasLocation: Boolean(value.location),
+            })
+          : timeEntryCreatedPayload({
+              durationMinutes: value.mins,
+              hasCategory: Boolean(value.categoryId),
+              viaTimer: Boolean(value.viaTimer),
+              hasLocation: Boolean(value.location),
+            })
       );
       getBehaviorTracking()?.tracker.trackFormResult('entry-form', 'success', { object: 'time_entry' });
       errorManager.notifySuccess(old ? 'Modifications enregistrées.' : 'Session enregistrée !');
@@ -1671,7 +1927,33 @@ export function createUI({
       headerRow.appendChild(createCategoryBadge(e.categoryId, state.categories, { showPath: true, size: 'small' }));
       info.appendChild(headerRow);
 
-      const meta = node('div', 'entry-meta', `${e.date} · ${e.start}–${e.end} · ${formatDuration(e.mins)}`);
+      const meta = node('div', 'entry-meta');
+      meta.appendChild(document.createTextNode(`${e.date} · ${e.start}–${e.end} · ${formatDuration(e.mins)}`));
+      if (e.location) {
+        const mapJumpBtn = document.createElement('button');
+        mapJumpBtn.type = 'button';
+        mapJumpBtn.className = 'entry-geo-link';
+        mapJumpBtn.dataset.behaviorTarget = 'entry-open-map';
+        mapJumpBtn.textContent = `📍 ${formatCoordinates(e.location, 3)}`;
+        mapJumpBtn.title = 'Voir cette session sur la carte';
+        mapJumpBtn.onclick = () => {
+          const mapModel = buildActivityMapModel({
+            entries: state.entries,
+            categories: state.categories,
+            period: state.period,
+            categoryFilter: 'all',
+          });
+          const matchedCluster = mapModel.clusters.find(cl => cl.entries.some(item => item.id === e.id));
+          if (!matchedCluster) {
+            state.period = 'all';
+          }
+          mapCategoryFilter = 'all';
+          mapFocusClusterId = matchedCluster?.id || null;
+          routeManager.navigate('dashboard');
+          rerender();
+        };
+        meta.appendChild(mapJumpBtn);
+      }
       info.appendChild(meta);
 
       const edit = button('Modifier', 'small', 'entry-edit');
@@ -1721,6 +2003,7 @@ export function createUI({
       const b = button(p.label, state.period === p.id ? 'active' : 'secondary', `dashboard-period-${p.id}`);
       b.onclick = () => {
         state.period = p.id;
+        mapFocusClusterId = null;
         trackEvent('dashboard_period_changed', dashboardPeriodChangedPayload({ period: p.id }));
         rerender();
       };
@@ -1740,6 +2023,33 @@ export function createUI({
       kpiCard('Moyenne / jour', stats.formattedDailyAverage, 'Par jour actif')
     );
     f.appendChild(kpiGrid);
+
+    // Interactive Activity Map filtered by active period & category
+    const { card: mapCard } = renderActivityMapCard({
+      entries: state.entries,
+      categories: state.categories,
+      period: state.period,
+      categoryFilter: mapCategoryFilter,
+      showRoutePath: mapShowRoutePath,
+      geoTrackingEnabled: state.geoTrackingEnabled,
+      focusClusterId: mapFocusClusterId,
+      onToggleGeoTracking: handleToggleGeoTracking,
+      onChangeCategoryFilter: (nextFilter) => {
+        mapCategoryFilter = nextFilter || 'all';
+        mapFocusClusterId = null;
+        rerender();
+      },
+      onToggleRoutePath: (nextShow) => {
+        mapShowRoutePath = Boolean(nextShow);
+        rerender();
+      },
+      onSelectPeriodAll: () => {
+        state.period = 'all';
+        mapFocusClusterId = null;
+        rerender();
+      },
+    });
+    f.appendChild(mapCard);
 
     // Section 1: Où ai-je passé mon temps & Quelles catégories prennent le plus de temps ?
     const categoryCard = card('Répartition par catégorie');
@@ -3307,6 +3617,10 @@ export function createUI({
       state.activeTimer = null;
       state.timerUpdatedAt = Date.now();
       state.quickTilesConfig = createDefaultQuickTilesConfig();
+      state.geoTrackingEnabled = false;
+      manualLocationOverride = undefined;
+      manualLocationEditingId = null;
+      mapFocusClusterId = null;
       state.authUser = null;
       state.modal = null;
       state.editingEntryId = null;
@@ -3341,7 +3655,13 @@ export function createUI({
     state.timerUpdatedAt = nowTs;
     await persist();
     pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
-    trackEvent('timer_started', timerStartedPayload({ hasCategory: Boolean(categoryId) }));
+    if (state.geoTrackingEnabled) {
+      captureTimerLocationAsync(nowTs);
+    }
+    trackEvent('timer_started', timerStartedPayload({
+      hasCategory: Boolean(categoryId),
+      hasLocation: Boolean(state.geoTrackingEnabled),
+    }));
     errorManager.notifySuccess(`Chronomètre lancé pour « ${activity} »`);
     rerender();
   }
@@ -3349,6 +3669,7 @@ export function createUI({
   async function stopTimer() {
     const t = state.activeTimer;
     if (!t) return;
+    await settlePendingTimerLocation(t.startTs);
     const nowTs = Date.now();
     const recorded = recordRunningTimerIntoEntries(nowTs, nowTime());
     state.activeTimer = null;
@@ -3408,6 +3729,23 @@ export function createUI({
         onEditActivity: (payload) => openActivityEditModal(payload),
         onMoveCategory: handleMoveCategory,
         onMoveActivity: handleMoveActivity,
+      });
+    }
+
+    const mapCanvas = root.querySelector('#activity-google-map');
+    if (mapCanvas) {
+      const mapModel = buildActivityMapModel({
+        entries: state.entries,
+        categories: state.categories,
+        period: state.period,
+        categoryFilter: mapCategoryFilter,
+      });
+      mountMapFn({
+        container: mapCanvas,
+        clusters: mapModel.clusters,
+        routePath: mapModel.route.path,
+        showRoutePath: mapShowRoutePath,
+        focusClusterId: mapFocusClusterId,
       });
     }
   }
@@ -3523,10 +3861,17 @@ export function createUI({
     refreshNativeCapabilitiesOnResume();
   };
 
+  const handleMapsQuotaExceeded = () => {
+    if (destroyed || mapsQuotaExceeded) return;
+    mapsQuotaExceeded = true;
+    rerender();
+  };
+
   if (typeof window !== 'undefined') {
     window.addEventListener('online', handleOnlineSync);
     window.addEventListener('keydown', handleDesktopShortcut);
     window.addEventListener('focus', handleFocusReconcile);
+    window.addEventListener('gmp-quota-exceeded', handleMapsQuotaExceeded);
   }
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibilityReconcile);
@@ -3567,6 +3912,7 @@ export function createUI({
         window.removeEventListener('online', handleOnlineSync);
         window.removeEventListener('keydown', handleDesktopShortcut);
         window.removeEventListener('focus', handleFocusReconcile);
+        window.removeEventListener('gmp-quota-exceeded', handleMapsQuotaExceeded);
       }
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', handleVisibilityReconcile);
@@ -3578,6 +3924,7 @@ export function createUI({
       p2pManager.disconnect();
       routeManager.destroy();
       categoryManager.destroy();
+      destroyActivityMap();
       destroyCharts();
     },
   };

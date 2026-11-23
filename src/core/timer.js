@@ -2,15 +2,32 @@
  * Timer domain logic. No DOM access.
  */
 
+import { normalizeLocation } from './geo/geo-location.js';
+
 export function createTimerState(timer = null) {
-  return timer ? { ...timer, categoryId: timer.categoryId ?? timer.cat ?? null } : null;
+  if (!timer) return null;
+  const location = normalizeLocation(timer.location);
+  return {
+    ...timer,
+    categoryId: timer.categoryId ?? timer.cat ?? null,
+    ...(location ? { location } : {}),
+  };
 }
 
-export function createActiveTimer({ activity, categoryId, cat = categoryId, startTs = Date.now(), startTime, date }) {
+export function createActiveTimer({
+  activity,
+  categoryId,
+  cat = categoryId,
+  startTs = Date.now(),
+  startTime,
+  date,
+  location = null,
+}) {
   const resolvedCategoryId = categoryId ?? cat;
   if (!activity || !resolvedCategoryId || !Number.isFinite(startTs) || !startTime || !date) {
     throw new Error('Timer invalide.');
   }
+  const normalizedLocation = normalizeLocation(location);
   return {
     activity,
     categoryId: resolvedCategoryId,
@@ -18,6 +35,7 @@ export function createActiveTimer({ activity, categoryId, cat = categoryId, star
     startTs,
     startTime,
     date,
+    ...(normalizedLocation ? { location: normalizedLocation } : {}),
   };
 }
 
@@ -33,6 +51,7 @@ export function elapsedSeconds(timer, now = Date.now()) {
 
 export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID()) {
   if (!timer) throw new Error('Aucun timer actif.');
+  const normalizedLocation = normalizeLocation(timer.location);
   return {
     id,
     activity: timer.activity,
@@ -43,5 +62,6 @@ export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID()) 
     ...(endDate ? { endDate } : {}),
     mins: elapsedMinutes(timer),
     viaTimer: true,
+    ...(normalizedLocation ? { location: normalizedLocation } : {}),
   };
 }

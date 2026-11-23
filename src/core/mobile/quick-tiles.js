@@ -451,6 +451,7 @@ export function reconcileNativeTimerSnapshot({
       endDate: raw.endDate || raw.date,
       mins: Number.isFinite(Number(raw.mins)) ? Math.max(0, Number(raw.mins)) : undefined,
       viaTimer: true,
+      location: raw.location || null,
     });
 
     existingIds.add(entry.id);
@@ -510,6 +511,7 @@ export function reconcileNativeTimerSnapshot({
         startTs: Number(t.startTs) || nativeUpdatedAt,
         startTime: t.startTime,
         date: t.date,
+        location: t.location || null,
       });
     } else {
       nextActiveTimer = null;
