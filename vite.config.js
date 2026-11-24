@@ -1,5 +1,14 @@
 import { defineConfig, loadEnv } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import {
+  DEV_REGISTER_SW_CLEANUP_SCRIPT,
+  DEV_SW_UNREGISTER_SCRIPT,
+  buildInlineRuntimeEnvObjectLiteral,
+  buildRuntimeEnvScript,
+  isEnvScriptRequest,
+  resolveDevServiceWorkerCleanupKind,
+  shouldRejectSpaFallbackForRequest,
+} from './src/core/dev-server-guards.js';
 
 function resolvePublicEnv(mode) {
   const fileEnv = loadEnv(mode, process.cwd(), '');
@@ -18,6 +27,29 @@ function resolvePublicEnv(mode) {
     GOOGLE_MAPS_API_KEY: pick('VITE_GOOGLE_MAPS_API_KEY', 'GOOGLE_MAPS_API_KEY'),
     GOOGLE_MAPS_MAP_ID: pick('VITE_GOOGLE_MAPS_MAP_ID', 'GOOGLE_MAPS_MAP_ID'),
   };
+}
+
+function sendJsResponse(res, body) {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(body);
+}
+
+function rejectAssetHtmlFallbackMiddleware(req, res, next) {
+  if (
+    shouldRejectSpaFallbackForRequest({
+      reqUrl: req.url || '',
+      originalUrl: req.originalUrl || '',
+    })
+  ) {
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end('Not found');
+    return;
+  }
+  next();
 }
 
 export default defineConfig(({ mode, command }) => {
@@ -46,26 +78,39 @@ export default defineConfig(({ mode, command }) => {
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
             const pathname = (req.url || '').split('?')[0];
-            if (pathname === '/env.js' || pathname === '/TimeTracker/env.js') {
-              const live = resolvePublicEnv(mode);
-              res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-              res.end(`window.__TIME_TRACKER_ENV__ = ${JSON.stringify(live)};\n`);
+            if (isEnvScriptRequest(pathname)) {
+              sendJsResponse(res, buildRuntimeEnvScript(resolvePublicEnv(mode)));
+              return;
+            }
+            const swCleanupKind = resolveDevServiceWorkerCleanupKind(pathname);
+            if (swCleanupKind === 'sw') {
+              sendJsResponse(res, DEV_SW_UNREGISTER_SCRIPT);
+              return;
+            }
+            if (swCleanupKind === 'register-sw') {
+              sendJsResponse(res, DEV_REGISTER_SW_CLEANUP_SCRIPT);
               return;
             }
             next();
           });
+
+          return () => {
+            server.middlewares.use(rejectAssetHtmlFallbackMiddleware);
+          };
         },
         configurePreviewServer(server) {
           server.middlewares.use((req, res, next) => {
             const pathname = (req.url || '').split('?')[0];
-            if (pathname === '/env.js' || pathname === '/TimeTracker/env.js') {
-              const live = resolvePublicEnv(mode);
-              res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-              res.end(`window.__TIME_TRACKER_ENV__ = ${JSON.stringify(live)};\n`);
+            if (isEnvScriptRequest(pathname)) {
+              sendJsResponse(res, buildRuntimeEnvScript(resolvePublicEnv(mode)));
               return;
             }
             next();
           });
+
+          return () => {
+            server.middlewares.use(rejectAssetHtmlFallbackMiddleware);
+          };
         },
         transformIndexHtml() {
           const live = resolvePublicEnv(mode);
@@ -81,7 +126,7 @@ export default defineConfig(({ mode, command }) => {
           return [
             {
               tag: 'script',
-              children: `window.__TIME_TRACKER_ENV__ = Object.assign({}, window.__TIME_TRACKER_ENV__, ${JSON.stringify(live)});`,
+              children: `window.__TIME_TRACKER_ENV__ = Object.assign({}, window.__TIME_TRACKER_ENV__, ${buildInlineRuntimeEnvObjectLiteral(live)});`,
               injectTo: 'head-prepend',
             },
           ];
@@ -131,6 +176,7 @@ export default defineConfig(({ mode, command }) => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          navigateFallbackDenylist: [/^\/assets\//, /\/[^/?]+\.[^/]+$/],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
@@ -177,7 +223,7 @@ export default defineConfig(({ mode, command }) => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'classic',
         },
       }),

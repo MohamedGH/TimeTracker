@@ -139,4 +139,28 @@ describe('Mobile & PWA platform detection and controller', () => {
     });
     expect(resNoImporter.registered).toBe(false);
   });
+
+  it('unregisters stale Service Workers and clears caches when running in dev mode', async () => {
+    const unregisterA = vi.fn().mockResolvedValue(true);
+    const deleteCache = vi.fn().mockResolvedValue(true);
+    const devWin = createMockWindow();
+    devWin.navigator.serviceWorker = {
+      getRegistrations: vi.fn().mockResolvedValue([{ unregister: unregisterA }]),
+    };
+    devWin.caches = {
+      keys: vi.fn().mockResolvedValue(['workbox-precache-v2']),
+      delete: deleteCache,
+    };
+
+    const origMode = import.meta.env.MODE;
+    try {
+      // Simulate non-test mode with isDevEnv=true directly via unregisterStaleServiceWorkers
+      const { unregisterStaleServiceWorkers } = await import('../src/core/mobile/sw-register.js');
+      await unregisterStaleServiceWorkers(devWin);
+      expect(unregisterA).toHaveBeenCalledTimes(1);
+      expect(deleteCache).toHaveBeenCalledWith('workbox-precache-v2');
+    } finally {
+      import.meta.env.MODE = origMode;
+    }
+  });
 });

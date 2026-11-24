@@ -83,11 +83,13 @@ describe('PWA manifest, PNG assets, and Capacitor configuration compliance', () 
     expect(html).not.toMatch(/<script\s+src="\/env\.js"><\/script>/);
   });
 
-  it('configures Vite base cleanly for dev (/) and portable builds (./) with classic generateSW dev mode', () => {
+  it('configures Vite base cleanly for dev (/) and portable builds (./) with classic SW and asset fallback guards', () => {
     const viteCfg = readFileSync(resolve(ROOT, 'vite.config.js'), 'utf8');
     expect(viteCfg).toContain("command === 'build' ? './' : '/'");
     expect(viteCfg).toContain("(req.url || '').split('?')[0]");
     expect(viteCfg).toContain("type: 'classic'");
+    expect(viteCfg).toContain('navigateFallbackDenylist');
+    expect(viteCfg).toContain('enabled: false');
   });
 });
 
