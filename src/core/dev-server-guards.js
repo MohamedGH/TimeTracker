@@ -6,7 +6,7 @@
  */
 
 const NON_HTML_ASSET_EXTENSION_RE = /\.(?:js|mjs|cjs|ts|mts|jsx|tsx|css|map|json|webmanifest|svg|png|jpe?g|webp|gif|ico|woff2?|ttf|wasm)$/i;
-const ASSET_PREFIX_RE = /^\/(?:assets|src|@vite|@fs|@id|node_modules)\//;
+const ASSET_PREFIX_RE = /^\/(?:assets|src|@vite|@vite-plugin-pwa|@fs|@id|node_modules)\//;
 
 export const DEV_SW_UNREGISTER_SCRIPT = [
   "self.addEventListener('install', () => self.skipWaiting());",
@@ -45,6 +45,9 @@ export function stripQueryAndHash(url = '') {
 
 export function isEnvScriptRequest(url = '') {
   const pathname = stripQueryAndHash(url);
+  if (ASSET_PREFIX_RE.test(pathname) || pathname.startsWith('/tests/')) {
+    return false;
+  }
   return pathname === '/env.js' || pathname.endsWith('/env.js');
 }
 

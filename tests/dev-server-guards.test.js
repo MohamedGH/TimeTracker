@@ -17,10 +17,12 @@ describe('Vite dev/preview request guards (prevent HTML fallback SyntaxError)', 
     expect(stripQueryAndHash('/assets/index-abc.js?import')).toBe('/assets/index-abc.js');
   });
 
-  it('matches env.js at root and any nested subpath', () => {
+  it('matches env.js at root and route subpaths but never intercepts /src/ ES modules', () => {
     expect(isEnvScriptRequest('/env.js')).toBe(true);
     expect(isEnvScriptRequest('/TimeTracker/env.js')).toBe(true);
     expect(isEnvScriptRequest('/nested/route/env.js?cache=1')).toBe(true);
+    expect(isEnvScriptRequest('/src/core/analytics/env.js')).toBe(false);
+    expect(isEnvScriptRequest('/src/core/auth/env.js')).toBe(false);
     expect(isEnvScriptRequest('/environment')).toBe(false);
   });
 
@@ -38,6 +40,7 @@ describe('Vite dev/preview request guards (prevent HTML fallback SyntaxError)', 
     expect(isNonHtmlAssetRequest('/assets/index-old.js')).toBe(true);
     expect(isNonHtmlAssetRequest('/src/missing.js')).toBe(true);
     expect(isNonHtmlAssetRequest('/workbox-afac4cd2.js')).toBe(true);
+    expect(isNonHtmlAssetRequest('/@vite-plugin-pwa/pwa-entry-point-loaded')).toBe(true);
     expect(isNonHtmlAssetRequest('/manifest.webmanifest')).toBe(true);
     expect(isNonHtmlAssetRequest('/styles/app.css')).toBe(true);
 

@@ -59,6 +59,39 @@ export default defineConfig(({ mode, command }) => {
     ? './'
     : (process.env.VITE_BASE_PATH || (command === 'build' ? './' : '/'));
 
+  const manifest = {
+    id: base,
+    name: 'Carnet du temps',
+    short_name: 'Temps',
+    description: 'Application mobile de suivi du temps et de gestion des catégories et activités.',
+    theme_color: '#232821',
+    background_color: '#F5F0E4',
+    display: 'standalone',
+    orientation: 'portrait-primary',
+    start_url: base,
+    scope: base,
+    icons: [
+      {
+        src: 'pwa-192x192.png',
+        sizes: '192x192',
+        type: 'image/png',
+        purpose: 'any',
+      },
+      {
+        src: 'pwa-512x512.png',
+        sizes: '512x512',
+        type: 'image/png',
+        purpose: 'any',
+      },
+      {
+        src: 'pwa-maskable-512x512.png',
+        sizes: '512x512',
+        type: 'image/png',
+        purpose: 'maskable',
+      },
+    ],
+  };
+
   return {
     base,
     define: {
@@ -80,6 +113,13 @@ export default defineConfig(({ mode, command }) => {
             const pathname = (req.url || '').split('?')[0];
             if (isEnvScriptRequest(pathname)) {
               sendJsResponse(res, buildRuntimeEnvScript(resolvePublicEnv(mode)));
+              return;
+            }
+            if (!isCapacitorBuild && pathname === '/manifest.webmanifest') {
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+              res.setHeader('Cache-Control', 'no-store');
+              res.end(JSON.stringify(manifest));
               return;
             }
             const swCleanupKind = resolveDevServiceWorkerCleanupKind(pathname);
@@ -142,38 +182,7 @@ export default defineConfig(({ mode, command }) => {
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
         ],
-        manifest: {
-          id: base,
-          name: 'Carnet du temps',
-          short_name: 'Temps',
-          description: 'Application mobile de suivi du temps et de gestion des catégories et activités.',
-          theme_color: '#232821',
-          background_color: '#F5F0E4',
-          display: 'standalone',
-          orientation: 'portrait-primary',
-          start_url: base,
-          scope: base,
-          icons: [
-            {
-              src: 'pwa-192x192.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: 'pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: 'pwa-maskable-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-          ],
-        },
+        manifest,
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           navigateFallbackDenylist: [/^\/assets\//, /\/[^/?]+\.[^/]+$/],
@@ -233,6 +242,14 @@ export default defineConfig(({ mode, command }) => {
       port: 3000,
       strictPort: true,
       cors: true,
+      allowedHosts: true,
+    },
+    preview: {
+      host: '0.0.0.0',
+      port: 3000,
+      strictPort: true,
+      cors: true,
+      allowedHosts: true,
     },
   };
 });
