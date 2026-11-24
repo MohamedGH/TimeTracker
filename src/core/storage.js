@@ -91,6 +91,7 @@ export const STORAGE_KEYS = Object.freeze({
   syncMeta: 'time-sync-meta',
   syncTombstones: 'time-sync-tombstones',
   trash: 'time-trash',
+  uiState: 'time-ui-state',
   schemaVersion: 'time-schema-version',
 });
 

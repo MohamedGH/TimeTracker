@@ -6,11 +6,13 @@ import { categoryCreatedPayload, categoryDeletedPayload } from '../../core/analy
 import { getBehaviorTracking } from '../../core/behavior/index.js';
 import { isolateModalEvents } from '../../core/modal-events.js';
 import { renderCategoryActivityTree } from '../../charts/category-activity-tree.js';
+import { normalizeSearchText } from '../../core/ui-state.js';
 
 export function createCategoryManager({
   state,
   persist,
   rerender,
+  onUiStateChange = null,
   onStartActivity = null,
   onAddActivity = null,
   onEditActivity = null,
@@ -18,12 +20,32 @@ export function createCategoryManager({
   onMoveActivity = null,
   onMergeCategory = null,
 }) {
-  let searchQuery = '';
-  let activeFilter = 'all'; // 'all' | 'roots' | 'children'
-  let activeColorFilter = null;
+  const initialUi = state.uiState || {};
+  let searchQuery = typeof initialUi.categorySearchQuery === 'string' ? initialUi.categorySearchQuery : '';
+  let activeFilter = initialUi.categoryFilter || 'all'; // 'all' | 'roots' | 'children'
+  let activeColorFilter = initialUi.categoryColorFilter || null;
   let treeController = null;
   let draggedCategoryId = null;
-  const collapsedNodes = new Set();
+  let initializedCollapsedNodes = Array.isArray(initialUi.collapsedCategoryIds);
+  const collapsedNodes = new Set(initializedCollapsedNodes ? initialUi.collapsedCategoryIds : []);
+
+  function ensureDefaultCollapsedNodes() {
+    if (initializedCollapsedNodes) return;
+    initializedCollapsedNodes = true;
+    state.categories.forEach(c => {
+      if (getChildren(state.categories, c.id).length > 0) {
+        collapsedNodes.add(c.id);
+      }
+    });
+  }
+
+  function syncUiState(patch) {
+    if (typeof onUiStateChange === 'function') {
+      onUiStateChange(patch);
+    } else if (state.uiState && typeof state.uiState === 'object') {
+      state.uiState = { ...state.uiState, ...patch };
+    }
+  }
 
   async function handleMoveCategory(categoryId, newParentId) {
     if (typeof onMoveCategory === 'function') {
@@ -78,6 +100,10 @@ export function createCategoryManager({
       categories: state.categories,
       activities: state.activities,
       entries: state.entries,
+      initialCollapsedIds: state.uiState?.collapsedTreeIds ?? null,
+      initialSearchQuery: state.uiState?.treeSearchQuery || '',
+      onCollapsedChange: (ids) => syncUiState({ collapsedTreeIds: ids }),
+      onSearchChange: (query) => syncUiState({ treeSearchQuery: query }),
       onStartActivity,
       onAddCategory: (parentId) => openCategoryModal({ mode: 'create', parentId: parentId || null }),
       onAddActivity,
@@ -185,11 +211,83 @@ export function createCategoryManager({
     searchInput.className = 'category-search-input';
     searchInput.placeholder = 'Rechercher une catégorie…';
     searchInput.value = searchQuery;
+    searchInput.setAttribute('aria-label', 'Rechercher une catégorie');
+
+    const suggestionsBox = document.createElement('div');
+    suggestionsBox.className = 'cat-tree-search-suggestions category-search-suggestions';
+    suggestionsBox.setAttribute('role', 'listbox');
+    suggestionsBox.hidden = true;
+
+    const renderCategorySuggestions = () => {
+      const clean = normalizeSearchText(searchQuery);
+      suggestionsBox.replaceChildren();
+      if (!clean) {
+        suggestionsBox.hidden = true;
+        return;
+      }
+      const matches = state.categories
+        .filter(c => {
+          const normLabel = normalizeSearchText(c.label);
+          const normPath = normalizeSearchText(formatCategoryPath(state.categories, c.id));
+          return normLabel.includes(clean) || normPath.includes(clean);
+        })
+        .slice(0, 8);
+
+      if (!matches.length) {
+        suggestionsBox.hidden = true;
+        return;
+      }
+
+      matches.forEach(cat => {
+        const opt = document.createElement('button');
+        opt.type = 'button';
+        opt.className = 'cat-tree-search-suggestion';
+        opt.setAttribute('role', 'option');
+        const dot = document.createElement('span');
+        dot.className = 'cat-tree-search-suggestion-dot';
+        dot.style.backgroundColor = cat.color || DEFAULT_CATEGORY_COLOR;
+
+        const main = document.createElement('span');
+        main.className = 'cat-tree-search-suggestion-main';
+        const lbl = document.createElement('strong');
+        lbl.textContent = cat.label;
+        main.appendChild(lbl);
+        const path = formatCategoryPath(state.categories, cat.id);
+        if (path && path !== cat.label) {
+          const p = document.createElement('span');
+          p.className = 'cat-tree-search-suggestion-path';
+          p.textContent = path;
+          main.appendChild(p);
+        }
+
+        opt.append(dot, main);
+        const selectSuggestion = (ev) => {
+          ev.preventDefault();
+          searchQuery = cat.label;
+          searchInput.value = cat.label;
+          suggestionsBox.hidden = true;
+          syncUiState({ categorySearchQuery: searchQuery });
+          renderCategoryList(treeContainer);
+        };
+        opt.addEventListener('mousedown', selectSuggestion);
+        opt.addEventListener('click', selectSuggestion);
+        suggestionsBox.appendChild(opt);
+      });
+      suggestionsBox.hidden = false;
+    };
+
     searchInput.addEventListener('input', (e) => {
-      searchQuery = e.target.value.toLowerCase().trim();
+      searchQuery = e.target.value;
+      syncUiState({ categorySearchQuery: searchQuery });
+      renderCategorySuggestions();
       renderCategoryList(treeContainer);
     });
-    searchWrap.appendChild(searchInput);
+    searchInput.addEventListener('blur', () => {
+      setTimeout(() => {
+        suggestionsBox.hidden = true;
+      }, 120);
+    });
+    searchWrap.append(searchInput, suggestionsBox);
 
     const filterGroup = document.createElement('div');
     filterGroup.className = 'category-filter-chips';
@@ -207,6 +305,7 @@ export function createCategoryManager({
       chip.textContent = f.label;
       chip.onclick = () => {
         activeFilter = f.id;
+        syncUiState({ categoryFilter: activeFilter });
         rerender();
       };
       filterGroup.appendChild(chip);
@@ -234,6 +333,7 @@ export function createCategoryManager({
     allColorsBtn.textContent = '×';
     allColorsBtn.onclick = () => {
       activeColorFilter = null;
+      syncUiState({ categoryColorFilter: null });
       rerender();
     };
     swatchesContainer.appendChild(allColorsBtn);
@@ -248,6 +348,7 @@ export function createCategoryManager({
       swatch.title = `Filtrer par ${color}`;
       swatch.onclick = () => {
         activeColorFilter = activeColorFilter === color ? null : color;
+        syncUiState({ categoryColorFilter: activeColorFilter });
         rerender();
       };
       swatchesContainer.appendChild(swatch);
@@ -262,26 +363,32 @@ export function createCategoryManager({
     const expandAllBtn = document.createElement('button');
     expandAllBtn.type = 'button';
     expandAllBtn.className = 'btn small secondary';
+    expandAllBtn.dataset.categoryTreeAction = 'expand-all';
     expandAllBtn.innerHTML = '▾ Tout déplier';
     expandAllBtn.title = 'Déplier toutes les branches de l’arbre';
     expandAllBtn.onclick = () => {
+      initializedCollapsedNodes = true;
       collapsedNodes.clear();
-      rerender();
+      syncUiState({ collapsedCategoryIds: [] });
+      renderCategoryList(treeContainer);
     };
 
     const collapseAllBtn = document.createElement('button');
     collapseAllBtn.type = 'button';
     collapseAllBtn.className = 'btn small secondary';
+    collapseAllBtn.dataset.categoryTreeAction = 'collapse-all';
     collapseAllBtn.innerHTML = '▸ Tout replier';
     collapseAllBtn.title = 'Replier toutes les branches de l’arbre';
     collapseAllBtn.onclick = () => {
+      initializedCollapsedNodes = true;
       collapsedNodes.clear();
       state.categories.forEach(c => {
         if (getChildren(state.categories, c.id).length > 0) {
           collapsedNodes.add(c.id);
         }
       });
-      rerender();
+      syncUiState({ collapsedCategoryIds: [...collapsedNodes] });
+      renderCategoryList(treeContainer);
     };
 
     treeActions.append(expandAllBtn, collapseAllBtn);
@@ -291,6 +398,7 @@ export function createCategoryManager({
     // Tree container
     const treeContainer = document.createElement('div');
     treeContainer.className = 'category-tree-container';
+    ensureDefaultCollapsedNodes();
     renderCategoryList(treeContainer);
     card.appendChild(treeContainer);
 
@@ -310,10 +418,11 @@ export function createCategoryManager({
     if (activeFilter === 'children' && category.parentId === null) return false;
     if (activeColorFilter && (category.color || DEFAULT_CATEGORY_COLOR) !== activeColorFilter) return false;
 
-    if (searchQuery) {
-      const name = category.label.toLowerCase();
-      const path = formatCategoryPath(state.categories, category.id).toLowerCase();
-      if (!name.includes(searchQuery) && !path.includes(searchQuery)) return false;
+    const cleanSearch = normalizeSearchText(searchQuery);
+    if (cleanSearch) {
+      const name = normalizeSearchText(category.label);
+      const path = normalizeSearchText(formatCategoryPath(state.categories, category.id));
+      if (!name.includes(cleanSearch) && !path.includes(cleanSearch)) return false;
     }
     return true;
   }
@@ -331,7 +440,7 @@ export function createCategoryManager({
     }
 
     // If searching or filtering by flat criteria, show matching list
-    if (searchQuery || activeColorFilter || activeFilter !== 'all') {
+    if (searchQuery.trim() || activeColorFilter || activeFilter !== 'all') {
       const matching = allCategories.filter(matchesFilters);
       if (!matching.length) {
         const empty = document.createElement('div');
@@ -382,13 +491,13 @@ export function createCategoryManager({
     tree.className = 'category-tree-view';
 
     rootCategories.forEach(rootCat => {
-      tree.appendChild(renderTreeNode(rootCat, 0));
+      tree.appendChild(renderTreeNode(rootCat, container, 0));
     });
 
     container.appendChild(tree);
   }
 
-  function renderTreeNode(category, depth = 0) {
+  function renderTreeNode(category, listContainer, depth = 0) {
     const nodeWrap = document.createElement('div');
     nodeWrap.className = `category-tree-node depth-${depth}`;
     nodeWrap.dataset.categoryId = category.id;
@@ -399,12 +508,14 @@ export function createCategoryManager({
 
     // Row element
     const row = renderCategoryRow(category, depth, hasChildren, isCollapsed, () => {
+      initializedCollapsedNodes = true;
       if (collapsedNodes.has(category.id)) {
         collapsedNodes.delete(category.id);
       } else {
         collapsedNodes.add(category.id);
       }
-      rerender();
+      syncUiState({ collapsedCategoryIds: [...collapsedNodes] });
+      renderCategoryList(listContainer);
     });
     nodeWrap.appendChild(row);
 
@@ -413,7 +524,7 @@ export function createCategoryManager({
       const childrenWrap = document.createElement('div');
       childrenWrap.className = 'category-tree-children';
       children.forEach(child => {
-        childrenWrap.appendChild(renderTreeNode(child, depth + 1));
+        childrenWrap.appendChild(renderTreeNode(child, listContainer, depth + 1));
       });
       nodeWrap.appendChild(childrenWrap);
     }

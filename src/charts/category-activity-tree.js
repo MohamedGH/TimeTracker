@@ -9,6 +9,7 @@ import {
   TREE_NODE_TYPES,
   buildCategoryActivityTree,
   filterTreeByQuery,
+  collectMatchingTreeSuggestions,
   collectNodeIds,
   computeTreeMetrics,
   findTreeDropTarget,
@@ -65,15 +66,28 @@ export function renderCategoryActivityTree({
   onEditActivity = null,
   onMoveCategory = null,
   onMoveActivity = null,
+  initialCollapsedIds = null,
+  initialSearchQuery = '',
+  onCollapsedChange = null,
+  onSearchChange = null,
 } = {}) {
   if (!container) return null;
 
   container.replaceChildren();
 
   let currentData = { categories, activities, entries, includeEmptyCategories };
-  let searchQuery = '';
+  let searchQuery = typeof initialSearchQuery === 'string' ? initialSearchQuery : '';
+  let respectCollapseInSearch = false;
   let initializedDefaultCollapse = false;
   const collapsedIds = new Set();
+  if (Array.isArray(initialCollapsedIds) || initialCollapsedIds instanceof Set) {
+    initializedDefaultCollapse = true;
+    for (const id of initialCollapsedIds) {
+      if (typeof id === 'string' && id && id !== '__root__') {
+        collapsedIds.add(id);
+      }
+    }
+  }
   const canCreate = typeof onAddCategory === 'function' || typeof onAddActivity === 'function';
   const canDragCategory = typeof onMoveCategory === 'function';
   const canDragActivity = typeof onMoveActivity === 'function';
@@ -93,8 +107,19 @@ export function renderCategoryActivityTree({
   searchInput.type = 'search';
   searchInput.className = 'cat-tree-search';
   searchInput.placeholder = 'Filtrer catégories ou activités…';
+  searchInput.value = searchQuery;
   searchInput.setAttribute('aria-label', 'Filtrer catégories ou activités dans l’arbre');
-  searchWrap.appendChild(searchInput);
+  searchInput.setAttribute('role', 'combobox');
+  searchInput.setAttribute('aria-autocomplete', 'list');
+  searchInput.setAttribute('aria-expanded', 'false');
+
+  const searchSuggestionsEl = document.createElement('div');
+  searchSuggestionsEl.className = 'cat-tree-search-suggestions';
+  searchSuggestionsEl.setAttribute('role', 'listbox');
+  searchSuggestionsEl.setAttribute('aria-label', 'Suggestions de catégories et activités');
+  searchSuggestionsEl.hidden = true;
+
+  searchWrap.append(searchInput, searchSuggestionsEl);
 
   const controlsRow = document.createElement('div');
   controlsRow.className = 'cat-tree-controls';
@@ -273,7 +298,10 @@ export function renderCategoryActivityTree({
   resetFilterBtn.onclick = () => {
     searchQuery = '';
     searchInput.value = '';
-    updateTree();
+    respectCollapseInSearch = false;
+    hideSearchSuggestions();
+    onSearchChange?.('');
+    updateTree(null, true);
   };
   emptyState.append(emptyText, resetFilterBtn);
 
@@ -361,6 +389,9 @@ export function renderCategoryActivityTree({
   };
 
   const handleDocInteraction = (event) => {
+    if (!searchWrap.contains(event.target)) {
+      hideSearchSuggestions();
+    }
     if (isModalActive() || isEventInsideModal(event) || !stage.contains(event.target)) {
       setChartFocused(false);
       wasFocusedBeforePointerDown = false;
@@ -590,29 +621,121 @@ export function renderCategoryActivityTree({
   function computeInitialCollapsed(rawTree) {
     if (initializedDefaultCollapse) return;
     initializedDefaultCollapse = true;
-    // Collapse session sub-leaves under activities by default so Category -> Activity leaves are crystal clear
-    const activityIds = collectNodeIds(rawTree, n => n.type === TREE_NODE_TYPES.ACTIVITY && n.children?.length > 0);
-    activityIds.forEach(id => collapsedIds.add(id));
+    // By default, start all categories and activity branches collapsed so only root + top-level categories show
+    const branchIds = collectNodeIds(
+      rawTree,
+      n => n.type !== TREE_NODE_TYPES.ROOT && n.type !== TREE_NODE_TYPES.SESSION && n.children?.length > 0
+    );
+    branchIds.forEach(id => collapsedIds.add(id));
   }
 
-  function buildVisibleHierarchy(rawTree) {
-    const filtered = searchQuery ? filterTreeByQuery(rawTree, searchQuery) : rawTree;
+  function buildVisibleHierarchy(filteredTree) {
     const isSearching = Boolean(searchQuery.trim());
+    const shouldAutoExpand = isSearching && !respectCollapseInSearch;
 
-    const rootHierarchy = d3.hierarchy(filtered, d => {
+    const rootHierarchy = d3.hierarchy(filteredTree, d => {
       if (!d.children || d.children.length === 0) return null;
-      // When searching, auto-expand matching branches so results are immediately visible
-      if (!isSearching && collapsedIds.has(d.id)) return null;
+      // When typing a search, auto-expand matching branches so results are immediately visible
+      if (!shouldAutoExpand && collapsedIds.has(d.id)) return null;
       return d.children;
     });
 
     // Attach total child count even when collapsed
     rootHierarchy.each(d => {
       d.totalRawChildren = Array.isArray(d.data.children) ? d.data.children.length : 0;
-      d.isCollapsed = !isSearching && collapsedIds.has(d.data.id) && d.totalRawChildren > 0;
+      d.isCollapsed = !shouldAutoExpand && collapsedIds.has(d.data.id) && d.totalRawChildren > 0;
     });
 
     return rootHierarchy;
+  }
+
+  let activeSuggestionIndex = -1;
+  let currentSuggestions = [];
+
+  function hideSearchSuggestions() {
+    searchSuggestionsEl.hidden = true;
+    searchSuggestionsEl.replaceChildren();
+    searchInput.setAttribute('aria-expanded', 'false');
+    activeSuggestionIndex = -1;
+    currentSuggestions = [];
+  }
+
+  function applySearchSuggestion(item) {
+    if (!item) return;
+    searchQuery = item.label;
+    searchInput.value = item.label;
+    respectCollapseInSearch = false;
+    hideSearchSuggestions();
+    onSearchChange?.(searchQuery);
+    updateTree(null, true);
+  }
+
+  function renderSearchSuggestions() {
+    const query = searchQuery.trim();
+    if (!query || !lastRawTree) {
+      hideSearchSuggestions();
+      return;
+    }
+
+    const suggestions = collectMatchingTreeSuggestions(lastRawTree, query, 8);
+    currentSuggestions = suggestions;
+    activeSuggestionIndex = -1;
+    searchSuggestionsEl.replaceChildren();
+
+    if (!suggestions.length) {
+      const emptyItem = document.createElement('div');
+      emptyItem.className = 'cat-tree-search-suggestion-empty';
+      emptyItem.textContent = `Aucune catégorie ni activité pour « ${query} »`;
+      searchSuggestionsEl.appendChild(emptyItem);
+      searchSuggestionsEl.hidden = false;
+      searchInput.setAttribute('aria-expanded', 'true');
+      return;
+    }
+
+    suggestions.forEach((item, index) => {
+      const optionBtn = document.createElement('button');
+      optionBtn.type = 'button';
+      optionBtn.className = 'cat-tree-search-suggestion';
+      optionBtn.setAttribute('role', 'option');
+      optionBtn.setAttribute('aria-selected', 'false');
+      optionBtn.dataset.suggestionIndex = String(index);
+      optionBtn.dataset.suggestionId = item.id;
+
+      const dot = document.createElement('span');
+      dot.className = 'cat-tree-search-suggestion-dot';
+      dot.style.backgroundColor = item.color;
+
+      const main = document.createElement('span');
+      main.className = 'cat-tree-search-suggestion-main';
+      const labelEl = document.createElement('strong');
+      labelEl.textContent = item.label;
+      main.appendChild(labelEl);
+
+      if (item.categoryPath) {
+        const pathEl = document.createElement('span');
+        pathEl.className = 'cat-tree-search-suggestion-path';
+        pathEl.textContent = item.categoryPath;
+        main.appendChild(pathEl);
+      }
+
+      const kindTag = document.createElement('span');
+      kindTag.className = 'cat-tree-search-suggestion-kind';
+      kindTag.textContent = item.type === TREE_NODE_TYPES.CATEGORY ? 'Catégorie' : 'Activité';
+
+      optionBtn.append(dot, main, kindTag);
+      optionBtn.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        applySearchSuggestion(item);
+      });
+      optionBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        applySearchSuggestion(item);
+      });
+      searchSuggestionsEl.appendChild(optionBtn);
+    });
+
+    searchSuggestionsEl.hidden = false;
+    searchInput.setAttribute('aria-expanded', 'true');
   }
 
   function updateSummary(rawTree) {
@@ -684,12 +807,20 @@ export function renderCategoryActivityTree({
     computeInitialCollapsed(rawTree);
     updateSummary(rawTree);
 
-    const rootHierarchy = buildVisibleHierarchy(rawTree);
-    const hasNodes = (rootHierarchy.children && rootHierarchy.children.length > 0);
+    const isSearching = Boolean(searchQuery.trim());
+    const filteredTree = isSearching ? filterTreeByQuery(rawTree, searchQuery) : rawTree;
+    const hasNodes = Boolean(filteredTree?.children && filteredTree.children.length > 0);
+
+    emptyText.textContent = isSearching
+      ? 'Aucune catégorie ni activité ne correspond à votre recherche.'
+      : 'Aucune catégorie ni activité à afficher.';
+    resetFilterBtn.hidden = !isSearching;
     emptyState.hidden = hasNodes;
     svgSel.style('display', hasNodes ? 'block' : 'none');
 
     if (!hasNodes) return;
+
+    const rootHierarchy = buildVisibleHierarchy(filteredTree);
 
     const treeLayout = d3.tree().nodeSize([ROW_SPACING_X, DEPTH_SPACING_Y]);
     treeLayout(rootHierarchy);
@@ -1093,11 +1224,15 @@ export function renderCategoryActivityTree({
       .on('click', (event, d) => {
         if (event.defaultPrevented || isModalActive() || isEventInsideModal(event)) return;
         if (d.totalRawChildren > 0) {
+          if (searchQuery.trim()) {
+            respectCollapseInSearch = true;
+          }
           if (collapsedIds.has(d.data.id)) {
             collapsedIds.delete(d.data.id);
           } else {
             collapsedIds.add(d.data.id);
           }
+          onCollapsedChange?.([...collapsedIds]);
           d.x0 = d.x;
           d.y0 = d.y;
           updateTree(d, false);
@@ -1172,17 +1307,61 @@ export function renderCategoryActivityTree({
   // Wire toolbar events
   searchInput.addEventListener('input', (event) => {
     searchQuery = event.target.value;
+    respectCollapseInSearch = false;
+    onSearchChange?.(searchQuery);
+    renderSearchSuggestions();
     updateTree(null, true);
+  });
+
+  searchInput.addEventListener('focus', () => {
+    if (searchQuery.trim()) {
+      renderSearchSuggestions();
+    }
+  });
+
+  searchInput.addEventListener('keydown', (event) => {
+    if (searchSuggestionsEl.hidden || !currentSuggestions.length) {
+      if (event.key === 'Escape') {
+        hideSearchSuggestions();
+      }
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      activeSuggestionIndex = (activeSuggestionIndex + 1) % currentSuggestions.length;
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      activeSuggestionIndex = (activeSuggestionIndex - 1 + currentSuggestions.length) % currentSuggestions.length;
+    } else if (event.key === 'Enter' && activeSuggestionIndex >= 0) {
+      event.preventDefault();
+      applySearchSuggestion(currentSuggestions[activeSuggestionIndex]);
+      return;
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      hideSearchSuggestions();
+      return;
+    } else {
+      return;
+    }
+
+    searchSuggestionsEl.querySelectorAll('.cat-tree-search-suggestion').forEach((btn, idx) => {
+      const selected = idx === activeSuggestionIndex;
+      btn.classList.toggle('is-active', selected);
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
   });
 
   expandAllBtn.onclick = () => {
     collapsedIds.clear();
+    respectCollapseInSearch = true;
+    onCollapsedChange?.([]);
     updateTree(null, true);
   };
 
   collapseLeavesBtn.onclick = () => {
     if (!lastRawTree) return;
     collapsedIds.clear();
+    respectCollapseInSearch = true;
     // Collapse session leaves under activities AND collapse categories that contain activities
     const visit = (node) => {
       if (node.type === TREE_NODE_TYPES.ACTIVITY && node.children?.length > 0) {
@@ -1200,6 +1379,7 @@ export function renderCategoryActivityTree({
       for (const child of node.children || []) visit(child);
     };
     visit(lastRawTree);
+    onCollapsedChange?.([...collapsedIds]);
     updateTree(null, true);
   };
 
@@ -1207,10 +1387,12 @@ export function renderCategoryActivityTree({
     if (!lastRawTree) return;
     const allIds = collectNodeIds(
       lastRawTree,
-      n => n.type !== TREE_NODE_TYPES.SESSION && n.children?.length > 0
+      n => n.type !== TREE_NODE_TYPES.ROOT && n.type !== TREE_NODE_TYPES.SESSION && n.children?.length > 0
     );
     collapsedIds.clear();
     allIds.forEach(id => collapsedIds.add(id));
+    respectCollapseInSearch = true;
+    onCollapsedChange?.([...collapsedIds]);
     updateTree(null, true);
   };
 

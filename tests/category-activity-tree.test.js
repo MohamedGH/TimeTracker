@@ -31,7 +31,7 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
     return [...rootEl.querySelectorAll('g.tree-node:not(.is-exiting)')];
   }
 
-  it('renders root, categories, subcategories, and activity leaves as SVG nodes', () => {
+  it('renders root and top-level categories collapsed by default, and reveals subcategories/activities when expanded', () => {
     const tree = renderCategoryActivityTree({
       container,
       categories,
@@ -40,24 +40,36 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       animationDuration: 0,
     });
 
-    const nodes = activeNodes(container);
-    const ids = nodes.map(n => n.dataset.nodeId);
+    let nodes = activeNodes(container);
+    let ids = nodes.map(n => n.dataset.nodeId);
 
+    // Default collapsed: root + top-level categories only
     expect(ids).toContain('__root__');
     expect(ids).toContain('category:travail');
-    expect(ids).toContain('category:dev');
     expect(ids).toContain('category:sport');
+    expect(ids).not.toContain('category:dev');
+    expect(ids).not.toContain('activity:act-1');
+    expect(ids).not.toContain('activity:act-2');
+    expect(container.querySelector('.cat-tree-empty').hidden).toBe(true);
+
+    // Expanding all reveals categories, subcategories, activities, and sessions
+    tree.expandAll();
+    nodes = activeNodes(container);
+    ids = nodes.map(n => n.dataset.nodeId);
+    expect(ids).toContain('category:dev');
     expect(ids).toContain('activity:act-1'); // Code Frontend
     expect(ids).toContain('activity:act-2'); // Course à pied
     expect(ids).toContain('activity:travail:revue pr');
 
-    // Session sub-leaves start collapsed by default
+    // Replier feuilles hides activities/sessions while keeping categories
+    tree.collapseLeaves();
+    nodes = activeNodes(container);
     expect(nodes.some(n => n.dataset.nodeType === 'session')).toBe(false);
 
     tree.destroy();
   });
 
-  it('collapses and expands category leaves and branches when clicked', () => {
+  it('expands and collapses category leaves and branches when clicked', () => {
     const tree = renderCategoryActivityTree({
       container,
       categories,
@@ -66,6 +78,8 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       animationDuration: 0,
     });
 
+    // Expand all first so both Travail and Sport start expanded
+    tree.expandAll();
     const travailNode = container.querySelector('g.tree-node[data-node-id="category:travail"]');
     expect(travailNode).toBeTruthy();
 
@@ -98,7 +112,14 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       animationDuration: 0,
     });
 
+    // Expand categories while leaving session leaves collapsed
+    container.querySelector('g.tree-node[data-node-id="category:travail"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    container.querySelector('g.tree-node[data-node-id="category:dev"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
     const actNode = container.querySelector('g.tree-node[data-node-id="activity:act-1"]');
+    expect(actNode).toBeTruthy();
     expect(actNode.getAttribute('aria-expanded')).toBe('false');
 
     // Click activity node -> expands session leaf
@@ -114,7 +135,7 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
     tree.destroy();
   });
 
-  it('supports toolbar actions: collapseLeaves, collapseAll, expandAll', () => {
+  it('supports toolbar actions: collapseLeaves, collapseAll (without showing empty state), expandAll', () => {
     const tree = renderCategoryActivityTree({
       container,
       categories,
@@ -123,18 +144,30 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       animationDuration: 0,
     });
 
+    tree.expandAll();
     tree.collapseLeaves();
     let ids = activeNodes(container).map(n => n.dataset.nodeId);
     expect(ids).toContain('category:travail');
     expect(ids).toContain('category:sport');
     expect(ids).not.toContain('activity:act-1');
     expect(ids).not.toContain('activity:act-2');
+    expect(container.querySelector('.cat-tree-empty').hidden).toBe(true);
 
     tree.collapseAll();
     ids = activeNodes(container).map(n => n.dataset.nodeId);
     expect(ids).toContain('__root__');
     expect(ids).toContain('category:travail');
+    expect(ids).toContain('category:sport');
     expect(ids).not.toContain('category:dev');
+    // Must NEVER display empty search message or hide SVG after clicking Tout replier
+    expect(container.querySelector('.cat-tree-empty').hidden).toBe(true);
+    expect(container.querySelector('.cat-tree-svg').style.display).not.toBe('none');
+
+    // Even collapsing root manually keeps SVG visible (no false search empty state)
+    container.querySelector('g.tree-node[data-node-id="__root__"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(container.querySelector('.cat-tree-empty').hidden).toBe(true);
+    expect(container.querySelector('.cat-tree-svg').style.display).not.toBe('none');
 
     tree.expandAll();
     ids = activeNodes(container).map(n => n.dataset.nodeId);
@@ -175,6 +208,39 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
     tree.destroy();
   });
 
+  it('proposes matching category/activity suggestions while typing in the search filter and applies selection', () => {
+    const tree = renderCategoryActivityTree({
+      container,
+      categories,
+      activities,
+      entries,
+      animationDuration: 0,
+    });
+
+    const search = container.querySelector('.cat-tree-search');
+    const suggestionsBox = container.querySelector('.cat-tree-search-suggestions');
+    expect(suggestionsBox.hidden).toBe(true);
+
+    // Accent-insensitive partial query "dev" proposes "Développement"
+    search.value = 'dev';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(suggestionsBox.hidden).toBe(false);
+    const items = [...suggestionsBox.querySelectorAll('.cat-tree-search-suggestion')];
+    expect(items.some(el => el.textContent.includes('Développement'))).toBe(true);
+
+    // Selecting a suggestion fills input, hides suggestions, and filters tree
+    const devSuggestion = items.find(el => el.textContent.includes('Développement'));
+    devSuggestion.click();
+    expect(search.value).toBe('Développement');
+    expect(suggestionsBox.hidden).toBe(true);
+    const ids = activeNodes(container).map(n => n.dataset.nodeId);
+    expect(ids).toContain('category:dev');
+    expect(ids).not.toContain('category:sport');
+
+    tree.destroy();
+  });
+
   it('triggers onStartActivity when clicking the play button on an activity leaf without collapsing', () => {
     const onStartActivity = vi.fn();
     const tree = renderCategoryActivityTree({
@@ -186,6 +252,7 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       onStartActivity,
     });
 
+    tree.expandAll();
     const playBtn = container.querySelector('g.tree-node[data-node-id="activity:act-1"] [data-action="start-activity"]');
     expect(playBtn).toBeTruthy();
     playBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -230,6 +297,8 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       onAddCategory,
       onAddActivity,
     });
+
+    tree.expandAll();
 
     // Click '+' on category:dev node
     const devAddBtn = container.querySelector('g.tree-node[data-node-id="category:dev"] [data-action="node-add"]');
@@ -278,6 +347,12 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       onEditCategory,
       onEditActivity,
     });
+
+    // Expand categories while keeping session sub-leaves collapsed
+    container.querySelector('g.tree-node[data-node-id="category:travail"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    container.querySelector('g.tree-node[data-node-id="category:dev"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     // 1. Direct edit button on Category node
     const editCatBtn = container.querySelector('g.tree-node[data-node-id="category:dev"] [data-action="edit-category"]');
@@ -361,6 +436,8 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       onMoveCategory,
       onMoveActivity,
     });
+
+    tree.expandAll();
 
     const devNode = container.querySelector('g.tree-node[data-node-id="category:dev"]');
     const sportNode = container.querySelector('g.tree-node[data-node-id="category:sport"]');
@@ -477,6 +554,8 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       onEditActivity,
     });
 
+    tree.expandAll();
+
     const stage = container.querySelector('.cat-tree-stage');
     const svg = container.querySelector('.cat-tree-svg');
     const zoomLayer = container.querySelector('.cat-tree-zoom-layer');
@@ -524,6 +603,8 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       onAddCategory,
       onAddActivity,
     });
+
+    tree.expandAll();
 
     const stage = container.querySelector('.cat-tree-stage');
     const svg = container.querySelector('.cat-tree-svg');

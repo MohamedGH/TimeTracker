@@ -210,6 +210,23 @@ describe('Category Palette & Color Helpers', () => {
       return ev;
     };
 
+    // Categories with children start collapsed by default
+    expect(host.querySelector('.category-item-row[data-category-id="work"]')).toBeTruthy();
+    expect(host.querySelector('.category-item-row[data-category-id="dev"]')).toBeNull();
+
+    // Typing in search box proposes matching category suggestions
+    const catSearch = host.querySelector('.category-search-input');
+    catSearch.value = 'dev';
+    catSearch.dispatchEvent(new Event('input', { bubbles: true }));
+    const catSuggestions = host.querySelector('.category-search-suggestions');
+    expect(catSuggestions.hidden).toBe(false);
+    expect(catSuggestions.textContent).toContain('Développement');
+    catSearch.value = '';
+    catSearch.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Expand all to access subcategories
+    host.querySelector('[data-category-tree-action="expand-all"]').click();
+
     const devRow = host.querySelector('.category-item-row[data-category-id="dev"]');
     const lifeRow = host.querySelector('.category-item-row[data-category-id="life"]');
     expect(devRow.draggable).toBe(true);
@@ -227,6 +244,7 @@ describe('Category Palette & Color Helpers', () => {
     expect(state.categories.find(c => c.id === 'dev').parentId).toBe('life');
 
     // Prevent cyclic drop: 'life' onto its child 'dev'
+    host.querySelector('[data-category-tree-action="expand-all"]').click();
     const nextLifeRow = host.querySelector('.category-item-row[data-category-id="life"]');
     const nextDevRow = host.querySelector('.category-item-row[data-category-id="dev"]');
     nextLifeRow.dispatchEvent(makeDragEvent('dragstart'));
@@ -244,6 +262,9 @@ describe('Category Palette & Color Helpers', () => {
     dropzone.dispatchEvent(makeDragEvent('drop'));
     await Promise.resolve();
     expect(state.categories.find(c => c.id === 'dev').parentId).toBeNull();
+
+    // Collapse all collapses any remaining parent branches
+    host.querySelector('[data-category-tree-action="collapse-all"]').click();
 
     manager.destroy();
     host.remove();

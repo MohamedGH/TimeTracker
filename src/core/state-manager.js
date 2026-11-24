@@ -30,11 +30,17 @@ import {
   removeTrashRecord,
   restoreTrashRecord,
 } from './trash-manager.js';
+import {
+  DEFAULT_UI_STATE,
+  normalizeUiState,
+  mergeUiState,
+} from './ui-state.js';
 
 export const ACTION_TYPES = Object.freeze({
   SET_TAB: 'SET_TAB',
   SET_PERIOD: 'SET_PERIOD',
   SET_SHORTCUT_CATEGORY_FILTER: 'SET_SHORTCUT_CATEGORY_FILTER',
+  SET_UI_STATE: 'SET_UI_STATE',
   SET_DEVICE_TYPE: 'SET_DEVICE_TYPE',
   SET_MODAL: 'SET_MODAL',
   CLOSE_MODAL: 'CLOSE_MODAL',
@@ -88,6 +94,7 @@ export function appReducer(state, action) {
       return {
         ...state,
         tab: action.payload,
+        uiState: mergeUiState(state.uiState, { tab: action.payload }),
         modal: null,
         editingEntryId: null,
         error: null,
@@ -97,13 +104,30 @@ export function appReducer(state, action) {
       return {
         ...state,
         period: action.payload,
+        uiState: mergeUiState(state.uiState, { period: action.payload }),
       };
 
-    case ACTION_TYPES.SET_SHORTCUT_CATEGORY_FILTER:
+    case ACTION_TYPES.SET_SHORTCUT_CATEGORY_FILTER: {
+      const nextFilter = action.payload || 'all';
       return {
         ...state,
-        shortcutCategoryFilter: action.payload || 'all',
+        shortcutCategoryFilter: nextFilter,
+        uiState: mergeUiState(state.uiState, { shortcutCategoryFilter: nextFilter }),
       };
+    }
+
+    case ACTION_TYPES.SET_UI_STATE: {
+      const nextUiState = mergeUiState(state.uiState, action.payload);
+      return {
+        ...state,
+        tab: nextUiState.tab,
+        period: nextUiState.period,
+        customStart: nextUiState.customStart,
+        customEnd: nextUiState.customEnd,
+        shortcutCategoryFilter: nextUiState.shortcutCategoryFilter,
+        uiState: nextUiState,
+      };
+    }
 
     case ACTION_TYPES.SET_DEVICE_TYPE:
       return {
@@ -623,6 +647,11 @@ export function appReducer(state, action) {
         modal: null,
         error: null,
         tab: 'entry',
+        period: '7',
+        customStart: null,
+        customEnd: null,
+        shortcutCategoryFilter: 'all',
+        uiState: { ...DEFAULT_UI_STATE },
       };
 
     case ACTION_TYPES.SET_AUTH_USER:
@@ -707,6 +736,7 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     deviceType: 'mobile',
     customStart: null,
     customEnd: null,
+    uiState: { ...DEFAULT_UI_STATE },
     editingEntryId: null,
     modal: null,
     error: null,
@@ -714,6 +744,14 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     authUser: null,
     ...initialState,
   };
+  currentState.uiState = normalizeUiState({
+    ...currentState.uiState,
+    tab: currentState.tab,
+    period: currentState.period,
+    customStart: currentState.customStart,
+    customEnd: currentState.customEnd,
+    shortcutCategoryFilter: currentState.shortcutCategoryFilter,
+  });
 
   const listeners = new Set();
 
@@ -732,7 +770,13 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       prevState.activeTimer !== nextState.activeTimer ||
       prevState.quickTilesConfig !== nextState.quickTilesConfig ||
       prevState.geoTrackingEnabled !== nextState.geoTrackingEnabled ||
-      prevState.timerUpdatedAt !== nextState.timerUpdatedAt
+      prevState.timerUpdatedAt !== nextState.timerUpdatedAt ||
+      prevState.tab !== nextState.tab ||
+      prevState.period !== nextState.period ||
+      prevState.customStart !== nextState.customStart ||
+      prevState.customEnd !== nextState.customEnd ||
+      prevState.shortcutCategoryFilter !== nextState.shortcutCategoryFilter ||
+      prevState.uiState !== nextState.uiState
     ) {
       if (typeof persistFn === 'function') {
         try {
@@ -776,6 +820,9 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       setShortcutCategoryFilter(filterKey) {
         return dispatch({ type: ACTION_TYPES.SET_SHORTCUT_CATEGORY_FILTER, payload: filterKey });
+      },
+      setUiState(patch) {
+        return dispatch({ type: ACTION_TYPES.SET_UI_STATE, payload: patch });
       },
       setDeviceType(deviceType) {
         return dispatch({ type: ACTION_TYPES.SET_DEVICE_TYPE, payload: deviceType });

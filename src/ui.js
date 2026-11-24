@@ -118,6 +118,12 @@ import {
   removeTrashRecord,
   restoreTrashRecord,
 } from './core/trash-manager.js';
+import {
+  DEFAULT_UI_STATE,
+  normalizeUiState,
+  mergeUiState,
+  normalizeSearchText,
+} from './core/ui-state.js';
 
 export function createUI({
   root,
@@ -167,7 +173,10 @@ export function createUI({
       smState.authUser = state.authUser;
       smState.tab = state.tab;
       smState.period = state.period;
+      smState.customStart = state.customStart;
+      smState.customEnd = state.customEnd;
       smState.shortcutCategoryFilter = state.shortcutCategoryFilter;
+      smState.uiState = state.uiState;
       smState.deviceType = state.deviceType;
     }
   }
@@ -181,12 +190,34 @@ export function createUI({
       state.categories = smState.categories;
       state.activityTemplates = smState.activityTemplates;
       state.deletedItems = smState.deletedItems;
+      state.tab = smState.tab;
+      state.period = smState.period;
+      state.customStart = smState.customStart;
+      state.customEnd = smState.customEnd;
+      state.shortcutCategoryFilter = smState.shortcutCategoryFilter;
+      state.uiState = smState.uiState;
     }
   }
 
   function dispatchStateAction(fn) {
     syncStateToStateManager();
     return fn?.();
+  }
+
+  function updateUiState(patch = {}) {
+    state.uiState = mergeUiState(state.uiState, patch);
+    if (patch.tab !== undefined) state.tab = state.uiState.tab;
+    if (patch.period !== undefined) state.period = state.uiState.period;
+    if (patch.customStart !== undefined) state.customStart = state.uiState.customStart;
+    if (patch.customEnd !== undefined) state.customEnd = state.uiState.customEnd;
+    if (patch.shortcutCategoryFilter !== undefined) {
+      state.shortcutCategoryFilter = state.uiState.shortcutCategoryFilter;
+    }
+    if (_stateManager?.actions?.setUiState) {
+      dispatchStateAction(() => _stateManager.actions.setUiState(patch));
+    } else {
+      persist().catch(() => {});
+    }
   }
 
   async function persist() {
@@ -207,6 +238,15 @@ export function createUI({
     syncStateFromStateManager();
   }
 
+  state.uiState = normalizeUiState({
+    ...state.uiState,
+    tab: state.tab || state.uiState?.tab || 'entry',
+    period: state.period || state.uiState?.period || '7',
+    customStart: state.customStart ?? state.uiState?.customStart ?? null,
+    customEnd: state.customEnd ?? state.uiState?.customEnd ?? null,
+    shortcutCategoryFilter: state.shortcutCategoryFilter || state.uiState?.shortcutCategoryFilter || 'all',
+  });
+
   let ticker;
   let lastTrackedTab = null;
   const insightsState = {
@@ -215,10 +255,10 @@ export function createUI({
     lastSignature: null,
     hasCompletedInitialRun: false,
   };
-  let entryFormMode = state.editingEntryId ? 'manual' : 'timer'; // 'timer' | 'manual'
+  let entryFormMode = state.editingEntryId ? 'manual' : (state.uiState.entryFormMode || 'timer'); // 'timer' | 'manual'
   let authBusy = false;
   let driveSyncBusy = false;
-  let syncPanelTab = 'drive'; // 'drive' | 'p2p'
+  let syncPanelTab = state.uiState.syncPanelTab || 'drive'; // 'drive' | 'p2p'
   let p2pRole = 'offer'; // 'offer' | 'join'
   let p2pOfferInput = '';
   let p2pAnswerInput = '';
@@ -226,9 +266,9 @@ export function createUI({
   let reconcileQueued = false;
   let destroyed = false;
   let mapsQuotaExceeded = false;
-  let mapCategoryFilter = 'all';
-  let mapPointTypeFilter = 'all';
-  let mapShowRoutePath = true;
+  let mapCategoryFilter = state.uiState.mapCategoryFilter || 'all';
+  let mapPointTypeFilter = state.uiState.mapPointTypeFilter || 'all';
+  let mapShowRoutePath = state.uiState.mapShowRoutePath !== undefined ? Boolean(state.uiState.mapShowRoutePath) : true;
   let mapFocusClusterId = null;
   let manualStartLocationOverride = undefined;
   let manualEndLocationOverride = undefined;
@@ -307,12 +347,17 @@ export function createUI({
         state.modal = null;
         state.editingEntryId = null;
         state.error = null;
+        updateUiState({ tab: route });
         rerender();
       }
     },
     defaultRoute: state.tab || 'entry',
   });
-  routeManager.start();
+  const initialRoute = routeManager.start();
+  if (initialRoute && state.tab !== initialRoute) {
+    state.tab = initialRoute;
+    state.uiState = mergeUiState(state.uiState, { tab: initialRoute });
+  }
 
   // Error & Notice Manager
   const errorManager = createErrorManager({
@@ -1186,6 +1231,7 @@ export function createUI({
     state,
     persist,
     rerender,
+    onUiStateChange: (patch) => updateUiState(patch),
     onStartActivity: (activityName, categoryId) => {
       startTimer(activityName, categoryId || state.categories[0]?.id, today(), nowTime());
     },
@@ -2103,7 +2149,7 @@ export function createUI({
 
     const applyShortcutFilter = (filterKey) => {
       state.shortcutCategoryFilter = filterKey;
-      dispatchStateAction(() => _stateManager?.actions?.setShortcutCategoryFilter?.(filterKey));
+      updateUiState({ shortcutCategoryFilter: filterKey });
       rerender();
     };
 
@@ -2215,6 +2261,7 @@ export function createUI({
       chronoModeBtn.textContent = '⏱️ Démarrer un chrono';
       chronoModeBtn.onclick = () => {
         entryFormMode = 'timer';
+        updateUiState({ entryFormMode: 'timer' });
         rerender();
       };
 
@@ -2225,6 +2272,7 @@ export function createUI({
       manualModeBtn.textContent = '📝 Saisie manuelle';
       manualModeBtn.onclick = () => {
         entryFormMode = 'manual';
+        updateUiState({ entryFormMode: 'manual' });
         rerender();
       };
 
@@ -2448,7 +2496,8 @@ export function createUI({
 
     const refresh = () => {
       const selectedId = category.select.value;
-      const query = String(activity.input.value || '').trim().toLowerCase();
+      const rawQuery = String(activity.input.value || '').trim();
+      const query = normalizeSearchText(rawQuery);
       datalist.replaceChildren();
       visibleList.replaceChildren();
 
@@ -2463,7 +2512,7 @@ export function createUI({
         const categoryId = a.categoryId ?? a.cat;
         if (!name || seen.has(name.toLowerCase())) continue;
         if (allowed && categoryId && !allowed.has(categoryId)) continue;
-        if (query && !name.toLowerCase().includes(query)) continue;
+        if (query && !normalizeSearchText(name).includes(query)) continue;
         seen.add(name.toLowerCase());
         matches.push(name);
       }
@@ -2473,7 +2522,7 @@ export function createUI({
         const name = String(e.activity || '').trim();
         if (!name || seen.has(name.toLowerCase())) continue;
         if (allowed && e.categoryId && !allowed.has(e.categoryId)) continue;
-        if (query && !name.toLowerCase().includes(query)) continue;
+        if (query && !normalizeSearchText(name).includes(query)) continue;
         seen.add(name.toLowerCase());
         matches.push(name);
       }
@@ -2708,6 +2757,7 @@ export function createUI({
       b.onclick = () => {
         state.period = p.id;
         mapFocusClusterId = null;
+        updateUiState({ period: p.id });
         trackEvent('dashboard_period_changed', dashboardPeriodChangedPayload({ period: p.id }));
         rerender();
       };
@@ -2743,20 +2793,24 @@ export function createUI({
       onChangeCategoryFilter: (nextFilter) => {
         mapCategoryFilter = nextFilter || 'all';
         mapFocusClusterId = null;
+        updateUiState({ mapCategoryFilter });
         rerender();
       },
       onChangePointTypeFilter: (nextPointType) => {
         mapPointTypeFilter = nextPointType || 'all';
         mapFocusClusterId = null;
+        updateUiState({ mapPointTypeFilter });
         rerender();
       },
       onToggleRoutePath: (nextShow) => {
         mapShowRoutePath = Boolean(nextShow);
+        updateUiState({ mapShowRoutePath });
         rerender();
       },
       onSelectPeriodAll: () => {
         state.period = 'all';
         mapFocusClusterId = null;
+        updateUiState({ period: 'all' });
         rerender();
       },
     });
@@ -3504,6 +3558,7 @@ export function createUI({
     driveTabBtn.textContent = '☁️ Google Drive';
     driveTabBtn.onclick = () => {
       syncPanelTab = 'drive';
+      updateUiState({ syncPanelTab: 'drive' });
       rerender();
     };
 
@@ -3514,6 +3569,7 @@ export function createUI({
     p2pTabBtn.textContent = p2pSnap.isConnected ? '🔗 P2P (Connecté)' : '🔗 P2P Direct';
     p2pTabBtn.onclick = () => {
       syncPanelTab = 'p2p';
+      updateUiState({ syncPanelTab: 'p2p' });
       rerender();
     };
 
@@ -4457,11 +4513,21 @@ export function createUI({
       manualEndLocationOverride = undefined;
       manualLocationEditingId = null;
       mapFocusClusterId = null;
+      entryFormMode = 'timer';
+      syncPanelTab = 'drive';
+      mapCategoryFilter = 'all';
+      mapPointTypeFilter = 'all';
+      mapShowRoutePath = true;
       state.authUser = null;
       state.modal = null;
       state.editingEntryId = null;
       state.error = null;
       state.tab = 'entry';
+      state.period = '7';
+      state.customStart = null;
+      state.customEnd = null;
+      state.shortcutCategoryFilter = 'all';
+      state.uiState = { ...DEFAULT_UI_STATE };
       await persist();
       await syncQuickTilesToNative();
       await pushActiveTimerToNative(null, state.timerUpdatedAt);
@@ -4558,6 +4624,10 @@ export function createUI({
         entries: dashboardEntries(),
         categories: state.categories,
         activities: state.activities,
+        initialCollapsedIds: state.uiState?.collapsedTreeIds ?? null,
+        initialSearchQuery: state.uiState?.treeSearchQuery || '',
+        onCollapsedChange: (ids) => updateUiState({ collapsedTreeIds: ids }),
+        onSearchChange: (query) => updateUiState({ treeSearchQuery: query }),
         onStartActivity: (activityName, categoryId) => {
           startTimer(activityName, categoryId || state.categories[0]?.id, today(), nowTime());
         },

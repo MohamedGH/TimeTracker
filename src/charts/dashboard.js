@@ -29,6 +29,10 @@ export async function renderCharts({
   onEditActivity = null,
   onMoveCategory = null,
   onMoveActivity = null,
+  initialCollapsedIds = null,
+  initialSearchQuery = '',
+  onCollapsedChange = null,
+  onSearchChange = null,
 }) {
   destroyCharts();
 
@@ -118,6 +122,10 @@ export async function renderCharts({
     categoryTreeController = await renderCategoryHierarchy(treeHost, entries, {
       categories,
       activities: suppliedActivities,
+      initialCollapsedIds,
+      initialSearchQuery,
+      onCollapsedChange,
+      onSearchChange,
       onStartActivity,
       onAddCategory,
       onAddActivity,

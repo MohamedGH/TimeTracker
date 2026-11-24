@@ -5,6 +5,7 @@
 
 import { formatDuration } from './statistics.js';
 import { wouldCreateCycle } from './category-tree.js';
+import { normalizeSearchText } from './ui-state.js';
 
 export const TREE_NODE_TYPES = Object.freeze({
   ROOT: 'root',
@@ -243,12 +244,12 @@ export function buildCategoryActivityTree({
  * Pure function: (TreeNode, string) -> TreeNode | null
  */
 export function filterTreeByQuery(node, query = '') {
-  const clean = String(query || '').trim().toLowerCase();
+  const clean = normalizeSearchText(query);
   if (!clean) return node;
   if (!node) return null;
 
   const selfMatches = node.type !== TREE_NODE_TYPES.ROOT
-    && String(node.label || '').toLowerCase().includes(clean);
+    && normalizeSearchText(node.label).includes(clean);
 
   if (selfMatches) {
     return node;
@@ -268,6 +269,69 @@ export function filterTreeByQuery(node, query = '') {
   return node.type === TREE_NODE_TYPES.ROOT
     ? { ...node, children: [] }
     : null;
+}
+
+/**
+ * Collects ranked autocomplete suggestions (categories and activities) matching a typed query.
+ * Pure function: (TreeNode, string, number) -> Array<{ id, type, label, categoryPath, color, totalMins, formattedDuration }>
+ */
+export function collectMatchingTreeSuggestions(rawTree, query = '', limit = 8) {
+  const clean = normalizeSearchText(query);
+  if (!clean || !rawTree) return [];
+
+  const candidates = [];
+  const seen = new Set();
+
+  const visit = (node, ancestors = []) => {
+    if (!node) return;
+    if (node.type === TREE_NODE_TYPES.CATEGORY || node.type === TREE_NODE_TYPES.ACTIVITY) {
+      const label = String(node.label || '').trim();
+      const normLabel = normalizeSearchText(label);
+      const pathText = ancestors.join(' › ');
+      const normPath = normalizeSearchText(pathText);
+
+      if (normLabel.includes(clean) || normPath.includes(clean)) {
+        const dedupKey = `${node.type}:${normLabel}:${normPath}`;
+        if (!seen.has(dedupKey)) {
+          seen.add(dedupKey);
+          const startsWithLabel = normLabel.startsWith(clean);
+          const includesLabel = normLabel.includes(clean);
+          const score = startsWithLabel ? 0 : includesLabel ? 1 : 2;
+          candidates.push({
+            id: node.id,
+            type: node.type,
+            label,
+            categoryPath: pathText,
+            color: node.color || '#948C7E',
+            totalMins: node.totalMins || 0,
+            formattedDuration: node.formattedDuration || '',
+            _score: score,
+          });
+        }
+      }
+    }
+
+    const nextAncestors = node.type === TREE_NODE_TYPES.CATEGORY
+      ? [...ancestors, node.label]
+      : ancestors;
+
+    for (const child of node.children || []) {
+      if (child.type === TREE_NODE_TYPES.SESSION) continue;
+      visit(child, nextAncestors);
+    }
+  };
+
+  visit(rawTree, []);
+
+  return candidates
+    .sort((a, b) => (
+      a._score - b._score
+      || (a.type === b.type ? 0 : a.type === TREE_NODE_TYPES.CATEGORY ? -1 : 1)
+      || b.totalMins - a.totalMins
+      || a.label.localeCompare(b.label, 'fr')
+    ))
+    .slice(0, Math.max(1, limit))
+    .map(({ _score, ...item }) => item);
 }
 
 /**

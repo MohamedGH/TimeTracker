@@ -17,6 +17,7 @@ import {
   normalizeActiveTemplateRun,
 } from './state/template-actions.js';
 import { normalizeTrashList } from './core/trash-manager.js';
+import { normalizeUiState } from './core/ui-state.js';
 
 export async function createAppState() {
   await migratePersistedData();
@@ -35,6 +36,7 @@ export async function createAppState() {
     storedTombstones,
     storedSyncMeta,
     storedTrash,
+    storedUiState,
   ] = await Promise.all([
     getValue(STORAGE_KEYS.entries, []),
     getValue(STORAGE_KEYS.activities, []),
@@ -49,6 +51,7 @@ export async function createAppState() {
     getValue(STORAGE_KEYS.syncTombstones, null),
     getValue(STORAGE_KEYS.syncMeta, null),
     getValue(STORAGE_KEYS.trash, []),
+    getValue(STORAGE_KEYS.uiState, null),
   ]);
 
   const categories = mergeCategories(
@@ -113,6 +116,8 @@ export async function createAppState() {
 
   let persistQueue = Promise.resolve();
 
+  const restoredUiState = normalizeUiState(storedUiState);
+
   const initialRawState = {
     entries: normalizedEntries,
     activities: normalizedActivities,
@@ -125,12 +130,13 @@ export async function createAppState() {
     quickTilesConfig: normalizedQuickTilesConfig,
     geoTrackingEnabled: Boolean(storedGeoTrackingEnabled),
     authUser: restoredAuthUser,
-    tab: 'entry',
-    period: '7',
-    shortcutCategoryFilter: 'all',
+    tab: restoredUiState.tab,
+    period: restoredUiState.period,
+    shortcutCategoryFilter: restoredUiState.shortcutCategoryFilter,
     deviceType: detectDeviceType(),
-    customStart: null,
-    customEnd: null,
+    customStart: restoredUiState.customStart,
+    customEnd: restoredUiState.customEnd,
+    uiState: restoredUiState,
     editingEntryId: null,
     modal: null,
     error: null,
@@ -159,6 +165,16 @@ export async function createAppState() {
       s.categories = catDiff.items;
       s.activityTemplates = tplDiff.items;
 
+      const nextUiState = normalizeUiState({
+        ...s.uiState,
+        tab: s.tab,
+        period: s.period,
+        customStart: s.customStart,
+        customEnd: s.customEnd,
+        shortcutCategoryFilter: s.shortcutCategoryFilter,
+      });
+      s.uiState = nextUiState;
+
       if (smState && s !== smState) {
         smState.entries = s.entries;
         smState.activities = s.activities;
@@ -170,6 +186,12 @@ export async function createAppState() {
         smState.timerUpdatedAt = s.timerUpdatedAt;
         smState.quickTilesConfig = s.quickTilesConfig;
         smState.geoTrackingEnabled = s.geoTrackingEnabled;
+        smState.tab = s.tab;
+        smState.period = s.period;
+        smState.customStart = s.customStart;
+        smState.customEnd = s.customEnd;
+        smState.shortcutCategoryFilter = s.shortcutCategoryFilter;
+        smState.uiState = nextUiState;
       }
 
       currentTombstones = {
@@ -198,6 +220,7 @@ export async function createAppState() {
         setValue(STORAGE_KEYS.geoTrackingEnabled, Boolean(s.geoTrackingEnabled)),
         setValue(STORAGE_KEYS.syncTombstones, currentTombstones),
         setValue(STORAGE_KEYS.trash, normalizeTrashList(s.deletedItems)),
+        setValue(STORAGE_KEYS.uiState, nextUiState),
       ]);
     });
   }

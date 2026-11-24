@@ -2045,12 +2045,13 @@ canvas {
 }
 
 .cat-tree-search-wrap {
+  position: relative;
   width: 100%;
 }
 
 .cat-tree-search {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   padding: 8px 12px;
   font-size: 14px;
   color: var(--ink);
@@ -2062,6 +2063,96 @@ canvas {
 .cat-tree-search:focus-visible {
   outline: 2px solid var(--brass);
   outline-offset: 1px;
+}
+
+.cat-tree-search-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--paper-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 28px rgba(35, 40, 33, 0.14);
+  display: flex;
+  flex-direction: column;
+}
+
+.cat-tree-search-suggestions[hidden] {
+  display: none;
+}
+
+.cat-tree-search-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cat-tree-search-suggestion:last-child {
+  border-bottom: 0;
+}
+
+.cat-tree-search-suggestion:hover,
+.cat-tree-search-suggestion.is-active {
+  background: var(--paper-raised);
+}
+
+.cat-tree-search-suggestion-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cat-tree-search-suggestion-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.cat-tree-search-suggestion-main strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cat-tree-search-suggestion-path {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cat-tree-search-suggestion-kind {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  flex-shrink: 0;
+}
+
+.cat-tree-search-suggestion-empty {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--ink-soft);
 }
 
 .cat-tree-controls {

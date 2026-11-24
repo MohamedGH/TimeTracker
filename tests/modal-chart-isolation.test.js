@@ -111,6 +111,9 @@ describe('Modal event isolation & D3 focus protection', () => {
     const ui = createUI({ root, state, stateManager, persist });
     ui.render();
 
+    // Expand tree branches (which start collapsed by default) to access activity:act-1
+    root.querySelector('[data-tree-action="expand-all"]').click();
+
     // Open Edit Activity modal by clicking (✎) on the D3 tree activity node
     const editBtn = root.querySelector('g.tree-node[data-node-id="activity:act-1"] [data-action="edit-activity"]');
     expect(editBtn).toBeTruthy();

@@ -25,18 +25,20 @@ export const DEFAULT_ROUTE = 'entry';
  * Extracts normalized route string from a location hash.
  * Pure function: string -> string
  */
-export function parseRouteFromHash(hash = '') {
+export function parseRouteFromHash(hash = '', fallbackRoute = DEFAULT_ROUTE) {
   const clean = String(hash || '').replace(/^#\/?/, '').trim().toLowerCase();
-  return VALID_ROUTES.includes(clean) ? clean : DEFAULT_ROUTE;
+  if (VALID_ROUTES.includes(clean)) return clean;
+  return VALID_ROUTES.includes(fallbackRoute) ? fallbackRoute : DEFAULT_ROUTE;
 }
 
 /**
  * Creates the route manager instance.
  */
 export function createRouteManager({ onRouteChanged, defaultRoute = DEFAULT_ROUTE } = {}) {
+  const safeDefault = VALID_ROUTES.includes(defaultRoute) ? defaultRoute : DEFAULT_ROUTE;
   let currentRoute = typeof window !== 'undefined'
-    ? parseRouteFromHash(window.location.hash)
-    : defaultRoute;
+    ? parseRouteFromHash(window.location.hash, safeDefault)
+    : safeDefault;
 
   const listeners = new Set();
 
