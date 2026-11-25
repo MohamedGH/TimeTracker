@@ -4,6 +4,10 @@
  */
 
 import { DEFAULT_ROUTE, VALID_ROUTES } from './route-manager.js';
+import {
+  createDefaultDashboardConfig,
+  normalizeDashboardConfig,
+} from './dashboard-config.js';
 
 export const VALID_PERIODS = Object.freeze(['today', '7', '30', 'month', 'all', 'custom']);
 export const VALID_ENTRY_MODES = Object.freeze(['timer', 'manual']);
@@ -28,6 +32,8 @@ export const DEFAULT_UI_STATE = Object.freeze({
   categorySearchQuery: '',
   categoryFilter: 'all',
   categoryColorFilter: null,
+  dashboardCategoryFilter: 'all',
+  dashboardConfig: createDefaultDashboardConfig(),
 });
 
 /**
@@ -100,6 +106,10 @@ export function normalizeUiState(raw = null) {
   const categoryColorFilter = typeof src.categoryColorFilter === 'string' && src.categoryColorFilter
     ? src.categoryColorFilter
     : null;
+  const dashboardCategoryFilter = typeof src.dashboardCategoryFilter === 'string' && src.dashboardCategoryFilter
+    ? src.dashboardCategoryFilter
+    : DEFAULT_UI_STATE.dashboardCategoryFilter;
+  const dashboardConfig = normalizeDashboardConfig(src.dashboardConfig);
 
   return {
     tab,
@@ -118,6 +128,8 @@ export function normalizeUiState(raw = null) {
     categorySearchQuery,
     categoryFilter,
     categoryColorFilter,
+    dashboardCategoryFilter,
+    dashboardConfig,
   };
 }
 

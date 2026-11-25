@@ -14,34 +14,58 @@ export const PERIODS = Object.freeze({
   MONTH: 'month',
   DAYS_90: '90',
   ALL: 'all',
+  CUSTOM: 'custom',
 });
 
 /**
  * Filters and normalizes entries within a specified date window.
  * Splits cross-midnight entries cleanly into their respective days.
- * Pure function: (entries, period, referenceDate) -> normalizedEntries
+ * Pure function: (entries, period, referenceDate, customRange) -> normalizedEntries
  */
-export function filterEntriesByPeriod(entries = [], period = PERIODS.DAYS_7, refDate = today()) {
-  const dateRange = getDateRangeForPeriod(period, refDate);
+export function filterEntriesByPeriod(
+  entries = [],
+  period = PERIODS.DAYS_7,
+  refDate = today(),
+  customRange = null
+) {
+  const effectiveRange = (customRange && typeof customRange === 'object' && customRange.customRange)
+    ? customRange.customRange
+    : customRange;
+  const dateRange = getDateRangeForPeriod(period, refDate, effectiveRange);
   const splitted = entries.flatMap(splitEntryByDay);
 
   if (!dateRange) return splitted;
 
   return splitted.filter(entry => {
     if (!entry.date) return false;
-    return entry.date >= dateRange.min && entry.date <= dateRange.max;
+    if (dateRange.min && entry.date < dateRange.min) return false;
+    if (dateRange.max && entry.date > dateRange.max) return false;
+    return true;
   });
 }
 
 /**
  * Calculates start and end YYYY-MM-DD for a given period.
- * Pure function: (period, referenceDate) -> { min: string, max: string } | null
+ * Pure function: (period, referenceDate, customRange) -> { min: string, max: string } | null
  */
-export function getDateRangeForPeriod(period, refDate = today()) {
+export function getDateRangeForPeriod(period, refDate = today(), customRange = null) {
+  const effectiveRange = (customRange && typeof customRange === 'object' && customRange.customRange)
+    ? customRange.customRange
+    : customRange;
   const end = new Date(`${refDate}T12:00:00`);
   if (Number.isNaN(end.getTime())) return null;
 
   const max = refDate;
+
+  if (period === PERIODS.CUSTOM) {
+    const start = typeof effectiveRange?.start === 'string' && effectiveRange.start ? effectiveRange.start : null;
+    const customEnd = typeof effectiveRange?.end === 'string' && effectiveRange.end ? effectiveRange.end : null;
+    if (!start && !customEnd) return null;
+    if (start && customEnd && start > customEnd) {
+      return { min: customEnd, max: start };
+    }
+    return { min: start || '0000-01-01', max: customEnd || '9999-12-31' };
+  }
 
   if (period === PERIODS.TODAY || period === '1') {
     return { min: max, max };
@@ -196,17 +220,41 @@ export function aggregateTopActivities(entries = [], categories = [], limit = 10
 }
 
 /**
+ * Filters entries belonging to a category or any of its descendant subcategories.
+ * Pure function: (entries, categories, categoryId) -> entries[]
+ */
+export function filterEntriesByCategorySubtree(entries = [], categories = [], categoryId = 'all') {
+  if (!categoryId || categoryId === 'all' || categoryId === 'global') {
+    return entries;
+  }
+  if (categoryId === '__uncategorized__') {
+    return entries.filter(e => !e.categoryId);
+  }
+  const allowedIds = new Set(getDescendants(categories, categoryId).map(d => d.id));
+  allowedIds.add(categoryId);
+  return entries.filter(e => allowedIds.has(e.categoryId));
+}
+
+/**
  * Calculates complete dashboard metrics answering all key user questions:
  * - Où ai-je passé mon temps ?
  * - Combien de temps aujourd'hui ?
  * - Quelles catégories prennent le plus de temps ?
  * - Quelles activités reviennent le plus souvent ?
  *
- * Pure function: (entries, categories, period, refDate) -> DashboardStats
+ * Pure function: (entries, categories, period, refDate, options) -> DashboardStats
  */
-export function calculateDashboardStats(allEntries = [], categories = [], period = PERIODS.DAYS_7, refDate = today()) {
-  const periodEntries = filterEntriesByPeriod(allEntries, period, refDate);
-  const todayEntries = filterEntriesByPeriod(allEntries, PERIODS.TODAY, refDate);
+export function calculateDashboardStats(
+  allEntries = [],
+  categories = [],
+  period = PERIODS.DAYS_7,
+  refDate = today(),
+  options = {}
+) {
+  const { customRange = null, categoryFilter = 'all' } = options || {};
+  const scopedEntries = filterEntriesByCategorySubtree(allEntries, categories, categoryFilter);
+  const periodEntries = filterEntriesByPeriod(scopedEntries, period, refDate, customRange);
+  const todayEntries = filterEntriesByPeriod(scopedEntries, PERIODS.TODAY, refDate);
 
   const totalMinutes = periodEntries.reduce((sum, e) => sum + (Math.max(0, Number(e.mins) || 0)), 0);
   const todayMinutes = todayEntries.reduce((sum, e) => sum + (Math.max(0, Number(e.mins) || 0)), 0);
@@ -259,8 +307,425 @@ export function calculateDashboardStats(allEntries = [], categories = [], period
   };
 }
 
+const WEEKDAY_LABELS = Object.freeze(['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam']);
+const MONDAY_FIRST_INDEXES = Object.freeze([1, 2, 3, 4, 5, 6, 0]);
+const TIME_BANDS = Object.freeze([
+  { id: 'night', label: 'Nuit (00-06h)', minHour: 0, maxHour: 6 },
+  { id: 'morning', label: 'Matin (06-12h)', minHour: 6, maxHour: 12 },
+  { id: 'afternoon', label: 'Après-midi (12-18h)', minHour: 12, maxHour: 18 },
+  { id: 'evening', label: 'Soir (18-24h)', minHour: 18, maxHour: 24 },
+]);
+
+function formatMetricValue(value, metric) {
+  if (metric === 'count') {
+    const n = Math.round(value);
+    return `${n} session${n > 1 ? 's' : ''}`;
+  }
+  return formatDuration(value);
+}
+
+function selectMetricValue({ minutes, count }, metric) {
+  if (metric === 'count') return count;
+  if (metric === 'avg') return count > 0 ? Math.round(minutes / count) : 0;
+  return minutes;
+}
+
+function buildRootResolver(categories = []) {
+  const categoryMap = new Map(categories.map(c => [c.id, c]));
+  return (catId) => {
+    if (!catId) return { id: '__uncategorized__', label: 'Sans catégorie', color: '#948C7E' };
+    let current = categoryMap.get(catId);
+    if (!current) return { id: '__uncategorized__', label: 'Sans catégorie', color: '#948C7E' };
+    const visited = new Set();
+    while (current.parentId && !visited.has(current.id)) {
+      visited.add(current.id);
+      const parent = categoryMap.get(current.parentId);
+      if (!parent) break;
+      current = parent;
+    }
+    return { id: current.id, label: current.label, color: current.color || '#6E7F72' };
+  };
+}
+
+function finalizeSeries(items = [], metric = 'minutes') {
+  const totalValue = items.reduce((s, item) => s + Math.max(0, item.value || 0), 0);
+  const totalMinutes = items.reduce((s, item) => s + Math.max(0, item.minutes || 0), 0);
+  const totalCount = items.reduce((s, item) => s + Math.max(0, item.count || 0), 0);
+
+  const series = items.map(item => {
+    const value = Math.max(0, Number(item.value) || 0);
+    const pct = totalValue > 0 ? (value / totalValue) * 100 : 0;
+    return {
+      ...item,
+      value,
+      formattedValue: formatMetricValue(value, metric),
+      avgMinutes: item.count > 0 ? Math.round(item.minutes / item.count) : 0,
+      formattedMinutes: formatDuration(item.minutes),
+      formattedAvg: formatDuration(item.count > 0 ? Math.round(item.minutes / item.count) : 0),
+      sharePct: Math.round(pct * 10) / 10,
+      shareFormatted: `${(Math.round(pct * 10) / 10).toFixed(1)}%`,
+    };
+  });
+
+  return {
+    metric,
+    unit: metric === 'count' ? 'sessions' : 'min',
+    totalValue,
+    totalMinutes,
+    totalCount,
+    formattedTotal: metric === 'avg'
+      ? formatMetricValue(totalCount > 0 ? Math.round(totalMinutes / totalCount) : 0, 'avg')
+      : formatMetricValue(totalValue, metric),
+    empty: series.every(s => s.value === 0) || series.length === 0,
+    series,
+  };
+}
+
 /**
- * Formats minutes into human-readable French format: "3h 45m" or "25m".
+ * Builds a normalized dataset for any customizable dashboard chart widget.
+ * Pure function: ({ entries, categories, dataSource, metric, period, customRange, categoryFilter, refDate }) -> Dataset
+ */
+export function buildCustomDashboardDataset({
+  entries = [],
+  categories = [],
+  dataSource = 'daily',
+  metric = 'minutes',
+  period = PERIODS.DAYS_7,
+  customRange = null,
+  categoryFilter = 'global',
+  refDate = today(),
+} = {}) {
+  const periodEntries = filterEntriesByPeriod(
+    filterEntriesByCategorySubtree(entries, categories, categoryFilter),
+    period,
+    refDate,
+    customRange
+  );
+
+  const categoryMap = new Map(categories.map(c => [c.id, c]));
+  const resolveRoot = buildRootResolver(categories);
+
+  if (dataSource === 'daily') {
+    const byDay = new Map();
+    const stackMeta = new Map();
+
+    for (const entry of periodEntries) {
+      if (!entry.date) continue;
+      const mins = Math.max(0, Number(entry.mins) || 0);
+      const root = resolveRoot(entry.categoryId);
+      stackMeta.set(root.id, root);
+
+      if (!byDay.has(entry.date)) {
+        byDay.set(entry.date, {
+          date: entry.date,
+          minutes: 0,
+          count: 0,
+          byStack: new Map(),
+        });
+      }
+      const bucket = byDay.get(entry.date);
+      bucket.minutes += mins;
+      bucket.count += 1;
+
+      const prevStack = bucket.byStack.get(root.id) || { minutes: 0, count: 0 };
+      bucket.byStack.set(root.id, {
+        minutes: prevStack.minutes + mins,
+        count: prevStack.count + 1,
+      });
+    }
+
+    const dateRange = getDateRangeForPeriod(period, refDate, customRange);
+    if (dateRange && dateRange.min && dateRange.max) {
+      const dStart = new Date(`${dateRange.min}T12:00:00`);
+      const dEnd = new Date(`${dateRange.max}T12:00:00`);
+      const diffDays = Math.round((dEnd.getTime() - dStart.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays >= 0 && diffDays <= 62) {
+        const curr = new Date(dStart);
+        while (curr <= dEnd) {
+          const ymd = curr.toISOString().slice(0, 10);
+          if (!byDay.has(ymd)) {
+            byDay.set(ymd, {
+              date: ymd,
+              minutes: 0,
+              count: 0,
+              byStack: new Map(),
+            });
+          }
+          curr.setDate(curr.getDate() + 1);
+        }
+      }
+    }
+
+    const sortedDays = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date));
+    const stacks = [...stackMeta.values()];
+    const seriesItems = sortedDays.map(day => {
+      const value = selectMetricValue(day, metric);
+      return {
+        key: day.date,
+        label: day.date.slice(5).replace('-', '/'),
+        fullLabel: day.date,
+        color: '#3F7068',
+        minutes: day.minutes,
+        count: day.count,
+        value,
+      };
+    });
+
+    const rows = sortedDays.map(day => {
+      const valuesByStack = {};
+      for (const stack of stacks) {
+        const st = day.byStack.get(stack.id) || { minutes: 0, count: 0 };
+        valuesByStack[stack.id] = selectMetricValue(st, metric);
+      }
+      return {
+        date: day.date,
+        label: day.date.slice(5).replace('-', '/'),
+        total: selectMetricValue(day, metric),
+        minutes: day.minutes,
+        count: day.count,
+        valuesByStack,
+      };
+    });
+
+    return {
+      dataSource,
+      ...finalizeSeries(seriesItems, metric),
+      stacks,
+      rows,
+    };
+  }
+
+  if (dataSource === 'categories') {
+    const breakdown = aggregateCategoryBreakdown(periodEntries, categories)
+      .filter(c => !c.parentId || c.id === '__uncategorized__');
+    const items = breakdown.map(c => ({
+      key: c.id,
+      label: c.label,
+      color: c.color,
+      minutes: c.totalMins,
+      count: c.count,
+      value: selectMetricValue({ minutes: c.totalMins, count: c.count }, metric),
+    }));
+    items.sort((a, b) => b.value - a.value);
+    return { dataSource, ...finalizeSeries(items, metric) };
+  }
+
+  if (dataSource === 'subcategories') {
+    const directMap = new Map();
+    for (const entry of periodEntries) {
+      const mins = Math.max(0, Number(entry.mins) || 0);
+      const id = entry.categoryId || '__uncategorized__';
+      const prev = directMap.get(id) || { minutes: 0, count: 0 };
+      directMap.set(id, { minutes: prev.minutes + mins, count: prev.count + 1 });
+    }
+    const items = [...directMap.entries()].map(([id, agg]) => {
+      const cat = id === '__uncategorized__' ? null : categoryMap.get(id);
+      return {
+        key: id,
+        label: cat ? cat.label : 'Sans catégorie',
+        color: cat?.color || '#948C7E',
+        minutes: agg.minutes,
+        count: agg.count,
+        value: selectMetricValue(agg, metric),
+      };
+    }).sort((a, b) => b.value - a.value);
+    return { dataSource, ...finalizeSeries(items, metric) };
+  }
+
+  if (dataSource === 'activities') {
+    const top = aggregateTopActivities(periodEntries, categories, 12);
+    const items = top.map(act => ({
+      key: act.name,
+      label: act.name,
+      subLabel: act.categoryLabel,
+      color: act.categoryColor,
+      minutes: act.totalMins,
+      count: act.count,
+      value: selectMetricValue({ minutes: act.totalMins, count: act.count }, metric),
+    })).sort((a, b) => b.value - a.value);
+    return { dataSource, ...finalizeSeries(items, metric) };
+  }
+
+  if (dataSource === 'hourly') {
+    const buckets = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      minutes: 0,
+      count: 0,
+    }));
+    for (const entry of periodEntries) {
+      const mins = Math.max(0, Number(entry.mins) || 0);
+      const hour = Number(String(entry.start || '').slice(0, 2));
+      if (Number.isInteger(hour) && hour >= 0 && hour < 24) {
+        buckets[hour].minutes += mins;
+        buckets[hour].count += 1;
+      }
+    }
+    const items = buckets.map(b => ({
+      key: String(b.hour),
+      label: `${String(b.hour).padStart(2, '0')}h`,
+      color: '#4A5A75',
+      minutes: b.minutes,
+      count: b.count,
+      value: selectMetricValue(b, metric),
+    }));
+    return { dataSource, ...finalizeSeries(items, metric) };
+  }
+
+  if (dataSource === 'weekday') {
+    const buckets = Array.from({ length: 7 }, (_, idx) => ({
+      dayIdx: idx,
+      minutes: 0,
+      count: 0,
+    }));
+    for (const entry of periodEntries) {
+      if (!entry.date) continue;
+      const d = new Date(`${entry.date}T12:00:00`);
+      if (Number.isNaN(d.getTime())) continue;
+      const idx = d.getDay();
+      buckets[idx].minutes += Math.max(0, Number(entry.mins) || 0);
+      buckets[idx].count += 1;
+    }
+    const items = MONDAY_FIRST_INDEXES.map(dayIdx => {
+      const b = buckets[dayIdx];
+      return {
+        key: String(dayIdx),
+        label: WEEKDAY_LABELS[dayIdx],
+        color: '#8C6D3F',
+        minutes: b.minutes,
+        count: b.count,
+        value: selectMetricValue(b, metric),
+      };
+    });
+    return { dataSource, ...finalizeSeries(items, metric) };
+  }
+
+  if (dataSource === 'heatmap') {
+    const grid = Array.from({ length: 7 }, () =>
+      TIME_BANDS.map(() => ({ minutes: 0, count: 0 }))
+    );
+
+    for (const entry of periodEntries) {
+      if (!entry.date) continue;
+      const d = new Date(`${entry.date}T12:00:00`);
+      if (Number.isNaN(d.getTime())) continue;
+      const monIdx = MONDAY_FIRST_INDEXES.indexOf(d.getDay());
+      const hour = Number(String(entry.start || '').slice(0, 2));
+      const bandIdx = Number.isInteger(hour) && hour >= 0 && hour < 24
+        ? TIME_BANDS.findIndex(b => hour >= b.minHour && hour < b.maxHour)
+        : 1;
+      const cell = grid[monIdx][Math.max(0, bandIdx)];
+      cell.minutes += Math.max(0, Number(entry.mins) || 0);
+      cell.count += 1;
+    }
+
+    const rowLabels = MONDAY_FIRST_INDEXES.map(i => WEEKDAY_LABELS[i]);
+    const colLabels = TIME_BANDS.map(b => b.label);
+    const cells = [];
+    const seriesItems = [];
+
+    for (let r = 0; r < 7; r += 1) {
+      for (let c = 0; c < TIME_BANDS.length; c += 1) {
+        const agg = grid[r][c];
+        const value = selectMetricValue(agg, metric);
+        const cell = {
+          rowIdx: r,
+          colIdx: c,
+          rowLabel: rowLabels[r],
+          colLabel: colLabels[c],
+          minutes: agg.minutes,
+          count: agg.count,
+          value,
+          formattedValue: formatMetricValue(value, metric),
+        };
+        cells.push(cell);
+        if (value > 0) {
+          seriesItems.push({
+            key: `${r}-${c}`,
+            label: `${rowLabels[r]} · ${colLabels[c]}`,
+            color: '#3F7068',
+            minutes: agg.minutes,
+            count: agg.count,
+            value,
+          });
+        }
+      }
+    }
+
+    const maxValue = cells.reduce((m, c) => Math.max(m, c.value), 0);
+    return {
+      dataSource,
+      ...finalizeSeries(seriesItems, metric),
+      rowLabels,
+      colLabels,
+      cells,
+      maxValue,
+    };
+  }
+
+  if (dataSource === 'mode') {
+    const timerAgg = { minutes: 0, count: 0 };
+    const manualAgg = { minutes: 0, count: 0 };
+    for (const entry of periodEntries) {
+      const mins = Math.max(0, Number(entry.mins) || 0);
+      const isTimer = entry.viaTimer === true || entry.manual === false;
+      const target = isTimer ? timerAgg : manualAgg;
+      target.minutes += mins;
+      target.count += 1;
+    }
+    const items = [
+      {
+        id: 'chrono',
+        key: 'chrono',
+        label: 'Chronomètre',
+        color: '#3F7068',
+        minutes: timerAgg.minutes,
+        count: timerAgg.count,
+        value: selectMetricValue(timerAgg, metric),
+      },
+      {
+        id: 'manual',
+        key: 'manual',
+        label: 'Saisie manuelle',
+        color: '#8C6D3F',
+        minutes: manualAgg.minutes,
+        count: manualAgg.count,
+        value: selectMetricValue(manualAgg, metric),
+      },
+    ].filter(item => item.count > 0 || item.minutes > 0);
+    return { dataSource, ...finalizeSeries(items, metric) };
+  }
+
+  if (dataSource === 'durationBuckets') {
+    const defs = [
+      { key: 'lt15', label: '< 15 min', color: '#8B93A1', match: m => m < 15 },
+      { key: '15_30', label: '15–30 min', color: '#5C7A5E', match: m => m >= 15 && m < 30 },
+      { key: '30_60', label: '30–60 min', color: '#3F7068', match: m => m >= 30 && m < 60 },
+      { key: '60_120', label: '1–2 h', color: '#8C6D3F', match: m => m >= 60 && m < 120 },
+      { key: 'gt120', label: '> 2 h', color: '#4A5A75', match: m => m >= 120 },
+    ];
+    const aggs = defs.map(d => ({ ...d, minutes: 0, count: 0 }));
+    for (const entry of periodEntries) {
+      const mins = Math.max(0, Number(entry.mins) || 0);
+      const bucket = aggs.find(b => b.match(mins)) || aggs[0];
+      bucket.minutes += mins;
+      bucket.count += 1;
+    }
+    const items = aggs.map(b => ({
+      key: b.key,
+      label: b.label,
+      color: b.color,
+      minutes: b.minutes,
+      count: b.count,
+      value: selectMetricValue(b, metric),
+    }));
+    return { dataSource, ...finalizeSeries(items, metric) };
+  }
+
+  return { dataSource, ...finalizeSeries([], metric) };
+}
+
+/**
+ * Formats minutes into human-readable French format: "3 h 45" or "25 min".
  * Pure function: number -> string
  */
 export function formatDuration(totalMinutes = 0) {

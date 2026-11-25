@@ -1,5 +1,7 @@
 import { getValue, STORAGE_KEYS } from '../core/storage.js';
 import { DEFAULT_CATEGORIES } from '../core/model.js';
+import { buildCustomDashboardDataset } from '../core/statistics.js';
+import { renderCustomChart } from './custom-charts.js';
 
 let dayChart;
 let hourChart;
@@ -19,7 +21,12 @@ export async function renderCharts({
   hourCanvas,
   categoryCanvas,
   categoryTreeContainer,
+  customCharts = [],
+  allEntries = null,
   entries = [],
+  period = '7',
+  customRange = null,
+  globalCategoryFilter = 'all',
   categories: suppliedCategories = null,
   activities: suppliedActivities = null,
   onStartActivity = null,
@@ -39,6 +46,27 @@ export async function renderCharts({
   const categories = Array.isArray(suppliedCategories) && suppliedCategories.length
     ? suppliedCategories
     : mergeCategories(await getValue(STORAGE_KEYS.categories, []));
+
+  if (Array.isArray(customCharts) && customCharts.length > 0) {
+    const sourceEntries = Array.isArray(allEntries) ? allEntries : entries;
+    for (const item of customCharts) {
+      if (!item?.container || !item?.widget) continue;
+      const widget = item.widget;
+      const resolvedFilter = widget.categoryFilter && widget.categoryFilter !== 'global'
+        ? widget.categoryFilter
+        : globalCategoryFilter;
+      const dataset = buildCustomDashboardDataset({
+        entries: sourceEntries,
+        categories,
+        dataSource: widget.dataSource,
+        metric: widget.metric,
+        period,
+        customRange,
+        categoryFilter: resolvedFilter,
+      });
+      renderCustomChart(item.container, dataset, widget.chartType);
+    }
+  }
 
   if (window.Chart && dayCanvas && hourCanvas) {
     const byDay = new Map();

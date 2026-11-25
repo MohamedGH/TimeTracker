@@ -53,7 +53,32 @@ import {
 import { isolateModalEvents } from './core/modal-events.js';
 import { createRouteManager } from './core/route-manager.js';
 import { createErrorManager } from './core/error-manager.js';
-import { calculateDashboardStats, filterEntriesByPeriod, formatDuration } from './core/statistics.js';
+import {
+  calculateDashboardStats,
+  filterEntriesByPeriod,
+  filterEntriesByCategorySubtree,
+  formatDuration,
+} from './core/statistics.js';
+import {
+  DASHBOARD_WIDGET_KINDS,
+  DASHBOARD_DATA_SOURCE_DEFS,
+  DASHBOARD_PRESETS,
+  QUICK_CHART_TEMPLATES,
+  BUILTIN_WIDGET_LABELS,
+  getDataSourceDef,
+  getChartTypeDef,
+  getMetricDef,
+  getCompatibleChartTypes,
+  getCompatibleMetrics,
+  getDefaultTitleForChart,
+  normalizeDashboardConfig,
+  applyDashboardPreset,
+  addChartWidget,
+  updateDashboardWidget,
+  duplicateDashboardWidget,
+  removeDashboardWidget,
+  moveDashboardWidget,
+} from './core/dashboard-config.js';
 import {
   getUsualCategoryForActivity,
   generatePersonalizedSuggestions,
@@ -272,6 +297,7 @@ export function createUI({
   let mapPointTypeFilter = state.uiState.mapPointTypeFilter || 'all';
   let mapShowRoutePath = state.uiState.mapShowRoutePath !== undefined ? Boolean(state.uiState.mapShowRoutePath) : true;
   let mapFocusClusterId = null;
+  let dashboardCustomizeOpen = false;
   let manualStartLocationOverride = undefined;
   let manualEndLocationOverride = undefined;
   let manualLocationEditingId = null;
@@ -2777,24 +2803,222 @@ export function createUI({
     return c;
   }
 
+  function getDashboardConfig() {
+    return normalizeDashboardConfig(state.uiState?.dashboardConfig);
+  }
+
+  function setDashboardConfig(nextConfig) {
+    updateUiState({ dashboardConfig: normalizeDashboardConfig(nextConfig) });
+  }
+
+  function getDashboardCustomRange() {
+    return {
+      start: state.customStart || state.uiState?.customStart || null,
+      end: state.customEnd || state.uiState?.customEnd || null,
+    };
+  }
+
+  function getDashboardCategoryFilter() {
+    return state.uiState?.dashboardCategoryFilter || 'all';
+  }
+
+  function buildDashboardCategoryOptions(selectEl, includeGlobalOption = false) {
+    if (includeGlobalOption) {
+      const globalOpt = document.createElement('option');
+      globalOpt.value = 'global';
+      globalOpt.textContent = 'Filtre global du tableau de bord';
+      selectEl.appendChild(globalOpt);
+    }
+    const allOpt = document.createElement('option');
+    allOpt.value = 'all';
+    allOpt.textContent = 'Toutes les catégories';
+    selectEl.appendChild(allOpt);
+
+    for (const cat of state.categories) {
+      const opt = document.createElement('option');
+      opt.value = cat.id;
+      opt.textContent = formatCategoryPath(state.categories, cat.id);
+      selectEl.appendChild(opt);
+    }
+
+    const uncatOpt = document.createElement('option');
+    uncatOpt.value = '__uncategorized__';
+    uncatOpt.textContent = 'Sans catégorie';
+    selectEl.appendChild(uncatOpt);
+  }
+
+  function renderWidgetCustomizeStrip(widget, config, labelText) {
+    if (!dashboardCustomizeOpen) return null;
+    const strip = node('div', 'dashboard-widget-customize-strip');
+    const titleSpan = node('span', 'dashboard-widget-customize-name', labelText);
+    const controls = node('div', 'dashboard-widget-customize-actions');
+
+    const moveUp = button('↑', 'small secondary', `widget-move-up-${widget.id}`);
+    moveUp.title = 'Monter le bloc';
+    moveUp.setAttribute('aria-label', `Monter ${labelText}`);
+    moveUp.onclick = () => {
+      setDashboardConfig(moveDashboardWidget(config, widget.id, -1));
+      rerender();
+    };
+
+    const moveDown = button('↓', 'small secondary', `widget-move-down-${widget.id}`);
+    moveDown.title = 'Descendre le bloc';
+    moveDown.setAttribute('aria-label', `Descendre ${labelText}`);
+    moveDown.onclick = () => {
+      setDashboardConfig(moveDashboardWidget(config, widget.id, 1));
+      rerender();
+    };
+
+    const widthBtn = button(widget.width === 'full' ? '½ Largeur' : '1× Plein', 'small secondary', `widget-width-${widget.id}`);
+    widthBtn.title = 'Changer la largeur';
+    widthBtn.onclick = () => {
+      setDashboardConfig(updateDashboardWidget(config, widget.id, {
+        width: widget.width === 'full' ? 'half' : 'full',
+      }));
+      rerender();
+    };
+
+    const hideBtn = button(widget.kind === 'chart' ? 'Supprimer' : 'Masquer', 'small danger', `widget-remove-${widget.id}`);
+    hideBtn.onclick = () => {
+      setDashboardConfig(removeDashboardWidget(config, widget.id));
+      rerender();
+    };
+
+    controls.append(moveUp, moveDown, widthBtn, hideBtn);
+    strip.append(titleSpan, controls);
+    return strip;
+  }
+
+  function renderCustomChartWidgetCard(widget, config) {
+    const c = node('section', `card dashboard-chart-card${widget.width === 'full' ? ' is-full' : ''}`);
+    c.dataset.dashboardWidgetId = widget.id;
+    c.dataset.widgetKind = widget.kind;
+
+    const head = node('div', 'dashboard-chart-card-head');
+    const titleWrap = node('div', 'dashboard-chart-card-title-wrap');
+    const title = node('h2', 'card-title', widget.title);
+    const srcDef = getDataSourceDef(widget.dataSource);
+    const chartDef = getChartTypeDef(widget.chartType);
+    const metricDef = getMetricDef(widget.metric);
+    const filterCat = widget.categoryFilter && widget.categoryFilter !== 'global' && widget.categoryFilter !== 'all'
+      ? (widget.categoryFilter === '__uncategorized__'
+          ? 'Sans catégorie'
+          : (state.categories.find(cat => cat.id === widget.categoryFilter)?.label || widget.categoryFilter))
+      : null;
+    const metaParts = [srcDef.label, chartDef.label, metricDef.label];
+    if (filterCat) metaParts.push(filterCat);
+    const subtitle = node('div', 'dashboard-chart-meta', metaParts.join(' · '));
+    titleWrap.append(title, subtitle);
+
+    const headActions = node('div', 'dashboard-chart-head-actions');
+
+    const editBtn = button('Configurer', 'small secondary', `chart-widget-edit-${widget.id}`);
+    editBtn.onclick = () => {
+      state.modal = { type: 'dashboard-widget-editor', mode: 'edit', widgetId: widget.id };
+      rerender();
+    };
+
+    const dupBtn = button('Dupliquer', 'small secondary', `chart-widget-dup-${widget.id}`);
+    dupBtn.onclick = () => {
+      setDashboardConfig(duplicateDashboardWidget(config, widget.id));
+      rerender();
+    };
+
+    const delBtn = button('×', 'small secondary dashboard-chart-remove-btn', `chart-widget-remove-${widget.id}`);
+    delBtn.setAttribute('aria-label', `Supprimer ${widget.title}`);
+    delBtn.onclick = () => {
+      setDashboardConfig(removeDashboardWidget(config, widget.id));
+      rerender();
+    };
+
+    headActions.append(editBtn, dupBtn, delBtn);
+    head.append(titleWrap, headActions);
+    c.appendChild(head);
+
+    // Inline quick-switchers for data source, chart type, and metric directly on the card
+    const quickControls = node('div', 'dashboard-chart-quick-controls');
+
+    const sourceSelect = document.createElement('select');
+    sourceSelect.className = 'dashboard-inline-select';
+    sourceSelect.dataset.behaviorTarget = `widget-source-${widget.id}`;
+    sourceSelect.setAttribute('aria-label', `Données pour ${widget.title}`);
+    for (const def of DASHBOARD_DATA_SOURCE_DEFS) {
+      const opt = document.createElement('option');
+      opt.value = def.id;
+      opt.textContent = def.label;
+      opt.selected = def.id === widget.dataSource;
+      sourceSelect.appendChild(opt);
+    }
+    sourceSelect.onchange = () => {
+      setDashboardConfig(updateDashboardWidget(config, widget.id, { dataSource: sourceSelect.value }));
+      rerender();
+    };
+
+    const chartSelect = document.createElement('select');
+    chartSelect.className = 'dashboard-inline-select';
+    chartSelect.dataset.behaviorTarget = `widget-chart-${widget.id}`;
+    chartSelect.setAttribute('aria-label', `Type de graphique pour ${widget.title}`);
+    for (const cDef of getCompatibleChartTypes(widget.dataSource)) {
+      const opt = document.createElement('option');
+      opt.value = cDef.id;
+      opt.textContent = cDef.label;
+      opt.selected = cDef.id === widget.chartType;
+      chartSelect.appendChild(opt);
+    }
+    chartSelect.onchange = () => {
+      setDashboardConfig(updateDashboardWidget(config, widget.id, { chartType: chartSelect.value }));
+      rerender();
+    };
+
+    const metricSelect = document.createElement('select');
+    metricSelect.className = 'dashboard-inline-select';
+    metricSelect.dataset.behaviorTarget = `widget-metric-${widget.id}`;
+    metricSelect.setAttribute('aria-label', `Métrique pour ${widget.title}`);
+    for (const mDef of getCompatibleMetrics(widget.dataSource)) {
+      const opt = document.createElement('option');
+      opt.value = mDef.id;
+      opt.textContent = mDef.label;
+      opt.selected = mDef.id === widget.metric;
+      metricSelect.appendChild(opt);
+    }
+    metricSelect.onchange = () => {
+      setDashboardConfig(updateDashboardWidget(config, widget.id, { metric: metricSelect.value }));
+      rerender();
+    };
+
+    quickControls.append(sourceSelect, chartSelect, metricSelect);
+    c.appendChild(quickControls);
+
+    const customizeStrip = renderWidgetCustomizeStrip(widget, config, widget.title);
+    if (customizeStrip) c.appendChild(customizeStrip);
+
+    const host = node('div', 'custom-chart-host');
+    host.dataset.customChartId = widget.id;
+    c.appendChild(host);
+
+    return c;
+  }
+
   /**
-   * Priorité UX 7 & 8: Dashboard répondant directement à:
-   * 1. Combien de temps aujourd'hui ?
-   * 2. Où ai-je passé mon temps ?
-   * 3. Quelles catégories prennent le plus de temps ?
-   * 4. Quelles activités reviennent le plus souvent ?
+   * Tableau de bord personnalisable avec multiples graphiques et sources de données :
+   * - Période + période personnalisée + filtre catégorie global
+   * - Presets de mise en page, ajout/édition de graphiques, réorganisation et persistance
    */
   function dashboardPage() {
     const f = document.createDocumentFragment();
+    const config = getDashboardConfig();
+    const customRange = getDashboardCustomRange();
+    const globalCategoryFilter = getDashboardCategoryFilter();
 
     // Period selectors
-    const periods = node('div', 'period-tabs');
+    const periods = node('div', 'period-tabs period-tabs--6');
     const periodDefs = [
       { id: 'today', label: 'Aujourd’hui' },
       { id: '7', label: '7 jours' },
       { id: '30', label: '30 jours' },
       { id: 'month', label: 'Ce mois' },
       { id: 'all', label: 'Tout' },
+      { id: 'custom', label: 'Personnalisé' },
     ];
 
     for (const p of periodDefs) {
@@ -2802,7 +3026,15 @@ export function createUI({
       b.onclick = () => {
         state.period = p.id;
         mapFocusClusterId = null;
-        updateUiState({ period: p.id });
+        const patch = { period: p.id };
+        if (p.id === 'custom' && !state.customStart && !state.customEnd) {
+          const todayStr = today();
+          state.customStart = todayStr;
+          state.customEnd = todayStr;
+          patch.customStart = todayStr;
+          patch.customEnd = todayStr;
+        }
+        updateUiState(patch);
         trackEvent('dashboard_period_changed', dashboardPeriodChangedPayload({ period: p.id }));
         rerender();
       };
@@ -2810,147 +3042,268 @@ export function createUI({
     }
     f.appendChild(periods);
 
-    // Calculate core statistics
-    const stats = calculateDashboardStats(state.entries, state.categories, state.period);
+    if (state.period === 'custom') {
+      const rangeBar = node('div', 'dashboard-custom-range-bar');
+      const startWrap = node('label', 'dashboard-range-field');
+      startWrap.appendChild(node('span', 'dashboard-range-label', 'Du'));
+      const startInput = document.createElement('input');
+      startInput.type = 'date';
+      startInput.value = customRange.start || '';
+      startInput.dataset.behaviorTarget = 'dashboard-custom-start';
+      startInput.onchange = () => {
+        state.customStart = startInput.value || null;
+        updateUiState({ customStart: state.customStart });
+        rerender();
+      };
+      startWrap.appendChild(startInput);
 
-    // KPI Cards: Answering "Combien de temps aujourd'hui ?" and "Où passe mon temps ?"
-    const kpiGrid = node('div', 'dashboard-kpi-grid');
-    kpiGrid.append(
-      kpiCard('Aujourd’hui', stats.formattedToday, 'Temps de la journée', true),
-      kpiCard('Total période', stats.formattedTotal, `${stats.entryCount} session${stats.entryCount > 1 ? 's' : ''}`),
-      kpiCard('Jours actifs', String(stats.activeDaysCount), 'Jours suivis'),
-      kpiCard('Moyenne / jour', stats.formattedDailyAverage, 'Par jour actif')
+      const endWrap = node('label', 'dashboard-range-field');
+      endWrap.appendChild(node('span', 'dashboard-range-label', 'Au'));
+      const endInput = document.createElement('input');
+      endInput.type = 'date';
+      endInput.value = customRange.end || '';
+      endInput.dataset.behaviorTarget = 'dashboard-custom-end';
+      endInput.onchange = () => {
+        state.customEnd = endInput.value || null;
+        updateUiState({ customEnd: state.customEnd });
+        rerender();
+      };
+      endWrap.appendChild(endInput);
+
+      rangeBar.append(startWrap, endWrap);
+      f.appendChild(rangeBar);
+    }
+
+    // Customizable Dashboard Toolbar
+    const toolbar = node('div', 'dashboard-custom-toolbar');
+    const filterGroup = node('div', 'dashboard-toolbar-filters');
+
+    const catFilterSelect = document.createElement('select');
+    catFilterSelect.className = 'dashboard-toolbar-select';
+    catFilterSelect.dataset.behaviorTarget = 'dashboard-category-filter';
+    catFilterSelect.setAttribute('aria-label', 'Filtrer le tableau de bord par catégorie');
+    buildDashboardCategoryOptions(catFilterSelect, false);
+    catFilterSelect.value = globalCategoryFilter;
+    catFilterSelect.onchange = () => {
+      updateUiState({ dashboardCategoryFilter: catFilterSelect.value || 'all' });
+      rerender();
+    };
+
+    const presetSelect = document.createElement('select');
+    presetSelect.className = 'dashboard-toolbar-select';
+    presetSelect.dataset.behaviorTarget = 'dashboard-preset-select';
+    presetSelect.setAttribute('aria-label', 'Disposition du tableau de bord');
+    for (const preset of DASHBOARD_PRESETS) {
+      const opt = document.createElement('option');
+      opt.value = preset.id;
+      opt.textContent = `Vue : ${preset.label}`;
+      opt.selected = config.presetId === preset.id;
+      presetSelect.appendChild(opt);
+    }
+    if (config.presetId === 'custom') {
+      const customOpt = document.createElement('option');
+      customOpt.value = 'custom';
+      customOpt.textContent = 'Vue : Personnalisée';
+      customOpt.selected = true;
+      presetSelect.appendChild(customOpt);
+    }
+    presetSelect.onchange = () => {
+      if (presetSelect.value === 'custom') return;
+      setDashboardConfig(applyDashboardPreset(presetSelect.value));
+      rerender();
+    };
+
+    filterGroup.append(catFilterSelect, presetSelect);
+
+    const actionGroup = node('div', 'dashboard-toolbar-actions');
+    const customizeBtn = button(
+      dashboardCustomizeOpen ? 'Terminer' : 'Personnaliser',
+      dashboardCustomizeOpen ? 'active small' : 'secondary small',
+      'dashboard-customize-toggle'
     );
-    f.appendChild(kpiGrid);
+    customizeBtn.setAttribute('aria-pressed', String(dashboardCustomizeOpen));
+    customizeBtn.onclick = () => {
+      dashboardCustomizeOpen = !dashboardCustomizeOpen;
+      rerender();
+    };
 
-    // Interactive Activity Map filtered by active period, category, and point type
-    const { card: mapCard } = renderActivityMapCard({
-      entries: state.entries,
-      categories: state.categories,
-      period: state.period,
-      categoryFilter: mapCategoryFilter,
-      pointTypeFilter: mapPointTypeFilter,
-      showRoutePath: mapShowRoutePath,
-      geoTrackingEnabled: state.geoTrackingEnabled,
-      mapsQuotaExceeded,
-      focusClusterId: mapFocusClusterId,
-      onToggleGeoTracking: handleToggleGeoTracking,
-      onChangeCategoryFilter: (nextFilter) => {
-        mapCategoryFilter = nextFilter || 'all';
-        mapFocusClusterId = null;
-        updateUiState({ mapCategoryFilter });
+    const addChartBtn = button('+ Ajouter un graphique', 'primary small', 'dashboard-add-chart');
+    addChartBtn.onclick = () => {
+      state.modal = { type: 'dashboard-widget-editor', mode: 'add' };
+      rerender();
+    };
+
+    actionGroup.append(customizeBtn, addChartBtn);
+    toolbar.append(filterGroup, actionGroup);
+    f.appendChild(toolbar);
+
+    // Customize Drawer Panel
+    if (dashboardCustomizeOpen) {
+      const panel = node('section', 'card dashboard-customize-panel');
+      panel.dataset.dashboardCustomizePanel = 'true';
+      const panelHead = node('div', 'dashboard-customize-panel-head');
+      panelHead.append(
+        node('div', 'dashboard-customize-panel-title', 'Personnaliser les blocs visibles et l’ordre d’affichage')
+      );
+      const resetBtn = button('Réinitialiser la vue', 'small secondary', 'dashboard-reset-layout');
+      resetBtn.onclick = () => {
+        setDashboardConfig(applyDashboardPreset('standard'));
         rerender();
-      },
-      onChangePointTypeFilter: (nextPointType) => {
-        mapPointTypeFilter = nextPointType || 'all';
-        mapFocusClusterId = null;
-        updateUiState({ mapPointTypeFilter });
-        rerender();
-      },
-      onToggleRoutePath: (nextShow) => {
-        mapShowRoutePath = Boolean(nextShow);
-        updateUiState({ mapShowRoutePath });
-        rerender();
-      },
-      onSelectPeriodAll: () => {
-        state.period = 'all';
-        mapFocusClusterId = null;
-        updateUiState({ period: 'all' });
-        rerender();
-      },
-    });
-    f.appendChild(mapCard);
+      };
+      panelHead.appendChild(resetBtn);
+      panel.appendChild(panelHead);
 
-    // Section 1: Où ai-je passé mon temps & Quelles catégories prennent le plus de temps ?
-    const categoryCard = card('Répartition par catégorie');
-    if (!stats.categoryBreakdown.length) {
-      categoryCard.appendChild(node('p', 'muted', 'Aucune donnée sur cette période.'));
-    } else {
-      const list = node('div', 'category-breakdown-list');
-      for (const item of stats.categoryBreakdown.slice(0, 8)) {
-        const itemWrap = node('div', 'category-breakdown-item');
-        const header = node('div', 'category-item-header');
-
-        const left = node('div', 'category-item-left');
-        const dot = node('span', 'category-color-dot');
-        dot.style.background = item.color;
-        const name = node('strong', null, item.label);
-        left.append(dot, name);
-
-        const right = node('div', 'category-item-right');
-        const time = node('span', 'category-item-time', item.formattedTotal);
-        const pct = node('span', 'category-item-pct', item.percentageFormatted);
-        right.append(time, pct);
-
-        header.append(left, right);
-
-        const track = node('div', 'category-bar-track');
-        const fill = node('div', 'category-bar-fill');
-        fill.style.width = `${Math.min(100, Math.max(2, item.percentage))}%`;
-        fill.style.background = item.color;
-        track.appendChild(fill);
-
-        itemWrap.append(header, track);
-        list.appendChild(itemWrap);
-      }
-      categoryCard.appendChild(list);
-    }
-    f.appendChild(categoryCard);
-
-    // Section 2: Quelles activités reviennent le plus souvent ?
-    const topActivitiesCard = card('Activités fréquentes');
-    if (!stats.topActivities.length) {
-      topActivitiesCard.appendChild(node('p', 'muted', 'Aucune activité fréquente répertoriée.'));
-    } else {
-      const list = node('div', 'top-activities-list');
-      for (const item of stats.topActivities) {
-        const row = node('div', 'top-activity-item');
-
-        const info = node('div', 'top-activity-info');
-        const titleRow = node('div', 'top-activity-title-row');
-        titleRow.appendChild(node('strong', null, item.name));
-        titleRow.appendChild(createCategoryBadge(item.categoryId, state.categories, { showPath: false, size: 'small' }));
-        info.appendChild(titleRow);
-
-        const meta = node('div', 'top-activity-meta', `${item.count} session${item.count > 1 ? 's' : ''} · ${item.formattedTotal} (moy. ${item.formattedAvg})`);
-        info.appendChild(meta);
-
-        const action = node('div', 'top-activity-action');
-        const launchBtn = button('Relancer', 'small', 'top-activity-launch');
-        launchBtn.onclick = () => {
-          startTimer(item.name, item.categoryId || state.categories[0]?.id, today(), nowTime());
+      const togglesRow = node('div', 'dashboard-customize-toggles');
+      for (const w of config.widgets) {
+        const labelText = w.kind === DASHBOARD_WIDGET_KINDS.CHART
+          ? w.title
+          : (BUILTIN_WIDGET_LABELS[w.kind] || w.kind);
+        const toggleBtn = button(
+          `${w.visible ? '✓ ' : '+ '}${labelText}`,
+          `small ${w.visible ? 'active' : 'secondary'}`,
+          `dashboard-toggle-widget-${w.id}`
+        );
+        toggleBtn.setAttribute('aria-pressed', String(w.visible));
+        toggleBtn.onclick = () => {
+          setDashboardConfig(updateDashboardWidget(config, w.id, { visible: !w.visible }));
+          rerender();
         };
-        action.appendChild(launchBtn);
-
-        row.append(info, action);
-        list.appendChild(row);
+        togglesRow.appendChild(toggleBtn);
       }
-      topActivitiesCard.appendChild(list);
+      panel.appendChild(togglesRow);
+      f.appendChild(panel);
     }
-    f.appendChild(topActivitiesCard);
 
-    // Section 3: Visual Charts
-    const chart = card('Graphiques détaillés');
-    chart.append(node('h3', 'chart-title', 'Temps par jour'));
-    const dc = document.createElement('canvas');
-    dc.id = 'day-chart';
-    chart.appendChild(dc);
+    // Calculate core statistics
+    const stats = calculateDashboardStats(
+      state.entries,
+      state.categories,
+      state.period,
+      today(),
+      { customRange, categoryFilter: globalCategoryFilter }
+    );
 
-    chart.append(node('h3', 'chart-title', 'Répartition par heure de la journée'));
-    const hc = document.createElement('canvas');
-    hc.id = 'hour-chart';
-    chart.appendChild(hc);
+    const grid = node('div', 'dashboard-widgets-grid');
+    grid.dataset.dashboardGrid = 'true';
 
-    chart.append(node('h3', 'chart-title', 'Arborescence interactive Catégories & Activités'));
-    const cc = document.createElement('div');
-    cc.id = 'category-tree-chart';
-    chart.appendChild(cc);
+    const visibleWidgets = config.widgets.filter(w => w.visible);
+    if (!visibleWidgets.length) {
+      const emptyBox = node('section', 'card is-full');
+      emptyBox.append(
+        node('p', 'muted', 'Tous les blocs du tableau de bord sont masqués.'),
+        (() => {
+          const btn = button('Réafficher la vue équilibrée', 'primary', 'dashboard-restore-empty');
+          btn.onclick = () => {
+            setDashboardConfig(applyDashboardPreset('standard'));
+            rerender();
+          };
+          return btn;
+        })()
+      );
+      grid.appendChild(emptyBox);
+    }
 
-    f.appendChild(chart);
+    for (const widget of visibleWidgets) {
+      if (widget.kind === DASHBOARD_WIDGET_KINDS.KPI) {
+        const kpiWrap = node('div', `dashboard-widget-slot${widget.width === 'full' ? ' is-full' : ''}`);
+        kpiWrap.dataset.dashboardWidgetId = widget.id;
+        kpiWrap.dataset.widgetKind = widget.kind;
+        const customizeStrip = renderWidgetCustomizeStrip(widget, config, BUILTIN_WIDGET_LABELS.kpi);
+        if (customizeStrip) kpiWrap.appendChild(customizeStrip);
 
-    // Section 4: Suggestions personnalisées (Observations & Hypothèses)
-    f.appendChild(insightsCard());
+        const kpiGrid = node('div', 'dashboard-kpi-grid');
+        kpiGrid.append(
+          kpiCard('Aujourd’hui', stats.formattedToday, 'Temps de la journée', true),
+          kpiCard('Total période', stats.formattedTotal, `${stats.entryCount} session${stats.entryCount > 1 ? 's' : ''}`),
+          kpiCard('Jours actifs', String(stats.activeDaysCount), 'Jours suivis'),
+          kpiCard('Moyenne / jour', stats.formattedDailyAverage, 'Par jour actif')
+        );
+        kpiWrap.appendChild(kpiGrid);
+        grid.appendChild(kpiWrap);
+        continue;
+      }
 
+      if (widget.kind === DASHBOARD_WIDGET_KINDS.CHART) {
+        grid.appendChild(renderCustomChartWidgetCard(widget, config));
+        continue;
+      }
+
+      if (widget.kind === DASHBOARD_WIDGET_KINDS.MAP) {
+        const mapWrap = node('div', `dashboard-widget-slot${widget.width === 'full' ? ' is-full' : ''}`);
+        mapWrap.dataset.dashboardWidgetId = widget.id;
+        mapWrap.dataset.widgetKind = widget.kind;
+        const customizeStrip = renderWidgetCustomizeStrip(widget, config, BUILTIN_WIDGET_LABELS.map);
+        if (customizeStrip) mapWrap.appendChild(customizeStrip);
+
+        const effectiveMapCat = mapCategoryFilter !== 'all'
+          ? mapCategoryFilter
+          : (globalCategoryFilter !== 'all' ? globalCategoryFilter : 'all');
+        const { card: mapCard } = renderActivityMapCard({
+          entries: state.entries,
+          categories: state.categories,
+          period: state.period,
+          categoryFilter: effectiveMapCat,
+          pointTypeFilter: mapPointTypeFilter,
+          showRoutePath: mapShowRoutePath,
+          geoTrackingEnabled: state.geoTrackingEnabled,
+          mapsQuotaExceeded,
+          focusClusterId: mapFocusClusterId,
+          onToggleGeoTracking: handleToggleGeoTracking,
+          onChangeCategoryFilter: (nextFilter) => {
+            mapCategoryFilter = nextFilter || 'all';
+            mapFocusClusterId = null;
+            updateUiState({ mapCategoryFilter });
+            rerender();
+          },
+          onChangePointTypeFilter: (nextPointType) => {
+            mapPointTypeFilter = nextPointType || 'all';
+            mapFocusClusterId = null;
+            updateUiState({ mapPointTypeFilter });
+            rerender();
+          },
+          onToggleRoutePath: (nextShow) => {
+            mapShowRoutePath = Boolean(nextShow);
+            updateUiState({ mapShowRoutePath });
+            rerender();
+          },
+          onSelectPeriodAll: () => {
+            state.period = 'all';
+            mapFocusClusterId = null;
+            updateUiState({ period: 'all' });
+            rerender();
+          },
+        });
+        mapWrap.appendChild(mapCard);
+        grid.appendChild(mapWrap);
+        continue;
+      }
+
+      if (widget.kind === DASHBOARD_WIDGET_KINDS.CATEGORY_TREE) {
+        const treeCard = node('section', `card${widget.width === 'full' ? ' is-full' : ''}`);
+        treeCard.dataset.dashboardWidgetId = widget.id;
+        treeCard.dataset.widgetKind = widget.kind;
+        treeCard.appendChild(node('h2', 'card-title', BUILTIN_WIDGET_LABELS.categoryTree));
+        const customizeStrip = renderWidgetCustomizeStrip(widget, config, BUILTIN_WIDGET_LABELS.categoryTree);
+        if (customizeStrip) treeCard.appendChild(customizeStrip);
+        const cc = document.createElement('div');
+        cc.id = 'category-tree-chart';
+        treeCard.appendChild(cc);
+        grid.appendChild(treeCard);
+        continue;
+      }
+
+      if (widget.kind === DASHBOARD_WIDGET_KINDS.INSIGHTS) {
+        const insWrap = node('div', `dashboard-widget-slot${widget.width === 'full' ? ' is-full' : ''}`);
+        insWrap.dataset.dashboardWidgetId = widget.id;
+        insWrap.dataset.widgetKind = widget.kind;
+        const customizeStrip = renderWidgetCustomizeStrip(widget, config, BUILTIN_WIDGET_LABELS.insights);
+        if (customizeStrip) insWrap.appendChild(customizeStrip);
+        insWrap.appendChild(insightsCard());
+        grid.appendChild(insWrap);
+      }
+    }
+
+    f.appendChild(grid);
     return f;
   }
 
@@ -3403,6 +3756,187 @@ export function createUI({
       const okBtn = button('Compris', 'primary mobile-guide-close', 'pwa-guide-close');
       okBtn.onclick = closeModal;
       box.appendChild(okBtn);
+      overlay.appendChild(box);
+      isolateModalEvents(overlay, box, { onBackdropClose: closeModal });
+      return overlay;
+    }
+
+    if (m.type === 'dashboard-widget-editor') {
+      const config = getDashboardConfig();
+      const existing = m.mode === 'edit' ? config.widgets.find(w => w.id === m.widgetId) : null;
+      const isEdit = Boolean(existing);
+
+      const box = node('div', 'modal-box dashboard-widget-modal');
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      const modalTitleText = isEdit ? 'Configurer le graphique' : 'Ajouter un graphique';
+      box.setAttribute('aria-label', modalTitleText);
+
+      const head = node('div', 'modal-head');
+      head.appendChild(node('h2', 'card-title', modalTitleText));
+      const close = button('×', 'modal-close', 'modal-close');
+      close.onclick = closeModal;
+      head.appendChild(close);
+      box.appendChild(head);
+
+      if (!isEdit) {
+        const quickSection = node('div', 'dashboard-modal-presets');
+        quickSection.appendChild(node('div', 'dashboard-modal-presets-label', 'Modèles rapides en 1 clic'));
+        const chipsWrap = node('div', 'dashboard-modal-preset-chips');
+        for (const tpl of QUICK_CHART_TEMPLATES) {
+          const tplBtn = button(tpl.label, 'small secondary dashboard-template-card', `quick-tpl-${tpl.id}`);
+          tplBtn.dataset.templateId = tpl.id;
+          tplBtn.onclick = () => {
+            setDashboardConfig(addChartWidget(config, {
+              title: tpl.label,
+              dataSource: tpl.dataSource,
+              chartType: tpl.chartType,
+              metric: tpl.metric,
+              width: tpl.width,
+              categoryFilter: 'global',
+            }));
+            state.modal = null;
+            rerender();
+          };
+          chipsWrap.appendChild(tplBtn);
+        }
+        quickSection.appendChild(chipsWrap);
+        box.appendChild(quickSection);
+      }
+
+      const form = node('form', 'dashboard-widget-form');
+      form.dataset.behaviorForm = 'dashboard-widget-form';
+
+      const initialSource = existing?.dataSource || 'weekday';
+      const initialChart = existing?.chartType || getDataSourceDef(initialSource).defaultChartType;
+      const initialMetric = existing?.metric || 'minutes';
+      const initialTitle = existing?.title || getDefaultTitleForChart({
+        dataSource: initialSource,
+        chartType: initialChart,
+        metric: initialMetric,
+      });
+
+      const titleField = input('Titre du bloc', 'text', initialTitle, false, 'widget-title');
+      titleField.input.dataset.behaviorTarget = 'widget-editor-title';
+
+      const sourceWrap = node('div', 'field');
+      sourceWrap.appendChild(label('Source de données'));
+      const sourceSelect = document.createElement('select');
+      sourceSelect.dataset.behaviorTarget = 'widget-editor-source';
+      for (const def of DASHBOARD_DATA_SOURCE_DEFS) {
+        const opt = document.createElement('option');
+        opt.value = def.id;
+        opt.textContent = `${def.label} — ${def.description}`;
+        opt.selected = def.id === initialSource;
+        sourceSelect.appendChild(opt);
+      }
+      sourceWrap.appendChild(sourceSelect);
+
+      const chartWrap = node('div', 'field');
+      chartWrap.appendChild(label('Type de graphique'));
+      const chartSelect = document.createElement('select');
+      chartSelect.dataset.behaviorTarget = 'widget-editor-chart-type';
+      chartWrap.appendChild(chartSelect);
+
+      const metricWrap = node('div', 'field');
+      metricWrap.appendChild(label('Métrique affichée'));
+      const metricSelect = document.createElement('select');
+      metricSelect.dataset.behaviorTarget = 'widget-editor-metric';
+      metricWrap.appendChild(metricSelect);
+
+      function syncCompatibleOptions(selectedSource, preferredChart, preferredMetric) {
+        const compatCharts = getCompatibleChartTypes(selectedSource);
+        chartSelect.replaceChildren();
+        let nextChart = compatCharts[0]?.id || 'bar';
+        for (const cDef of compatCharts) {
+          const opt = document.createElement('option');
+          opt.value = cDef.id;
+          opt.textContent = cDef.label;
+          if (cDef.id === preferredChart) nextChart = cDef.id;
+          chartSelect.appendChild(opt);
+        }
+        chartSelect.value = nextChart;
+
+        const compatMetrics = getCompatibleMetrics(selectedSource);
+        metricSelect.replaceChildren();
+        let nextMetric = compatMetrics[0]?.id || 'minutes';
+        for (const mDef of compatMetrics) {
+          const opt = document.createElement('option');
+          opt.value = mDef.id;
+          opt.textContent = mDef.label;
+          if (mDef.id === preferredMetric) nextMetric = mDef.id;
+          metricSelect.appendChild(opt);
+        }
+        metricSelect.value = nextMetric;
+      }
+
+      syncCompatibleOptions(initialSource, initialChart, initialMetric);
+
+      let titleEditedManually = isEdit;
+      titleField.input.oninput = () => {
+        titleEditedManually = true;
+      };
+      sourceSelect.onchange = () => {
+        const nextSource = sourceSelect.value;
+        syncCompatibleOptions(nextSource, chartSelect.value, metricSelect.value);
+        if (!titleEditedManually) {
+          titleField.input.value = getDefaultTitleForChart({
+            dataSource: nextSource,
+            chartType: chartSelect.value,
+            metric: metricSelect.value,
+          });
+        }
+      };
+
+      const catWrap = node('div', 'field');
+      catWrap.appendChild(label('Filtre catégorie du graphique'));
+      const catSelect = document.createElement('select');
+      catSelect.dataset.behaviorTarget = 'widget-editor-category';
+      buildDashboardCategoryOptions(catSelect, true);
+      catSelect.value = existing?.categoryFilter || 'global';
+      catWrap.appendChild(catSelect);
+
+      const widthWrap = node('div', 'field');
+      widthWrap.appendChild(label('Largeur sur grand écran'));
+      const widthSelect = document.createElement('select');
+      widthSelect.dataset.behaviorTarget = 'widget-editor-width';
+      for (const [val, txt] of [['half', 'Demi-largeur (2 par ligne)'], ['full', 'Pleine largeur']]) {
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = txt;
+        opt.selected = (existing?.width || 'half') === val;
+        widthSelect.appendChild(opt);
+      }
+      widthWrap.appendChild(widthSelect);
+
+      const submitBtn = button(
+        isEdit ? 'Enregistrer le graphique' : 'Ajouter au tableau de bord',
+        'primary',
+        'widget-editor-submit'
+      );
+      submitBtn.type = 'submit';
+
+      form.append(titleField.wrap, sourceWrap, chartWrap, metricWrap, catWrap, widthWrap, submitBtn);
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        const payload = {
+          title: titleField.input.value.trim(),
+          dataSource: sourceSelect.value,
+          chartType: chartSelect.value,
+          metric: metricSelect.value,
+          categoryFilter: catSelect.value,
+          width: widthSelect.value,
+        };
+        if (isEdit) {
+          setDashboardConfig(updateDashboardWidget(config, existing.id, payload));
+        } else {
+          setDashboardConfig(addChartWidget(config, payload));
+        }
+        state.modal = null;
+        rerender();
+      };
+
+      box.appendChild(form);
       overlay.appendChild(box);
       isolateModalEvents(overlay, box, { onBackdropClose: closeModal });
       return overlay;
@@ -4689,19 +5223,40 @@ export function createUI({
   }
 
   function dashboardEntries() {
-    return filterEntriesByPeriod(state.entries, state.period);
+    const customRange = getDashboardCustomRange();
+    const globalCategoryFilter = getDashboardCategoryFilter();
+    return filterEntriesByPeriod(
+      filterEntriesByCategorySubtree(state.entries, state.categories, globalCategoryFilter),
+      state.period,
+      today(),
+      customRange
+    );
   }
 
   function drawCharts() {
     const d = root.querySelector('#day-chart');
     const h = root.querySelector('#hour-chart');
     const c = root.querySelector('#category-tree-chart');
-    if (d && h || c) {
+    const config = getDashboardConfig();
+    const customChartNodes = [...root.querySelectorAll('[data-custom-chart-id]')]
+      .map(container => {
+        const widgetId = container.dataset.customChartId;
+        const widget = config.widgets.find(w => w.id === widgetId);
+        return widget ? { widget, container } : null;
+      })
+      .filter(Boolean);
+
+    if ((d && h) || c || customChartNodes.length > 0) {
       renderCharts({
         dayCanvas: d,
         hourCanvas: h,
         categoryTreeContainer: c,
+        customCharts: customChartNodes,
+        allEntries: state.entries,
         entries: dashboardEntries(),
+        period: state.period,
+        customRange: getDashboardCustomRange(),
+        globalCategoryFilter: getDashboardCategoryFilter(),
         categories: state.categories,
         activities: state.activities,
         initialCollapsedIds: state.uiState?.collapsedTreeIds ?? null,
@@ -4722,11 +5277,15 @@ export function createUI({
 
     const mapCanvas = root.querySelector('#activity-google-map');
     if (mapCanvas) {
+      const globalCategoryFilter = getDashboardCategoryFilter();
+      const effectiveMapCat = mapCategoryFilter !== 'all'
+        ? mapCategoryFilter
+        : (globalCategoryFilter !== 'all' ? globalCategoryFilter : 'all');
       const mapModel = buildActivityMapModel({
         entries: state.entries,
         categories: state.categories,
         period: state.period,
-        categoryFilter: mapCategoryFilter,
+        categoryFilter: effectiveMapCat,
         pointTypeFilter: mapPointTypeFilter,
       });
       mountMapFn({
