@@ -56,7 +56,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Volume quotidien de temps ou de sessions',
     defaultChartType: 'stackedBar',
     compatibleCharts: ['stackedBar', 'bar', 'line', 'area', 'table'],
-    compatibleMetrics: ['minutes', 'count', 'avg'],
+    compatibleMetrics: ['minutes', 'count', 'avg', 'max'],
   },
   {
     id: 'categories',
@@ -64,7 +64,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Répartition par catégorie racine (sous-catégories incluses)',
     defaultChartType: 'donut',
     compatibleCharts: ['donut', 'horizontalBar', 'bar', 'treemap', 'radar', 'table'],
-    compatibleMetrics: ['minutes', 'count', 'avg'],
+    compatibleMetrics: ['minutes', 'count', 'avg', 'max'],
   },
   {
     id: 'subcategories',
@@ -72,7 +72,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Temps direct par catégorie et sous-catégorie',
     defaultChartType: 'horizontalBar',
     compatibleCharts: ['horizontalBar', 'donut', 'bar', 'treemap', 'table'],
-    compatibleMetrics: ['minutes', 'count', 'avg'],
+    compatibleMetrics: ['minutes', 'count', 'avg', 'max'],
   },
   {
     id: 'activities',
@@ -80,7 +80,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Classement des activités les plus suivies',
     defaultChartType: 'horizontalBar',
     compatibleCharts: ['horizontalBar', 'bar', 'donut', 'treemap', 'table'],
-    compatibleMetrics: ['minutes', 'count', 'avg'],
+    compatibleMetrics: ['minutes', 'count', 'avg', 'max'],
   },
   {
     id: 'hourly',
@@ -88,7 +88,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Distribution horaire de 00h à 23h',
     defaultChartType: 'area',
     compatibleCharts: ['area', 'line', 'bar', 'radar', 'table'],
-    compatibleMetrics: ['minutes', 'count'],
+    compatibleMetrics: ['minutes', 'count', 'max'],
   },
   {
     id: 'weekday',
@@ -96,7 +96,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Rythme hebdomadaire du lundi au dimanche',
     defaultChartType: 'radar',
     compatibleCharts: ['radar', 'bar', 'line', 'donut', 'table'],
-    compatibleMetrics: ['minutes', 'count', 'avg'],
+    compatibleMetrics: ['minutes', 'count', 'avg', 'max'],
   },
   {
     id: 'heatmap',
@@ -104,7 +104,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Intensité par jour de la semaine et moment de journée',
     defaultChartType: 'heatmap',
     compatibleCharts: ['heatmap', 'table'],
-    compatibleMetrics: ['minutes', 'count'],
+    compatibleMetrics: ['minutes', 'count', 'max'],
   },
   {
     id: 'mode',
@@ -112,7 +112,7 @@ export const DASHBOARD_DATA_SOURCE_DEFS = Object.freeze([
     description: 'Part des sessions enregistrées au chrono ou saisies à la main',
     defaultChartType: 'donut',
     compatibleCharts: ['donut', 'bar', 'horizontalBar', 'table'],
-    compatibleMetrics: ['minutes', 'count', 'avg'],
+    compatibleMetrics: ['minutes', 'count', 'avg', 'max'],
   },
   {
     id: 'durationBuckets',
@@ -128,12 +128,39 @@ export const DASHBOARD_METRICS = Object.freeze({
   MINUTES: 'minutes',
   COUNT: 'count',
   AVG: 'avg',
+  MAX: 'max',
 });
 
 export const DASHBOARD_METRIC_DEFS = Object.freeze([
   { id: 'minutes', label: 'Durée totale' },
   { id: 'count', label: 'Nombre de sessions' },
   { id: 'avg', label: 'Durée moyenne' },
+  { id: 'max', label: 'Durée maximale' },
+]);
+
+export const DASHBOARD_TIME_GRAINS = Object.freeze({
+  DAY: 'day',
+  WEEK: 'week',
+  MONTH: 'month',
+  CUMULATIVE: 'cumulative',
+});
+
+export const DASHBOARD_TIME_GRAIN_DEFS = Object.freeze([
+  { id: 'day', label: 'Par jour' },
+  { id: 'week', label: 'Par semaine' },
+  { id: 'month', label: 'Par mois' },
+  { id: 'cumulative', label: 'Progression cumulée' },
+]);
+
+export const DASHBOARD_WIDGET_PERIOD_DEFS = Object.freeze([
+  { id: 'global', label: 'Période globale' },
+  { id: 'today', label: 'Aujourd’hui' },
+  { id: '7', label: '7 derniers jours' },
+  { id: '14', label: '14 derniers jours' },
+  { id: '30', label: '30 derniers jours' },
+  { id: 'month', label: 'Ce mois' },
+  { id: '90', label: '3 mois (90j)' },
+  { id: 'all', label: 'Tout l’historique' },
 ]);
 
 export const DASHBOARD_WIDGET_WIDTHS = Object.freeze(['half', 'full']);
@@ -329,6 +356,34 @@ export const DASHBOARD_PRESETS = Object.freeze([
 
 export const QUICK_CHART_TEMPLATES = Object.freeze([
   {
+    id: 'tpl-daily-cumulative',
+    label: 'Progression cumulée (Courbe)',
+    dataSource: 'daily',
+    chartType: 'area',
+    metric: 'minutes',
+    timeGrain: 'cumulative',
+    width: 'half',
+  },
+  {
+    id: 'tpl-weekly-bars',
+    label: 'Évolution par semaine',
+    dataSource: 'daily',
+    chartType: 'bar',
+    metric: 'minutes',
+    timeGrain: 'week',
+    width: 'half',
+  },
+  {
+    id: 'tpl-monthly-trend',
+    label: 'Historique mensuel',
+    dataSource: 'daily',
+    chartType: 'bar',
+    metric: 'minutes',
+    period: 'all',
+    timeGrain: 'month',
+    width: 'half',
+  },
+  {
     id: 'tpl-weekday-radar',
     label: 'Rythme semaine (Radar)',
     dataSource: 'weekday',
@@ -381,6 +436,8 @@ export const QUICK_CHART_TEMPLATES = Object.freeze([
 const SOURCE_MAP = new Map(DASHBOARD_DATA_SOURCE_DEFS.map(def => [def.id, def]));
 const CHART_MAP = new Map(DASHBOARD_CHART_TYPE_DEFS.map(def => [def.id, def]));
 const METRIC_MAP = new Map(DASHBOARD_METRIC_DEFS.map(def => [def.id, def]));
+const TIME_GRAIN_MAP = new Map(DASHBOARD_TIME_GRAIN_DEFS.map(def => [def.id, def]));
+const WIDGET_PERIOD_MAP = new Map(DASHBOARD_WIDGET_PERIOD_DEFS.map(def => [def.id, def]));
 
 export function getDataSourceDef(dataSource) {
   return SOURCE_MAP.get(dataSource) || DASHBOARD_DATA_SOURCE_DEFS[0];
@@ -392,6 +449,14 @@ export function getChartTypeDef(chartType) {
 
 export function getMetricDef(metric) {
   return METRIC_MAP.get(metric) || DASHBOARD_METRIC_DEFS[0];
+}
+
+export function getTimeGrainDef(grain) {
+  return TIME_GRAIN_MAP.get(grain) || DASHBOARD_TIME_GRAIN_DEFS[0];
+}
+
+export function getWidgetPeriodDef(period) {
+  return WIDGET_PERIOD_MAP.get(period) || DASHBOARD_WIDGET_PERIOD_DEFS[0];
 }
 
 export function getCompatibleChartTypes(dataSource) {
@@ -420,10 +485,20 @@ export function resolveCompatibleMetric(dataSource, preferredMetric) {
   return def.compatibleMetrics[0];
 }
 
-export function getDefaultTitleForChart({ dataSource, chartType: _chartType, metric }) {
+export function getDefaultTitleForChart({ dataSource, chartType: _chartType, metric, timeGrain }) {
   const srcDef = getDataSourceDef(dataSource);
-  if (metric === 'count' && dataSource === 'daily') return 'Sessions par jour';
-  if (metric === 'avg' && dataSource === 'activities') return 'Durée moyenne par activité';
+  if (dataSource === 'daily') {
+    if (timeGrain === 'cumulative') return 'Progression cumulée du temps';
+    if (timeGrain === 'week') return 'Temps par semaine';
+    if (timeGrain === 'month') return 'Temps par mois';
+    if (metric === 'count') return 'Sessions par jour';
+    if (metric === 'avg') return 'Moyenne par jour';
+    if (metric === 'max') return 'Session max par jour';
+    return 'Temps par jour';
+  }
+  if (metric === 'count') return `${srcDef.label} (sessions)`;
+  if (metric === 'avg') return `${srcDef.label} (moyenne)`;
+  if (metric === 'max') return `${srcDef.label} (durée max)`;
   return srcDef.label;
 }
 
@@ -447,12 +522,18 @@ function normalizeWidget(raw, idx) {
   const dataSource = SOURCE_MAP.has(raw.dataSource) ? raw.dataSource : DASHBOARD_DATA_SOURCES.DAILY;
   const chartType = resolveCompatibleChartType(dataSource, raw.chartType);
   const metric = resolveCompatibleMetric(dataSource, raw.metric);
+  const period = typeof raw.period === 'string' && raw.period.trim()
+    ? raw.period.trim()
+    : 'global';
+  const timeGrain = ['day', 'week', 'month', 'cumulative'].includes(raw.timeGrain)
+    ? raw.timeGrain
+    : 'day';
   const categoryFilter = typeof raw.categoryFilter === 'string' && raw.categoryFilter.trim()
     ? raw.categoryFilter.trim()
     : 'global';
   const title = typeof raw.title === 'string' && raw.title.trim()
     ? raw.title.trim()
-    : getDefaultTitleForChart({ dataSource, chartType, metric });
+    : getDefaultTitleForChart({ dataSource, chartType, metric, timeGrain });
 
   return {
     id,
@@ -461,6 +542,8 @@ function normalizeWidget(raw, idx) {
     dataSource,
     chartType,
     metric,
+    period,
+    timeGrain,
     categoryFilter,
     width,
     visible,
@@ -525,6 +608,12 @@ export function addChartWidget(config, widgetInput = {}) {
     ? widgetInput.title.trim()
     : getDefaultTitleForChart({ dataSource, chartType, metric });
   const width = DASHBOARD_WIDGET_WIDTHS.includes(widgetInput.width) ? widgetInput.width : 'half';
+  const period = typeof widgetInput.period === 'string' && widgetInput.period.trim()
+    ? widgetInput.period.trim()
+    : 'global';
+  const timeGrain = ['day', 'week', 'month', 'cumulative'].includes(widgetInput.timeGrain)
+    ? widgetInput.timeGrain
+    : 'day';
   const categoryFilter = typeof widgetInput.categoryFilter === 'string' && widgetInput.categoryFilter.trim()
     ? widgetInput.categoryFilter.trim()
     : 'global';
@@ -536,6 +625,8 @@ export function addChartWidget(config, widgetInput = {}) {
     dataSource,
     chartType,
     metric,
+    period,
+    timeGrain,
     categoryFilter,
     width,
     visible: true,
@@ -575,12 +666,33 @@ export function updateDashboardWidget(config, widgetId, patch = {}) {
       patch.chartType ?? (dataSourceChanged ? getDataSourceDef(nextSource).defaultChartType : w.chartType)
     );
     const nextMetric = resolveCompatibleMetric(nextSource, patch.metric ?? w.metric);
+    const nextPeriod = typeof patch.period === 'string' && patch.period.trim()
+      ? patch.period.trim()
+      : (w.period || 'global');
+    const nextTimeGrain = ['day', 'week', 'month', 'cumulative'].includes(patch.timeGrain)
+      ? patch.timeGrain
+      : (w.timeGrain || 'day');
 
     let nextTitle = w.title;
     if (typeof patch.title === 'string') {
-      nextTitle = patch.title.trim() || getDefaultTitleForChart({ dataSource: nextSource, chartType: nextChartType, metric: nextMetric });
-    } else if (dataSourceChanged && w.title === getDefaultTitleForChart({ dataSource: w.dataSource, chartType: w.chartType, metric: w.metric })) {
-      nextTitle = getDefaultTitleForChart({ dataSource: nextSource, chartType: nextChartType, metric: nextMetric });
+      nextTitle = patch.title.trim() || getDefaultTitleForChart({
+        dataSource: nextSource,
+        chartType: nextChartType,
+        metric: nextMetric,
+        timeGrain: nextTimeGrain,
+      });
+    } else if (dataSourceChanged && w.title === getDefaultTitleForChart({
+      dataSource: w.dataSource,
+      chartType: w.chartType,
+      metric: w.metric,
+      timeGrain: w.timeGrain,
+    })) {
+      nextTitle = getDefaultTitleForChart({
+        dataSource: nextSource,
+        chartType: nextChartType,
+        metric: nextMetric,
+        timeGrain: nextTimeGrain,
+      });
     }
 
     return {
@@ -589,6 +701,8 @@ export function updateDashboardWidget(config, widgetId, patch = {}) {
       dataSource: nextSource,
       chartType: nextChartType,
       metric: nextMetric,
+      period: nextPeriod,
+      timeGrain: nextTimeGrain,
       categoryFilter: typeof patch.categoryFilter === 'string' && patch.categoryFilter.trim()
         ? patch.categoryFilter.trim()
         : w.categoryFilter,

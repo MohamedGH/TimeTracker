@@ -5161,14 +5161,32 @@ canvas {
 }
 
 .dashboard-chart-quick-controls {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.dashboard-quick-field {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.dashboard-quick-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .dashboard-inline-select {
-  min-height: 36px;
-  padding: 4px 8px;
+  min-height: 34px;
+  padding: 4px 6px;
   font-size: 12px;
   background: var(--paper);
   border: 1px solid var(--line);
@@ -5176,6 +5194,14 @@ canvas {
   color: var(--ink);
   width: 100%;
   min-width: 0;
+  cursor: pointer;
+  transition: border-color var(--transition);
+}
+
+.dashboard-inline-select:focus {
+  outline: none;
+  border-color: var(--pine);
+  box-shadow: 0 0 0 2px var(--pine-soft);
 }
 
 .custom-chart-host {
@@ -5520,8 +5546,8 @@ canvas {
 }
 
 @media (max-width: 520px) {
-  .dashboard-chart-quick-controls {
-    grid-template-columns: 1fr;
+  .dashboard-quick-field {
+    flex: 1 1 100%;
   }
 }
 

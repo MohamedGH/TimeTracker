@@ -57,7 +57,7 @@ describe('Customizable Dashboard Configuration & Domain Logic', () => {
     expect(resolved).toBe('heatmap');
 
     const metrics = getCompatibleMetrics(DASHBOARD_DATA_SOURCES.HEATMAP);
-    expect(metrics.map(m => m.id)).toEqual(['minutes', 'count']);
+    expect(metrics.map(m => m.id)).toEqual(['minutes', 'count', 'max']);
   });
 
   it('adds, updates, duplicates, removes, and moves widgets immutably', () => {
@@ -245,6 +245,61 @@ describe('Dataset extraction across dimensions and metrics', () => {
     });
     expect(dsBuckets.series.length).toBe(5);
   });
+
+  it('aggregates time series by week, month, and cumulative progression', () => {
+    // Cumulative
+    const dsCumulative = buildCustomDashboardDataset({
+      entries,
+      categories,
+      dataSource: 'daily',
+      metric: 'minutes',
+      period: '30',
+      timeGrain: 'cumulative',
+      refDate: '2026-09-28',
+    });
+    expect(dsCumulative.timeGrain).toBe('cumulative');
+    const finalDay = dsCumulative.rows[dsCumulative.rows.length - 1];
+    expect(finalDay.total).toBe(315); // 120 + 45 + 30 + 120 = 315 min within 30 days
+
+    // Week
+    const dsWeek = buildCustomDashboardDataset({
+      entries,
+      categories,
+      dataSource: 'daily',
+      metric: 'minutes',
+      period: 'all',
+      timeGrain: 'week',
+      refDate: '2026-09-28',
+    });
+    expect(dsWeek.rows.length).toBeGreaterThanOrEqual(2);
+    expect(dsWeek.rows[0].label).toMatch(/^Sem\./);
+
+    // Month
+    const dsMonth = buildCustomDashboardDataset({
+      entries,
+      categories,
+      dataSource: 'daily',
+      metric: 'minutes',
+      period: 'all',
+      timeGrain: 'month',
+      refDate: '2026-09-28',
+    });
+    expect(dsMonth.rows.length).toBe(1); // September 2026
+    expect(dsMonth.rows[0].minutes).toBe(315);
+  });
+
+  it('calculates max session metric correctly across dimensions', () => {
+    const dsActMax = buildCustomDashboardDataset({
+      entries,
+      categories,
+      dataSource: 'activities',
+      metric: 'max',
+      period: 'all',
+      refDate: '2026-09-28',
+    });
+    const codeAct = dsActMax.series.find(s => s.label === 'Code');
+    expect(codeAct.value).toBe(120);
+  });
 });
 
 describe('D3 Custom Chart Rendering', () => {
@@ -364,6 +419,22 @@ describe('Customizable Dashboard UI Interaction & Session Persistence', () => {
     await new Promise(r => setTimeout(r, 40));
     expect(app1.state.uiState.dashboardCategoryFilter).toBe('travail');
 
+    // 5b. Change period on w-daily to '30' and timeGrain to 'cumulative'
+    const dailyPeriod = root1.querySelector('[data-behavior-target="widget-period-w-daily"]');
+    expect(dailyPeriod).toBeTruthy();
+    dailyPeriod.value = '30';
+    dailyPeriod.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 40));
+
+    const dailyGrain = root1.querySelector('[data-behavior-target="widget-grain-w-daily"]');
+    expect(dailyGrain).toBeTruthy();
+    dailyGrain.value = 'cumulative';
+    dailyGrain.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 40));
+
+    expect(app1.state.uiState.dashboardConfig.widgets.find(w => w.id === 'w-daily').period).toBe('30');
+    expect(app1.state.uiState.dashboardConfig.widgets.find(w => w.id === 'w-daily').timeGrain).toBe('cumulative');
+
     // Clean up first instance
     ui1.destroy();
     root1.remove();
@@ -380,10 +451,14 @@ describe('Customizable Dashboard UI Interaction & Session Persistence', () => {
       authClient: { isConfigured: () => false, signOut: async () => {} },
     });
 
-    // Check that custom dashboard configuration and category filter survived reload
+    // Check that custom dashboard configuration, widget period, grain, and category filter survived reload
     expect(app2.state.uiState.dashboardCategoryFilter).toBe('travail');
     expect(app2.state.uiState.dashboardConfig.widgets.some(w => w.dataSource === 'weekday' && w.chartType === 'radar')).toBe(true);
+    expect(app2.state.uiState.dashboardConfig.widgets.find(w => w.id === 'w-daily').period).toBe('30');
+    expect(app2.state.uiState.dashboardConfig.widgets.find(w => w.id === 'w-daily').timeGrain).toBe('cumulative');
     expect(root2.querySelector('[data-behavior-target="dashboard-category-filter"]').value).toBe('travail');
+    expect(root2.querySelector('[data-behavior-target="widget-period-w-daily"]').value).toBe('30');
+    expect(root2.querySelector('[data-behavior-target="widget-grain-w-daily"]').value).toBe('cumulative');
 
     ui2.destroy();
     root2.remove();

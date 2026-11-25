@@ -62,12 +62,16 @@ import {
 import {
   DASHBOARD_WIDGET_KINDS,
   DASHBOARD_DATA_SOURCE_DEFS,
+  DASHBOARD_TIME_GRAIN_DEFS,
+  DASHBOARD_WIDGET_PERIOD_DEFS,
   DASHBOARD_PRESETS,
   QUICK_CHART_TEMPLATES,
   BUILTIN_WIDGET_LABELS,
   getDataSourceDef,
   getChartTypeDef,
   getMetricDef,
+  getTimeGrainDef,
+  getWidgetPeriodDef,
   getCompatibleChartTypes,
   getCompatibleMetrics,
   getDefaultTitleForChart,
@@ -2900,12 +2904,16 @@ export function createUI({
     const srcDef = getDataSourceDef(widget.dataSource);
     const chartDef = getChartTypeDef(widget.chartType);
     const metricDef = getMetricDef(widget.metric);
+    const periodDef = widget.period && widget.period !== 'global' ? getWidgetPeriodDef(widget.period) : null;
+    const grainDef = widget.dataSource === 'daily' && widget.timeGrain && widget.timeGrain !== 'day' ? getTimeGrainDef(widget.timeGrain) : null;
     const filterCat = widget.categoryFilter && widget.categoryFilter !== 'global' && widget.categoryFilter !== 'all'
       ? (widget.categoryFilter === '__uncategorized__'
           ? 'Sans catégorie'
           : (state.categories.find(cat => cat.id === widget.categoryFilter)?.label || widget.categoryFilter))
       : null;
     const metaParts = [srcDef.label, chartDef.label, metricDef.label];
+    if (periodDef) metaParts.push(periodDef.label);
+    if (grainDef) metaParts.push(grainDef.label);
     if (filterCat) metaParts.push(filterCat);
     const subtitle = node('div', 'dashboard-chart-meta', metaParts.join(' · '));
     titleWrap.append(title, subtitle);
@@ -2935,9 +2943,12 @@ export function createUI({
     head.append(titleWrap, headActions);
     c.appendChild(head);
 
-    // Inline quick-switchers for data source, chart type, and metric directly on the card
+    // Inline quick-switchers for data source, chart type, period, metric, and time grain
     const quickControls = node('div', 'dashboard-chart-quick-controls');
 
+    // 1. Données
+    const srcField = node('div', 'dashboard-quick-field');
+    srcField.appendChild(node('span', 'dashboard-quick-label', 'Données :'));
     const sourceSelect = document.createElement('select');
     sourceSelect.className = 'dashboard-inline-select';
     sourceSelect.dataset.behaviorTarget = `widget-source-${widget.id}`;
@@ -2953,7 +2964,11 @@ export function createUI({
       setDashboardConfig(updateDashboardWidget(config, widget.id, { dataSource: sourceSelect.value }));
       rerender();
     };
+    srcField.appendChild(sourceSelect);
 
+    // 2. Graphique
+    const chartField = node('div', 'dashboard-quick-field');
+    chartField.appendChild(node('span', 'dashboard-quick-label', 'Graphique :'));
     const chartSelect = document.createElement('select');
     chartSelect.className = 'dashboard-inline-select';
     chartSelect.dataset.behaviorTarget = `widget-chart-${widget.id}`;
@@ -2969,7 +2984,31 @@ export function createUI({
       setDashboardConfig(updateDashboardWidget(config, widget.id, { chartType: chartSelect.value }));
       rerender();
     };
+    chartField.appendChild(chartSelect);
 
+    // 3. Période propre au graphique
+    const periodField = node('div', 'dashboard-quick-field');
+    periodField.appendChild(node('span', 'dashboard-quick-label', 'Période :'));
+    const periodSelect = document.createElement('select');
+    periodSelect.className = 'dashboard-inline-select';
+    periodSelect.dataset.behaviorTarget = `widget-period-${widget.id}`;
+    periodSelect.setAttribute('aria-label', `Période d’agrégation pour ${widget.title}`);
+    for (const p of DASHBOARD_WIDGET_PERIOD_DEFS) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.label;
+      opt.selected = (widget.period || 'global') === p.id;
+      periodSelect.appendChild(opt);
+    }
+    periodSelect.onchange = () => {
+      setDashboardConfig(updateDashboardWidget(config, widget.id, { period: periodSelect.value }));
+      rerender();
+    };
+    periodField.appendChild(periodSelect);
+
+    // 4. Métrique
+    const metricField = node('div', 'dashboard-quick-field');
+    metricField.appendChild(node('span', 'dashboard-quick-label', 'Métrique :'));
     const metricSelect = document.createElement('select');
     metricSelect.className = 'dashboard-inline-select';
     metricSelect.dataset.behaviorTarget = `widget-metric-${widget.id}`;
@@ -2985,8 +3024,33 @@ export function createUI({
       setDashboardConfig(updateDashboardWidget(config, widget.id, { metric: metricSelect.value }));
       rerender();
     };
+    metricField.appendChild(metricSelect);
 
-    quickControls.append(sourceSelect, chartSelect, metricSelect);
+    quickControls.append(srcField, chartField, periodField, metricField);
+
+    // 5. Pas d'agrégation si évolution temporelle
+    if (widget.dataSource === 'daily') {
+      const grainField = node('div', 'dashboard-quick-field');
+      grainField.appendChild(node('span', 'dashboard-quick-label', 'Agrégation :'));
+      const grainSelect = document.createElement('select');
+      grainSelect.className = 'dashboard-inline-select';
+      grainSelect.dataset.behaviorTarget = `widget-grain-${widget.id}`;
+      grainSelect.setAttribute('aria-label', `Pas d’agrégation pour ${widget.title}`);
+      for (const g of DASHBOARD_TIME_GRAIN_DEFS) {
+        const opt = document.createElement('option');
+        opt.value = g.id;
+        opt.textContent = g.label;
+        opt.selected = (widget.timeGrain || 'day') === g.id;
+        grainSelect.appendChild(opt);
+      }
+      grainSelect.onchange = () => {
+        setDashboardConfig(updateDashboardWidget(config, widget.id, { timeGrain: grainSelect.value }));
+        rerender();
+      };
+      grainField.appendChild(grainSelect);
+      quickControls.appendChild(grainField);
+    }
+
     c.appendChild(quickControls);
 
     const customizeStrip = renderWidgetCustomizeStrip(widget, config, widget.title);
@@ -3838,6 +3902,32 @@ export function createUI({
       chartSelect.dataset.behaviorTarget = 'widget-editor-chart-type';
       chartWrap.appendChild(chartSelect);
 
+      const periodWrap = node('div', 'field');
+      periodWrap.appendChild(label('Période d’agrégation'));
+      const periodSelect = document.createElement('select');
+      periodSelect.dataset.behaviorTarget = 'widget-editor-period';
+      for (const p of DASHBOARD_WIDGET_PERIOD_DEFS) {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.label;
+        opt.selected = (existing?.period || 'global') === p.id;
+        periodSelect.appendChild(opt);
+      }
+      periodWrap.appendChild(periodSelect);
+
+      const grainWrap = node('div', 'field');
+      grainWrap.appendChild(label('Pas d’agrégation temporelle'));
+      const grainSelect = document.createElement('select');
+      grainSelect.dataset.behaviorTarget = 'widget-editor-grain';
+      for (const g of DASHBOARD_TIME_GRAIN_DEFS) {
+        const opt = document.createElement('option');
+        opt.value = g.id;
+        opt.textContent = g.label;
+        opt.selected = (existing?.timeGrain || 'day') === g.id;
+        grainSelect.appendChild(opt);
+      }
+      grainWrap.appendChild(grainSelect);
+
       const metricWrap = node('div', 'field');
       metricWrap.appendChild(label('Métrique affichée'));
       const metricSelect = document.createElement('select');
@@ -3845,6 +3935,8 @@ export function createUI({
       metricWrap.appendChild(metricSelect);
 
       function syncCompatibleOptions(selectedSource, preferredChart, preferredMetric) {
+        grainWrap.style.display = selectedSource === 'daily' ? 'block' : 'none';
+
         const compatCharts = getCompatibleChartTypes(selectedSource);
         chartSelect.replaceChildren();
         let nextChart = compatCharts[0]?.id || 'bar';
@@ -3884,6 +3976,7 @@ export function createUI({
             dataSource: nextSource,
             chartType: chartSelect.value,
             metric: metricSelect.value,
+            timeGrain: grainSelect.value,
           });
         }
       };
@@ -3916,7 +4009,7 @@ export function createUI({
       );
       submitBtn.type = 'submit';
 
-      form.append(titleField.wrap, sourceWrap, chartWrap, metricWrap, catWrap, widthWrap, submitBtn);
+      form.append(titleField.wrap, sourceWrap, chartWrap, periodWrap, grainWrap, metricWrap, catWrap, widthWrap, submitBtn);
       form.onsubmit = (e) => {
         e.preventDefault();
         const payload = {
@@ -3924,6 +4017,8 @@ export function createUI({
           dataSource: sourceSelect.value,
           chartType: chartSelect.value,
           metric: metricSelect.value,
+          period: periodSelect.value,
+          timeGrain: grainSelect.value,
           categoryFilter: catSelect.value,
           width: widthSelect.value,
         };

@@ -95,12 +95,14 @@ export function getDateRangeForPeriod(period, refDate = today(), customRange = n
 export function aggregateCategoryBreakdown(entries = [], categories = []) {
   const directMinsMap = new Map();
   const directCountMap = new Map();
+  const directMaxMap = new Map();
 
   for (const entry of entries) {
     const mins = Math.max(0, Number(entry.mins) || 0);
     const catId = entry.categoryId || '__uncategorized__';
     directMinsMap.set(catId, (directMinsMap.get(catId) || 0) + mins);
     directCountMap.set(catId, (directCountMap.get(catId) || 0) + 1);
+    directMaxMap.set(catId, Math.max(directMaxMap.get(catId) || 0, mins));
   }
 
   const totalPeriodMins = [...directMinsMap.values()].reduce((sum, v) => sum + v, 0);
@@ -112,10 +114,12 @@ export function aggregateCategoryBreakdown(entries = [], categories = []) {
 
     let recursiveMins = 0;
     let recursiveCount = 0;
+    let recursiveMax = 0;
     for (const [id, mins] of directMinsMap.entries()) {
       if (descendantIds.has(id)) {
         recursiveMins += mins;
         recursiveCount += directCountMap.get(id) || 0;
+        recursiveMax = Math.max(recursiveMax, directMaxMap.get(id) || 0);
       }
     }
 
@@ -130,6 +134,7 @@ export function aggregateCategoryBreakdown(entries = [], categories = []) {
       directMins,
       totalMins: recursiveMins,
       count: recursiveCount,
+      max: recursiveMax,
       percentage: Math.round(percentage * 10) / 10,
       percentageFormatted: `${(Math.round(percentage * 10) / 10).toFixed(1)}%`,
       formattedTotal: formatDuration(recursiveMins),
@@ -182,6 +187,7 @@ export function aggregateTopActivities(entries = [], categories = [], limit = 10
         categoryId: entry.categoryId ?? null,
         count: 0,
         totalMins: 0,
+        maxMins: 0,
         recentDate: entry.date,
       });
     }
@@ -189,6 +195,7 @@ export function aggregateTopActivities(entries = [], categories = [], limit = 10
     const record = byActivity.get(key);
     record.count += 1;
     record.totalMins += mins;
+    record.maxMins = Math.max(record.maxMins || 0, mins);
     if (entry.date && (!record.recentDate || entry.date > record.recentDate)) {
       record.recentDate = entry.date;
       record.categoryId = entry.categoryId ?? record.categoryId;
@@ -208,6 +215,7 @@ export function aggregateTopActivities(entries = [], categories = [], limit = 10
         categoryColor: cat?.color || '#948C7E',
         count: item.count,
         totalMins: item.totalMins,
+        maxMins: item.maxMins || 0,
         avgMins: Math.round(item.totalMins / item.count),
         percentage: Math.round(pct * 10) / 10,
         formattedTotal: formatDuration(item.totalMins),
@@ -324,10 +332,12 @@ function formatMetricValue(value, metric) {
   return formatDuration(value);
 }
 
-function selectMetricValue({ minutes, count }, metric) {
-  if (metric === 'count') return count;
-  if (metric === 'avg') return count > 0 ? Math.round(minutes / count) : 0;
-  return minutes;
+function selectMetricValue(item, metric) {
+  if (!item) return 0;
+  if (metric === 'count') return item.count || 0;
+  if (metric === 'avg') return item.count > 0 ? Math.round((item.minutes || 0) / item.count) : 0;
+  if (metric === 'max') return item.max || item.maxMins || 0;
+  return item.minutes || 0;
 }
 
 function buildRootResolver(categories = []) {
@@ -393,6 +403,7 @@ export function buildCustomDashboardDataset({
   period = PERIODS.DAYS_7,
   customRange = null,
   categoryFilter = 'global',
+  timeGrain = 'day',
   refDate = today(),
 } = {}) {
   const periodEntries = filterEntriesByPeriod(
@@ -420,17 +431,20 @@ export function buildCustomDashboardDataset({
           date: entry.date,
           minutes: 0,
           count: 0,
+          max: 0,
           byStack: new Map(),
         });
       }
       const bucket = byDay.get(entry.date);
       bucket.minutes += mins;
       bucket.count += 1;
+      bucket.max = Math.max(bucket.max || 0, mins);
 
-      const prevStack = bucket.byStack.get(root.id) || { minutes: 0, count: 0 };
+      const prevStack = bucket.byStack.get(root.id) || { minutes: 0, count: 0, max: 0 };
       bucket.byStack.set(root.id, {
         minutes: prevStack.minutes + mins,
         count: prevStack.count + 1,
+        max: Math.max(prevStack.max || 0, mins),
       });
     }
 
@@ -448,6 +462,7 @@ export function buildCustomDashboardDataset({
               date: ymd,
               minutes: 0,
               count: 0,
+              max: 0,
               byStack: new Map(),
             });
           }
@@ -458,37 +473,139 @@ export function buildCustomDashboardDataset({
 
     const sortedDays = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date));
     const stacks = [...stackMeta.values()];
-    const seriesItems = sortedDays.map(day => {
+
+    let processedDays = sortedDays;
+
+    if (timeGrain === 'cumulative') {
+      let cumMins = 0;
+      let cumCount = 0;
+      let cumMax = 0;
+      const stackRunning = new Map();
+
+      processedDays = sortedDays.map(day => {
+        cumMins += day.minutes;
+        cumCount += day.count;
+        cumMax = Math.max(cumMax, day.max || 0);
+
+        const cumByStack = new Map();
+        for (const stack of stacks) {
+          const prev = stackRunning.get(stack.id) || 0;
+          const st = day.byStack.get(stack.id) || { minutes: 0, count: 0, max: 0 };
+          const next = prev + st.minutes;
+          stackRunning.set(stack.id, next);
+          cumByStack.set(stack.id, { minutes: next, count: cumCount, max: cumMax });
+        }
+
+        return {
+          date: day.date,
+          label: day.date.slice(5).replace('-', '/'),
+          minutes: cumMins,
+          count: cumCount,
+          max: cumMax,
+          byStack: cumByStack,
+        };
+      });
+    } else if (timeGrain === 'week') {
+      const byWeek = new Map();
+      for (const day of sortedDays) {
+        const d = new Date(`${day.date}T12:00:00`);
+        const dayOfWeek = d.getDay();
+        const diff = (dayOfWeek === 0 ? -6 : 1) - dayOfWeek;
+        d.setDate(d.getDate() + diff);
+        const weekKey = d.toISOString().slice(0, 10);
+
+        if (!byWeek.has(weekKey)) {
+          byWeek.set(weekKey, {
+            date: weekKey,
+            label: `Sem. ${weekKey.slice(5).replace('-', '/')}`,
+            minutes: 0,
+            count: 0,
+            max: 0,
+            byStack: new Map(),
+          });
+        }
+        const wBucket = byWeek.get(weekKey);
+        wBucket.minutes += day.minutes;
+        wBucket.count += day.count;
+        wBucket.max = Math.max(wBucket.max, day.max || 0);
+
+        for (const stack of stacks) {
+          const st = day.byStack.get(stack.id) || { minutes: 0, count: 0, max: 0 };
+          const prevSt = wBucket.byStack.get(stack.id) || { minutes: 0, count: 0, max: 0 };
+          wBucket.byStack.set(stack.id, {
+            minutes: prevSt.minutes + st.minutes,
+            count: prevSt.count + st.count,
+            max: Math.max(prevSt.max, st.max || 0),
+          });
+        }
+      }
+      processedDays = [...byWeek.values()].sort((a, b) => a.date.localeCompare(b.date));
+    } else if (timeGrain === 'month') {
+      const byMonth = new Map();
+      for (const day of sortedDays) {
+        const monthKey = day.date.slice(0, 7);
+        if (!byMonth.has(monthKey)) {
+          byMonth.set(monthKey, {
+            date: `${monthKey}-01`,
+            label: `${monthKey.slice(5)}/${monthKey.slice(0, 4)}`,
+            minutes: 0,
+            count: 0,
+            max: 0,
+            byStack: new Map(),
+          });
+        }
+        const mBucket = byMonth.get(monthKey);
+        mBucket.minutes += day.minutes;
+        mBucket.count += day.count;
+        mBucket.max = Math.max(mBucket.max, day.max || 0);
+
+        for (const stack of stacks) {
+          const st = day.byStack.get(stack.id) || { minutes: 0, count: 0, max: 0 };
+          const prevSt = mBucket.byStack.get(stack.id) || { minutes: 0, count: 0, max: 0 };
+          mBucket.byStack.set(stack.id, {
+            minutes: prevSt.minutes + st.minutes,
+            count: prevSt.count + st.count,
+            max: Math.max(prevSt.max, st.max || 0),
+          });
+        }
+      }
+      processedDays = [...byMonth.values()].sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    const seriesItems = processedDays.map(day => {
       const value = selectMetricValue(day, metric);
       return {
         key: day.date,
-        label: day.date.slice(5).replace('-', '/'),
+        label: day.label || day.date.slice(5).replace('-', '/'),
         fullLabel: day.date,
         color: '#3F7068',
         minutes: day.minutes,
         count: day.count,
+        max: day.max,
         value,
       };
     });
 
-    const rows = sortedDays.map(day => {
+    const rows = processedDays.map(day => {
       const valuesByStack = {};
       for (const stack of stacks) {
-        const st = day.byStack.get(stack.id) || { minutes: 0, count: 0 };
+        const st = day.byStack.get(stack.id) || { minutes: 0, count: 0, max: 0 };
         valuesByStack[stack.id] = selectMetricValue(st, metric);
       }
       return {
         date: day.date,
-        label: day.date.slice(5).replace('-', '/'),
+        label: day.label || day.date.slice(5).replace('-', '/'),
         total: selectMetricValue(day, metric),
         minutes: day.minutes,
         count: day.count,
+        max: day.max,
         valuesByStack,
       };
     });
 
     return {
       dataSource,
+      timeGrain,
       ...finalizeSeries(seriesItems, metric),
       stacks,
       rows,
@@ -504,7 +621,8 @@ export function buildCustomDashboardDataset({
       color: c.color,
       minutes: c.totalMins,
       count: c.count,
-      value: selectMetricValue({ minutes: c.totalMins, count: c.count }, metric),
+      max: c.max,
+      value: selectMetricValue({ minutes: c.totalMins, count: c.count, max: c.max }, metric),
     }));
     items.sort((a, b) => b.value - a.value);
     return { dataSource, ...finalizeSeries(items, metric) };
@@ -515,8 +633,12 @@ export function buildCustomDashboardDataset({
     for (const entry of periodEntries) {
       const mins = Math.max(0, Number(entry.mins) || 0);
       const id = entry.categoryId || '__uncategorized__';
-      const prev = directMap.get(id) || { minutes: 0, count: 0 };
-      directMap.set(id, { minutes: prev.minutes + mins, count: prev.count + 1 });
+      const prev = directMap.get(id) || { minutes: 0, count: 0, max: 0 };
+      directMap.set(id, {
+        minutes: prev.minutes + mins,
+        count: prev.count + 1,
+        max: Math.max(prev.max || 0, mins),
+      });
     }
     const items = [...directMap.entries()].map(([id, agg]) => {
       const cat = id === '__uncategorized__' ? null : categoryMap.get(id);
@@ -526,6 +648,7 @@ export function buildCustomDashboardDataset({
         color: cat?.color || '#948C7E',
         minutes: agg.minutes,
         count: agg.count,
+        max: agg.max,
         value: selectMetricValue(agg, metric),
       };
     }).sort((a, b) => b.value - a.value);
@@ -541,7 +664,8 @@ export function buildCustomDashboardDataset({
       color: act.categoryColor,
       minutes: act.totalMins,
       count: act.count,
-      value: selectMetricValue({ minutes: act.totalMins, count: act.count }, metric),
+      max: act.maxMins,
+      value: selectMetricValue({ minutes: act.totalMins, count: act.count, max: act.maxMins }, metric),
     })).sort((a, b) => b.value - a.value);
     return { dataSource, ...finalizeSeries(items, metric) };
   }
@@ -551,6 +675,7 @@ export function buildCustomDashboardDataset({
       hour,
       minutes: 0,
       count: 0,
+      max: 0,
     }));
     for (const entry of periodEntries) {
       const mins = Math.max(0, Number(entry.mins) || 0);
@@ -558,6 +683,7 @@ export function buildCustomDashboardDataset({
       if (Number.isInteger(hour) && hour >= 0 && hour < 24) {
         buckets[hour].minutes += mins;
         buckets[hour].count += 1;
+        buckets[hour].max = Math.max(buckets[hour].max, mins);
       }
     }
     const items = buckets.map(b => ({
@@ -566,6 +692,7 @@ export function buildCustomDashboardDataset({
       color: '#4A5A75',
       minutes: b.minutes,
       count: b.count,
+      max: b.max,
       value: selectMetricValue(b, metric),
     }));
     return { dataSource, ...finalizeSeries(items, metric) };
@@ -576,14 +703,17 @@ export function buildCustomDashboardDataset({
       dayIdx: idx,
       minutes: 0,
       count: 0,
+      max: 0,
     }));
     for (const entry of periodEntries) {
       if (!entry.date) continue;
       const d = new Date(`${entry.date}T12:00:00`);
       if (Number.isNaN(d.getTime())) continue;
       const idx = d.getDay();
-      buckets[idx].minutes += Math.max(0, Number(entry.mins) || 0);
+      const mins = Math.max(0, Number(entry.mins) || 0);
+      buckets[idx].minutes += mins;
       buckets[idx].count += 1;
+      buckets[idx].max = Math.max(buckets[idx].max, mins);
     }
     const items = MONDAY_FIRST_INDEXES.map(dayIdx => {
       const b = buckets[dayIdx];
@@ -593,6 +723,7 @@ export function buildCustomDashboardDataset({
         color: '#8C6D3F',
         minutes: b.minutes,
         count: b.count,
+        max: b.max,
         value: selectMetricValue(b, metric),
       };
     });
@@ -601,7 +732,7 @@ export function buildCustomDashboardDataset({
 
   if (dataSource === 'heatmap') {
     const grid = Array.from({ length: 7 }, () =>
-      TIME_BANDS.map(() => ({ minutes: 0, count: 0 }))
+      TIME_BANDS.map(() => ({ minutes: 0, count: 0, max: 0 }))
     );
 
     for (const entry of periodEntries) {
@@ -614,8 +745,10 @@ export function buildCustomDashboardDataset({
         ? TIME_BANDS.findIndex(b => hour >= b.minHour && hour < b.maxHour)
         : 1;
       const cell = grid[monIdx][Math.max(0, bandIdx)];
-      cell.minutes += Math.max(0, Number(entry.mins) || 0);
+      const mins = Math.max(0, Number(entry.mins) || 0);
+      cell.minutes += mins;
       cell.count += 1;
+      cell.max = Math.max(cell.max, mins);
     }
 
     const rowLabels = MONDAY_FIRST_INDEXES.map(i => WEEKDAY_LABELS[i]);
@@ -634,6 +767,7 @@ export function buildCustomDashboardDataset({
           colLabel: colLabels[c],
           minutes: agg.minutes,
           count: agg.count,
+          max: agg.max,
           value,
           formattedValue: formatMetricValue(value, metric),
         };
@@ -645,6 +779,7 @@ export function buildCustomDashboardDataset({
             color: '#3F7068',
             minutes: agg.minutes,
             count: agg.count,
+            max: agg.max,
             value,
           });
         }
@@ -663,14 +798,15 @@ export function buildCustomDashboardDataset({
   }
 
   if (dataSource === 'mode') {
-    const timerAgg = { minutes: 0, count: 0 };
-    const manualAgg = { minutes: 0, count: 0 };
+    const timerAgg = { minutes: 0, count: 0, max: 0 };
+    const manualAgg = { minutes: 0, count: 0, max: 0 };
     for (const entry of periodEntries) {
       const mins = Math.max(0, Number(entry.mins) || 0);
       const isTimer = entry.viaTimer === true || entry.manual === false;
       const target = isTimer ? timerAgg : manualAgg;
       target.minutes += mins;
       target.count += 1;
+      target.max = Math.max(target.max, mins);
     }
     const items = [
       {
@@ -680,6 +816,7 @@ export function buildCustomDashboardDataset({
         color: '#3F7068',
         minutes: timerAgg.minutes,
         count: timerAgg.count,
+        max: timerAgg.max,
         value: selectMetricValue(timerAgg, metric),
       },
       {
@@ -689,6 +826,7 @@ export function buildCustomDashboardDataset({
         color: '#8C6D3F',
         minutes: manualAgg.minutes,
         count: manualAgg.count,
+        max: manualAgg.max,
         value: selectMetricValue(manualAgg, metric),
       },
     ].filter(item => item.count > 0 || item.minutes > 0);

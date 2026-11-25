@@ -55,14 +55,22 @@ export async function renderCharts({
       const resolvedFilter = widget.categoryFilter && widget.categoryFilter !== 'global'
         ? widget.categoryFilter
         : globalCategoryFilter;
+      const resolvedPeriod = widget.period && widget.period !== 'global'
+        ? widget.period
+        : period;
+      const resolvedRange = (widget.period && widget.period !== 'global')
+        ? null
+        : customRange;
       const dataset = buildCustomDashboardDataset({
         entries: sourceEntries,
         categories,
         dataSource: widget.dataSource,
+        chartType: widget.chartType,
         metric: widget.metric,
-        period,
-        customRange,
+        period: resolvedPeriod,
+        customRange: resolvedRange,
         categoryFilter: resolvedFilter,
+        timeGrain: widget.timeGrain || 'day',
       });
       renderCustomChart(item.container, dataset, widget.chartType);
     }
