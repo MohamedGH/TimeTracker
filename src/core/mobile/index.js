@@ -3,6 +3,7 @@ export {
   isStandaloneMode,
   isCapacitorNative,
   getCapacitorPlatform,
+  isPwaSupported,
   getInstallMode,
   getRuntimeEnvironment,
   createPwaInstallController,

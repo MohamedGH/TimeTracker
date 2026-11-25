@@ -195,4 +195,85 @@ describe('Mobile & PWA UI integration (install button, iOS guide, offline banner
     ui.destroy();
     root.remove();
   });
+
+  it('displays Navigateur Web (PWA prête) only in a PWA-ready web browser and adapts when not ready or installed', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    const pwaMock = createFakePwaFactory({
+      platform: 'desktop',
+      isWebBrowser: true,
+      isPwaReady: true,
+    });
+
+    window.location.hash = '#mobile';
+    const ui = createUI({
+      root,
+      state: createBaseState({ tab: 'mobile' }),
+      persist: vi.fn().mockResolvedValue(undefined),
+      authClient: { isConfigured: () => false, signOut: vi.fn() },
+      pwaControllerFactory: pwaMock.factory,
+    });
+
+    expect(root.textContent).toContain('Navigateur Web (PWA prête)');
+    expect(root.querySelector('[data-behavior-target="pwa-install-card"]').textContent).toBe('Installer sur l’ordinateur');
+
+    // Web browser without Service Worker / HTTPS -> shows Navigateur Web without (PWA prête)
+    pwaMock.setSnapshot({ isWebBrowser: true, isPwaReady: false });
+    expect(root.textContent).toContain('Navigateur Web');
+    expect(root.textContent).not.toContain('Navigateur Web (PWA prête)');
+
+    // Installed standalone PWA -> hides Navigateur Web & install button
+    pwaMock.setSnapshot({ isInstalled: true, isWebBrowser: false, isPwaReady: false, installMode: 'installed' });
+    expect(root.textContent).toContain('Application installée (PWA)');
+    expect(root.textContent).not.toContain('Navigateur Web');
+    expect(root.querySelector('[data-behavior-target="pwa-install-card"]')).toBeNull();
+
+    ui.destroy();
+    root.remove();
+  });
+
+  it('shows desktop install guide copy on Desktop and gates Android tiles from navigation by platform', async () => {
+    const { DEVICE_TYPES, getNavigationProfile } = await import('../src/core/device-navigation.js');
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    const pwaMock = createFakePwaFactory({
+      platform: 'desktop',
+      isWebBrowser: true,
+      isPwaReady: true,
+      installMode: 'manual-hint',
+    });
+
+    window.location.hash = '#mobile';
+    const ui = createUI({
+      root,
+      state: createBaseState({ tab: 'mobile' }),
+      persist: vi.fn().mockResolvedValue(undefined),
+      authClient: { isConfigured: () => false, signOut: vi.fn() },
+      pwaControllerFactory: pwaMock.factory,
+      deviceNavControllerFactory: () => ({
+        getProfile: () => getNavigationProfile(DEVICE_TYPES.DESKTOP),
+        refresh: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    // Desktop side-rail hides Tuiles Android & Écran verrouillé
+    expect(root.querySelector('#nav-tiles')).toBeNull();
+
+    // Clicking install on Desktop opens desktop-specific instructions (not Android Chrome menu)
+    root.querySelector('[data-behavior-target="pwa-install-card"]').click();
+    expect(root.textContent).toContain('barre d’adresse de votre navigateur');
+    expect(root.textContent).not.toContain('Android Chrome/Edge');
+
+    // Close modal and navigate directly to #tiles on desktop -> shows availability notice
+    root.querySelector('[data-behavior-target="pwa-guide-close"]').click();
+    window.location.hash = '#tiles';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(root.textContent).toContain('disponibles uniquement sur appareil mobile Android');
+
+    ui.destroy();
+    root.remove();
+  });
 });

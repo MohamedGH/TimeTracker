@@ -85,6 +85,51 @@ export function isWidgetOrPagesRoute(routeId) {
 }
 
 /**
+ * Determines whether the Android Quick Settings & Lock Screen tiles feature
+ * applies to the current runtime device/platform.
+ * Pure function.
+ */
+export function isTilesFeatureAvailable({
+  deviceType = DEVICE_TYPES.DESKTOP,
+  platform = 'desktop',
+  isNative = false,
+  nativePlatform = 'web',
+  quickTilesSupported = false,
+} = {}) {
+  if (quickTilesSupported) return true;
+  if (isNative) {
+    return nativePlatform === 'android';
+  }
+  if (platform === 'ios' || nativePlatform === 'ios') {
+    return false;
+  }
+  if (platform === 'android' || nativePlatform === 'android') {
+    return true;
+  }
+  return deviceType === DEVICE_TYPES.MOBILE;
+}
+
+/**
+ * Determines whether a dedicated widget page should be exposed in navigation
+ * for the active device/platform environment.
+ * Pure function.
+ */
+export function isWidgetPageAvailable(pageId, env = {}) {
+  if (pageId === 'tiles') {
+    return isTilesFeatureAvailable(env);
+  }
+  return WIDGET_PAGES.some(page => page.id === pageId);
+}
+
+/**
+ * Returns the subset of WIDGET_PAGES relevant to the active device/platform.
+ * Pure function.
+ */
+export function getVisibleWidgetPages(env = {}) {
+  return WIDGET_PAGES.filter(page => isWidgetPageAvailable(page.id, env));
+}
+
+/**
  * Pure classification of device form-factor from viewport and input capabilities.
  */
 export function classifyDeviceType({

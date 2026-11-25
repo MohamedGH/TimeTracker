@@ -107,6 +107,8 @@ import {
   PAGES_HUB_ROUTE,
   WIDGET_PAGES,
   isWidgetOrPagesRoute,
+  isWidgetPageAvailable,
+  getVisibleWidgetPages,
   createDeviceNavigationController,
   resolveRouteShortcutKey,
 } from './core/device-navigation.js';
@@ -370,6 +372,26 @@ export function createUI({
 
   const rerender = () => render();
 
+  function resolvePwaBrowserStatus(snap = pwaController.getSnapshot()) {
+    const isWebBrowser = typeof snap.isWebBrowser === 'boolean'
+      ? snap.isWebBrowser
+      : (!snap.isNative && !snap.isInstalled);
+    const isPwaReady = typeof snap.isPwaReady === 'boolean'
+      ? snap.isPwaReady
+      : isWebBrowser;
+    return { isWebBrowser, isPwaReady };
+  }
+
+  function getPageVisibilityEnv(navProfile = deviceNavController.getProfile(), snap = pwaController.getSnapshot()) {
+    return {
+      deviceType: navProfile.deviceType,
+      platform: snap.platform,
+      isNative: Boolean(snap.isNative),
+      nativePlatform: snap.nativePlatform || 'web',
+      quickTilesSupported: Boolean(quickTilesCapabilities.supported),
+    };
+  }
+
   function formatTimerGeoStatusText(timer, captureStatus) {
     const startLoc = timer?.startLocation || timer?.location;
     if (startLoc) {
@@ -432,6 +454,7 @@ export function createUI({
   }
 
   function notifyGeoUnavailable(reason, phaseLabel = 'démarrage') {
+    const isNativeRuntime = Boolean(pwaController.getSnapshot().isNative);
     if (reason === 'policy-blocked') {
       errorManager.notifyInfo(
         'Géolocalisation bloquée par l’aperçu intégré (iframe). Ouvrez l’application dans un nouvel onglet pour que le navigateur demande l’autorisation.'
@@ -442,7 +465,9 @@ export function createUI({
       );
     } else if (reason === 'denied') {
       errorManager.notifyInfo(
-        `Permission GPS refusée (${phaseLabel}). Vérifiez l’icône 🔒 dans la barre d’adresse → Position → Autoriser.`
+        isNativeRuntime
+          ? `Permission GPS refusée (${phaseLabel}). Activez la localisation dans les réglages de l’application.`
+          : `Permission GPS refusée (${phaseLabel}). Vérifiez l’icône 🔒 dans la barre d’adresse → Position → Autoriser.`
       );
     } else if (reason === 'unsupported') {
       errorManager.notifyInfo(
@@ -1461,7 +1486,10 @@ export function createUI({
       installBtn.type = 'button';
       installBtn.className = 'header-install-btn';
       installBtn.dataset.behaviorTarget = 'pwa-install-header';
-      installBtn.setAttribute('aria-label', 'Installer l’application mobile');
+      installBtn.setAttribute(
+        'aria-label',
+        mobileSnap.platform === 'desktop' ? 'Installer l’application' : 'Installer l’application mobile'
+      );
       const dlIcon = node('span', 'header-install-icon');
       dlIcon.setAttribute('aria-hidden', 'true');
       dlIcon.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -1613,8 +1641,9 @@ export function createUI({
       nav.appendChild(node('div', 'app-nav-section-title', 'Pages & Outils'));
       const secondaryList = node('div', 'app-nav-secondary-list');
       const trashCount = state.deletedItems?.length || 0;
+      const visiblePages = getVisibleWidgetPages(getPageVisibilityEnv(navProfile));
 
-      WIDGET_PAGES.forEach(({ id, label: pageLabel, shortLabel }) => {
+      visiblePages.forEach(({ id, label: pageLabel, shortLabel }) => {
         const b = document.createElement('button');
         b.type = 'button';
         b.id = `nav-${id}`;
@@ -1789,7 +1818,11 @@ export function createUI({
     }
     if (pageId === 'mobile') {
       const snap = pwaController.getSnapshot();
-      return snap.isNative ? `Natif ${snap.nativePlatform}` : snap.isInstalled ? 'Installée (PWA)' : 'Web / PWA';
+      const { isWebBrowser, isPwaReady } = resolvePwaBrowserStatus(snap);
+      if (snap.isNative) return `Natif ${snap.nativePlatform}`;
+      if (snap.isInstalled) return 'Application installée (PWA)';
+      if (isWebBrowser && isPwaReady) return 'Navigateur Web (PWA prête)';
+      return 'Navigateur Web';
     }
     if (pageId === 'tiles') {
       const slots = state.quickTilesConfig?.slots || [];
@@ -1808,7 +1841,8 @@ export function createUI({
     );
 
     const grid = node('div', 'pages-hub-grid');
-    for (const page of WIDGET_PAGES) {
+    const visiblePages = getVisibleWidgetPages(getPageVisibilityEnv());
+    for (const page of visiblePages) {
       const tileBtn = document.createElement('button');
       tileBtn.type = 'button';
       tileBtn.className = 'pages-hub-item';
@@ -1892,6 +1926,7 @@ export function createUI({
     if (state.geoTrackingEnabled) {
       const permRow = node('div', 'geo-consent-actions');
       const permState = geoPermissionInfo.state;
+      const isNativeRuntime = Boolean(pwaController.getSnapshot().isNative);
 
       if (permState === 'granted') {
         permRow.appendChild(node('span', 'geo-perm-status is-ok', '✓ Permission GPS accordée'));
@@ -1905,11 +1940,21 @@ export function createUI({
         );
       } else if (permState === 'denied') {
         permRow.appendChild(
-          node('span', 'geo-perm-status is-err', '⚠ Refusé dans le navigateur (icône 🔒 → Position → Autoriser)')
+          node(
+            'span',
+            'geo-perm-status is-err',
+            isNativeRuntime
+              ? '⚠ Permission GPS refusée — activez la localisation dans les réglages de l’application'
+              : '⚠ Refusé dans le navigateur (icône 🔒 → Position → Autoriser)'
+          )
         );
       } else {
         permRow.appendChild(
-          node('span', 'geo-perm-status is-warn', 'Autorisation navigateur requise')
+          node(
+            'span',
+            'geo-perm-status is-warn',
+            isNativeRuntime ? 'Autorisation GPS requise' : 'Autorisation navigateur requise'
+          )
         );
       }
 
@@ -3313,6 +3358,8 @@ export function createUI({
 
     if (m.type === 'pwa-ios-guide' || m.type === 'pwa-install-guide') {
       const isIos = m.type === 'pwa-ios-guide';
+      const snap = pwaController.getSnapshot();
+      const isDesktop = !isIos && snap.platform === 'desktop';
       const box = node('div', 'modal-box');
       box.setAttribute('role', 'dialog');
       box.setAttribute('aria-modal', 'true');
@@ -3320,7 +3367,11 @@ export function createUI({
       const title = node(
         'h2',
         'card-title',
-        isIos ? 'Installer sur iPhone / iPad' : 'Installer l’application mobile'
+        isIos
+          ? 'Installer sur iPhone / iPad'
+          : isDesktop
+            ? 'Installer l’application'
+            : 'Installer l’application mobile'
       );
       const close = button('×', 'modal-close', 'modal-close');
       close.onclick = closeModal;
@@ -3333,6 +3384,12 @@ export function createUI({
           node('li', null, 'Ouvrez cette page dans Safari sur votre iPhone ou iPad.'),
           node('li', null, 'Appuyez sur le bouton Partager (carré avec une flèche vers le haut).'),
           node('li', null, 'Faites défiler vers le bas puis appuyez sur « Sur l’écran d’accueil ».')
+        );
+      } else if (isDesktop) {
+        list.append(
+          node('li', null, 'Cliquez sur l’icône d’installation dans la barre d’adresse de votre navigateur (Chrome ou Edge).'),
+          node('li', null, 'Sélectionnez « Installer Carnet du temps ».'),
+          node('li', null, 'L’application fonctionnera hors ligne dans une fenêtre dédiée.')
         );
       } else {
         list.append(
@@ -3913,17 +3970,23 @@ export function createUI({
   function mobileAppCard() {
     const c = card('Application mobile');
     const snap = pwaController.getSnapshot();
+    const { isWebBrowser, isPwaReady } = resolvePwaBrowserStatus(snap);
     const wrap = node('div', 'mobile-app-panel');
 
     const statusRow = node('div', 'mobile-status-row');
-    const envLabel = snap.isNative
-      ? `App native Capacitor (${snap.nativePlatform})`
-      : snap.isInstalled
-        ? 'Application installée (PWA)'
-        : 'Navigateur Web (PWA prête)';
-    statusRow.appendChild(
-      node('span', `sync-status-pill ${snap.isNative || snap.isInstalled ? 'is-ok' : ''}`.trim(), envLabel)
-    );
+    if (snap.isNative) {
+      statusRow.appendChild(
+        node('span', 'sync-status-pill is-ok', `App native Capacitor (${snap.nativePlatform})`)
+      );
+    } else if (snap.isInstalled) {
+      statusRow.appendChild(
+        node('span', 'sync-status-pill is-ok', 'Application installée (PWA)')
+      );
+    } else if (isWebBrowser) {
+      statusRow.appendChild(
+        node('span', 'sync-status-pill', isPwaReady ? 'Navigateur Web (PWA prête)' : 'Navigateur Web')
+      );
+    }
     statusRow.appendChild(
       node(
         'span',
@@ -3939,16 +4002,22 @@ export function createUI({
         'muted sync-desc',
         snap.isNative
           ? 'Application exécutée dans le conteneur natif Capacitor avec stockage local persistant.'
-          : 'Installez Carnet du temps sur votre téléphone (PWA hors ligne) ou empaquetez-le en natif Android / iOS avec Capacitor.'
+          : snap.isInstalled
+            ? 'Application installée en mode autonome (PWA) avec fonctionnement hors ligne et stockage local persistant.'
+            : snap.platform === 'desktop'
+              ? 'Installez Carnet du temps sur votre ordinateur (PWA hors ligne) pour un accès rapide avec vos données locales.'
+              : 'Installez Carnet du temps sur votre téléphone (PWA hors ligne) ou empaquetez-le en natif Android / iOS avec Capacitor.'
       )
     );
 
-    if (!snap.isNative && !snap.isInstalled) {
+    if (isWebBrowser) {
       const btnLabel = snap.canPromptInstall
         ? 'Installer l’application'
         : snap.installMode === 'ios-guide'
           ? 'Installer sur iPhone / iPad'
-          : 'Installer sur l’écran d’accueil';
+          : snap.platform === 'desktop'
+            ? 'Installer sur l’ordinateur'
+            : 'Installer sur l’écran d’accueil';
       const installBtn = button(btnLabel, 'primary sync-action-btn', 'pwa-install-card');
       installBtn.onclick = handlePwaInstallClick;
       wrap.appendChild(installBtn);
@@ -3962,6 +4031,17 @@ export function createUI({
     const c = card('Tuiles Android & Écran verrouillé');
     c.id = 'quick-tiles-card';
     c.dataset.quickTilesCard = 'true';
+
+    if (!isWidgetPageAvailable('tiles', getPageVisibilityEnv())) {
+      c.appendChild(
+        node(
+          'p',
+          'muted sync-desc',
+          'Les tuiles Réglages rapides et le contrôle sur écran verrouillé sont disponibles uniquement sur appareil mobile Android.'
+        )
+      );
+      return c;
+    }
 
     const availableActivities = collectAvailableTileActivities({
       activities: state.activities,

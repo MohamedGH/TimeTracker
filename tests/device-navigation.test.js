@@ -7,6 +7,9 @@ import {
   getNavigationProfile,
   resolveRouteShortcutKey,
   createDeviceNavigationController,
+  isTilesFeatureAvailable,
+  isWidgetPageAvailable,
+  getVisibleWidgetPages,
 } from '../src/core/device-navigation.js';
 import { createStateManager } from '../src/core/state-manager.js';
 import { createUI } from '../src/ui.js';
@@ -103,6 +106,28 @@ describe('device-navigation pure classifiers & profiles', () => {
       showFullLabels: true,
       showKeyboardHints: true,
     });
+  });
+
+  it('gates Android tiles feature strictly to Mobile/Android environments', () => {
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.DESKTOP, platform: 'desktop' })).toBe(false);
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.TABLET, platform: 'desktop' })).toBe(false);
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.MOBILE, platform: 'ios' })).toBe(false);
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.MOBILE, isNative: true, nativePlatform: 'ios' })).toBe(false);
+
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.MOBILE, platform: 'android' })).toBe(true);
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.MOBILE, platform: 'desktop' })).toBe(true);
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.TABLET, platform: 'android' })).toBe(true);
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.DESKTOP, isNative: true, nativePlatform: 'android' })).toBe(true);
+    expect(isTilesFeatureAvailable({ deviceType: DEVICE_TYPES.DESKTOP, quickTilesSupported: true })).toBe(true);
+
+    expect(isWidgetPageAvailable('tiles', { deviceType: DEVICE_TYPES.DESKTOP, platform: 'desktop' })).toBe(false);
+    expect(isWidgetPageAvailable('mobile', { deviceType: DEVICE_TYPES.DESKTOP, platform: 'desktop' })).toBe(true);
+    expect(getVisibleWidgetPages({ deviceType: DEVICE_TYPES.DESKTOP, platform: 'desktop' }).map(p => p.id))
+      .not.toContain('tiles');
+    expect(getVisibleWidgetPages({ deviceType: DEVICE_TYPES.MOBILE, platform: 'android' }).map(p => p.id))
+      .toContain('tiles');
+    expect(getVisibleWidgetPages({ deviceType: DEVICE_TYPES.MOBILE, platform: 'ios' }).map(p => p.id))
+      .not.toContain('tiles');
   });
 
   it('resolves Alt+1..3 desktop shortcuts while ignoring editable inputs', () => {

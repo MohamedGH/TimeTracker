@@ -4,6 +4,8 @@ import {
   isStandaloneMode,
   isCapacitorNative,
   getCapacitorPlatform,
+  isPwaSupported,
+  getRuntimeEnvironment,
   getInstallMode,
   createPwaInstallController,
   registerAppServiceWorker,
@@ -17,17 +19,23 @@ function createMockWindow({
   iosStandalone = false,
   onLine = true,
   capacitor = null,
+  hasServiceWorker = true,
+  isSecureContext = true,
 } = {}) {
   const listeners = new Map();
+  const navigator = {
+    userAgent: ua,
+    platform,
+    maxTouchPoints,
+    standalone: iosStandalone,
+    onLine,
+  };
+  if (hasServiceWorker) {
+    navigator.serviceWorker = {};
+  }
   return {
-    navigator: {
-      userAgent: ua,
-      platform,
-      maxTouchPoints,
-      standalone: iosStandalone,
-      onLine,
-      serviceWorker: {},
-    },
+    navigator,
+    isSecureContext,
     Capacitor: capacitor,
     matchMedia: vi.fn((query) => ({
       matches: query.includes('standalone') ? standaloneMedia : false,
@@ -73,6 +81,48 @@ describe('Mobile & PWA platform detection and controller', () => {
     });
     expect(isCapacitorNative(webCap)).toBe(false);
     expect(getCapacitorPlatform(webCap)).toBe('web');
+  });
+
+  it('computes isPwaSupported, isWebBrowser, and isPwaReady accurately', () => {
+    const webReadyWin = createMockWindow({ hasServiceWorker: true, isSecureContext: true });
+    expect(isPwaSupported(webReadyWin)).toBe(true);
+    expect(getRuntimeEnvironment(webReadyWin)).toMatchObject({
+      isNative: false,
+      isInstalled: false,
+      isWebBrowser: true,
+      isPwaReady: true,
+    });
+
+    const insecureWin = createMockWindow({ hasServiceWorker: true, isSecureContext: false });
+    expect(isPwaSupported(insecureWin)).toBe(false);
+    expect(getRuntimeEnvironment(insecureWin)).toMatchObject({
+      isWebBrowser: true,
+      isPwaReady: false,
+    });
+
+    const noSwWin = createMockWindow({ hasServiceWorker: false, isSecureContext: true });
+    expect(isPwaSupported(noSwWin)).toBe(false);
+    expect(getRuntimeEnvironment(noSwWin)).toMatchObject({
+      isWebBrowser: true,
+      isPwaReady: false,
+    });
+
+    const standaloneWin = createMockWindow({ standaloneMedia: true });
+    expect(getRuntimeEnvironment(standaloneWin)).toMatchObject({
+      isInstalled: true,
+      isWebBrowser: false,
+      isPwaReady: false,
+    });
+
+    const nativeWin = createMockWindow({
+      capacitor: { isNativePlatform: () => true, getPlatform: () => 'android' },
+    });
+    expect(isPwaSupported(nativeWin)).toBe(false);
+    expect(getRuntimeEnvironment(nativeWin)).toMatchObject({
+      isNative: true,
+      isWebBrowser: false,
+      isPwaReady: false,
+    });
   });
 
   it('computes install mode priority accurately', () => {

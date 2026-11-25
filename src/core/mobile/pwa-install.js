@@ -41,6 +41,13 @@ export function isCapacitorNative(win = typeof window !== 'undefined' ? window :
   return getCapacitorPlatform(win) !== 'web';
 }
 
+export function isPwaSupported(win = typeof window !== 'undefined' ? window : null) {
+  if (!win || isCapacitorNative(win)) return false;
+  const hasServiceWorker = Boolean(win.navigator && 'serviceWorker' in win.navigator);
+  const isSecure = win.isSecureContext !== false;
+  return hasServiceWorker && isSecure;
+}
+
 export function getInstallMode({ isInstalled, isNative, isInstallable, platform }) {
   if (isNative) return 'native';
   if (isInstalled) return 'installed';
@@ -54,6 +61,8 @@ export function getRuntimeEnvironment(win = typeof window !== 'undefined' ? wind
   const isNative = isCapacitorNative(win);
   const nativePlatform = getCapacitorPlatform(win);
   const isInstalled = isStandaloneMode(win);
+  const isWebBrowser = !isNative && !isInstalled;
+  const isPwaReady = isWebBrowser && isPwaSupported(win);
   const isOnline = win?.navigator && typeof win.navigator.onLine === 'boolean'
     ? win.navigator.onLine
     : true;
@@ -63,6 +72,8 @@ export function getRuntimeEnvironment(win = typeof window !== 'undefined' ? wind
     isNative,
     nativePlatform,
     isInstalled,
+    isWebBrowser,
+    isPwaReady,
     isOnline,
   };
 }
@@ -78,6 +89,7 @@ export function createPwaInstallController({
   let isNative = initialEnv.isNative;
   let nativePlatform = initialEnv.nativePlatform;
   let platform = initialEnv.platform;
+  let isPwaCapable = isPwaSupported(win);
   let isOnline = initialEnv.isOnline;
   let showIOSGuide = false;
   let updateReady = false;
@@ -85,6 +97,8 @@ export function createPwaInstallController({
 
   function getSnapshot() {
     const isInstallable = Boolean(deferredPrompt);
+    const isWebBrowser = !isNative && !isInstalled;
+    const isPwaReady = isWebBrowser && isPwaCapable;
     const installMode = getInstallMode({
       isInstalled,
       isNative,
@@ -96,6 +110,8 @@ export function createPwaInstallController({
       isNative,
       nativePlatform,
       isInstalled,
+      isWebBrowser,
+      isPwaReady,
       isInstallable,
       isOnline,
       showIOSGuide,
@@ -169,6 +185,7 @@ export function createPwaInstallController({
       isNative = next.isNative;
       nativePlatform = next.nativePlatform;
       isInstalled = next.isInstalled;
+      isPwaCapable = isPwaSupported(win);
       isOnline = next.isOnline;
       notify();
       return getSnapshot();

@@ -153,7 +153,7 @@ describe('route-manager', () => {
       root.remove();
     });
 
-    it('exposes all 8 dedicated widget pages directly in the desktop side-rail', () => {
+    it('exposes the 7 desktop/web dedicated widget pages directly in the desktop side-rail and hides Android tiles', () => {
       const root = document.createElement('div');
       document.body.appendChild(root);
       const state = buildSampleState();
@@ -170,7 +170,8 @@ describe('route-manager', () => {
         }),
       });
 
-      for (const item of EXPECTED_PAGES) {
+      const desktopPages = EXPECTED_PAGES.filter(item => item.route !== 'tiles');
+      for (const item of desktopPages) {
         const navBtn = root.querySelector(`#nav-${item.route}`);
         expect(navBtn).toBeTruthy();
         navBtn.click();
@@ -178,6 +179,51 @@ describe('route-manager', () => {
         const titles = Array.from(root.querySelectorAll('.card-title')).map(el => el.textContent);
         expect(titles).toContain(item.heading);
       }
+
+      expect(root.querySelector('#nav-tiles')).toBeNull();
+
+      ui.destroy();
+      root.remove();
+    });
+
+    it('hides Android tiles in mobile #nav-pages hub when running on iOS', () => {
+      const root = document.createElement('div');
+      document.body.appendChild(root);
+      const state = buildSampleState();
+
+      const ui = createUI({
+        root,
+        state,
+        persist: vi.fn().mockResolvedValue(undefined),
+        authClient: { isConfigured: () => false, signOut: vi.fn() },
+        deviceNavControllerFactory: () => ({
+          getProfile: () => getNavigationProfile(DEVICE_TYPES.MOBILE),
+          refresh: vi.fn(),
+          destroy: vi.fn(),
+        }),
+        pwaControllerFactory: () => ({
+          getSnapshot: () => ({
+            platform: 'ios',
+            isNative: false,
+            nativePlatform: 'web',
+            isInstalled: false,
+            isWebBrowser: true,
+            isPwaReady: true,
+            isInstallable: false,
+            isOnline: true,
+            showIOSGuide: false,
+            updateReady: false,
+            installMode: 'ios-guide',
+            canPromptInstall: false,
+            shouldShowHeaderInstall: true,
+          }),
+          destroy: vi.fn(),
+        }),
+      });
+
+      root.querySelector('#nav-pages').click();
+      expect(root.querySelector('[data-behavior-target="hub-open-mobile"]')).toBeTruthy();
+      expect(root.querySelector('[data-behavior-target="hub-open-tiles"]')).toBeNull();
 
       ui.destroy();
       root.remove();
