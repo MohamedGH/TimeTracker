@@ -25,7 +25,10 @@ export function isValidEntry(entry) {
     (entry.viaTimer === undefined || typeof entry.viaTimer === 'boolean') &&
     (entry.startLocation === undefined || entry.startLocation === null || isValidCoordinates(entry.startLocation)) &&
     (entry.endLocation === undefined || entry.endLocation === null || isValidCoordinates(entry.endLocation)) &&
-    (entry.location === undefined || entry.location === null || isValidCoordinates(entry.location)));
+    (entry.location === undefined || entry.location === null || isValidCoordinates(entry.location)) &&
+    (entry.content === undefined || entry.content === null || typeof entry.content === 'string') &&
+    (entry.startContent === undefined || entry.startContent === null || typeof entry.startContent === 'string') &&
+    (entry.endContent === undefined || entry.endContent === null || typeof entry.endContent === 'string'));
 }
 
 export function normalizeEntries(value, categories = [], legacySubCategories = []) {
@@ -35,7 +38,18 @@ export function normalizeEntries(value, categories = [], legacySubCategories = [
     .map(entry => {
       const normalizedStart = normalizeLocation(entry.startLocation ?? entry.location);
       const normalizedEnd = normalizeLocation(entry.endLocation);
-      const { location: _rawLocation, startLocation: _rawStart, endLocation: _rawEnd, ...rest } = entry;
+      const content = typeof entry.content === 'string' ? entry.content.trim() : '';
+      const startContent = typeof entry.startContent === 'string' ? entry.startContent.trim() : '';
+      const endContent = typeof entry.endContent === 'string' ? entry.endContent.trim() : '';
+      const {
+        location: _rawLocation,
+        startLocation: _rawStart,
+        endLocation: _rawEnd,
+        content: _rawContent,
+        startContent: _rawStartContent,
+        endContent: _rawEndContent,
+        ...rest
+      } = entry;
       return {
         ...rest,
         activity: entry.activity.trim(),
@@ -44,6 +58,9 @@ export function normalizeEntries(value, categories = [], legacySubCategories = [
         ...(typeof entry.viaTimer === 'boolean' ? { viaTimer: entry.viaTimer } : {}),
         ...(normalizedStart ? { startLocation: normalizedStart } : {}),
         ...(normalizedEnd ? { endLocation: normalizedEnd } : {}),
+        ...(content ? { content } : {}),
+        ...(startContent ? { startContent } : {}),
+        ...(endContent ? { endContent } : {}),
       };
     });
 }

@@ -90,15 +90,22 @@ import {
 import {
   collectCategoryShortcuts,
   filterShortcutGroups,
+  searchLaunchableActivities,
 } from './core/shortcuts-by-category.js';
 import { installCategorySelectors } from './category-selector.js';
 import { moveCategory, mergeCategoriesState } from './state/category-actions.js';
 import {
   updateActivityAndEntries,
+  upsertActivityContent,
   moveActivity,
   mergeActivitiesState,
   collectMergeableActivities,
+  findSavedActivityMatch,
 } from './state/activity-actions.js';
+import {
+  createHistoryManager,
+  applyUndoableSnapshot,
+} from './core/history-manager.js';
 import {
   normalizeTemplatesList,
   normalizeActiveTemplateRun,
@@ -305,6 +312,10 @@ export function createUI({
   let manualStartLocationOverride = undefined;
   let manualEndLocationOverride = undefined;
   let manualLocationEditingId = null;
+  let activitySearchQuery = '';
+  let savedActivitiesFilterQuery = '';
+  let lastCompletedEndPrompt = null;
+  const fallbackHistoryManager = createHistoryManager({ maxHistory: 50 });
   let geoCaptureState = { startTs: null, status: 'idle' };
   let geoPermissionInfo = { state: 'unknown', inIframe: false, isSecureContext: true };
   const pendingStartEntryByStartTs = new Map();
@@ -630,8 +641,88 @@ export function createUI({
     });
   }
 
+  function recordUndoCheckpoint(label = 'Modification') {
+    syncStateToStateManager();
+    if (_stateManager?.recordUndoCheckpoint) {
+      return _stateManager.recordUndoCheckpoint(label, state);
+    }
+    return fallbackHistoryManager.push(state, label);
+  }
+
+  function getHistoryStatus() {
+    if (_stateManager?.getHistoryStatus) {
+      return _stateManager.getHistoryStatus();
+    }
+    return fallbackHistoryManager.getStatus();
+  }
+
+  function applyRestoredSnapshotToLocalState(nextState) {
+    state.entries = nextState.entries;
+    state.activities = nextState.activities;
+    state.categories = nextState.categories;
+    state.activityTemplates = nextState.activityTemplates;
+    state.deletedItems = nextState.deletedItems;
+    state.activeTimer = nextState.activeTimer;
+    state.timerUpdatedAt = nextState.timerUpdatedAt;
+    state.activeTemplateRun = nextState.activeTemplateRun;
+    if (nextState.quickTilesConfig) state.quickTilesConfig = nextState.quickTilesConfig;
+    state.geoTrackingEnabled = Boolean(nextState.geoTrackingEnabled);
+    if (nextState.uiState) state.uiState = nextState.uiState;
+    state.editingEntryId = null;
+    state.modal = null;
+    state.error = null;
+    lastCompletedEndPrompt = null;
+  }
+
+  async function performUndo() {
+    syncStateToStateManager();
+    let result = null;
+    if (_stateManager?.undo) {
+      result = _stateManager.undo(state);
+      if (result?.state) applyRestoredSnapshotToLocalState(result.state);
+    } else {
+      const popped = fallbackHistoryManager.undo(state);
+      if (popped) {
+        const nextState = applyUndoableSnapshot(state, popped.snapshot);
+        applyRestoredSnapshotToLocalState(nextState);
+        result = { state: nextState, label: popped.label };
+      }
+    }
+    if (!result) return false;
+    await persist();
+    await syncQuickTilesToNative();
+    pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt || 0).catch(() => {});
+    errorManager.notifyInfo(`Annulé : ${result.label}`);
+    rerender();
+    return true;
+  }
+
+  async function performRedo() {
+    syncStateToStateManager();
+    let result = null;
+    if (_stateManager?.redo) {
+      result = _stateManager.redo(state);
+      if (result?.state) applyRestoredSnapshotToLocalState(result.state);
+    } else {
+      const popped = fallbackHistoryManager.redo(state);
+      if (popped) {
+        const nextState = applyUndoableSnapshot(state, popped.snapshot);
+        applyRestoredSnapshotToLocalState(nextState);
+        result = { state: nextState, label: popped.label };
+      }
+    }
+    if (!result) return false;
+    await persist();
+    await syncQuickTilesToNative();
+    pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt || 0).catch(() => {});
+    errorManager.notifyInfo(`Rétabli : ${result.label}`);
+    rerender();
+    return true;
+  }
+
   async function handleToggleGeoTracking(nextEnabled) {
     const enabled = Boolean(nextEnabled);
+    recordUndoCheckpoint('Réglage GPS');
     state.geoTrackingEnabled = enabled;
     dispatchStateAction(() => _stateManager?.actions?.setGeoTracking?.(enabled));
 
@@ -658,6 +749,7 @@ export function createUI({
     if (!window.confirm('Supprimer toutes les coordonnées GPS enregistrées ? Vos entrées de temps seront conservées.')) {
       return;
     }
+    recordUndoCheckpoint('Suppression des positions GPS');
     state.entries = state.entries.map(stripEntryGeoLocations);
     if (state.activeTimer) {
       const { startLocation: _s, location: _l, ...restTimer } = state.activeTimer;
@@ -701,25 +793,45 @@ export function createUI({
     rerender();
   }
 
+  function resolveActivityContentPair(activityName, categoryId = null, activityId = null) {
+    const match = findSavedActivityMatch(state.activities, {
+      activityId,
+      label: activityName,
+      categoryId,
+    });
+    return {
+      content: typeof match?.content === 'string' ? match.content.trim() : '',
+      startContent: typeof match?.startContent === 'string' ? match.startContent.trim() : '',
+      endContent: typeof match?.endContent === 'string' ? match.endContent.trim() : '',
+    };
+  }
+
   function openActivityCreateModal(categoryId = null) {
     state.modal = {
       type: 'activity',
       mode: 'create',
       categoryId: categoryId || state.categories[0]?.id || null,
+      content: '',
+      startContent: '',
+      endContent: '',
     };
     state.error = null;
     rerender();
   }
 
   function openActivityEditModal({ activityId = null, label = '', categoryId = null } = {}) {
+    const saved = findSavedActivityMatch(state.activities, { activityId, label, categoryId });
     state.modal = {
       type: 'activity',
       mode: 'edit',
-      activityId,
-      oldLabel: label,
-      oldCategoryId: categoryId ?? null,
-      label,
-      categoryId: categoryId ?? null,
+      activityId: activityId || saved?.id || null,
+      oldLabel: label || saved?.label || '',
+      oldCategoryId: categoryId ?? saved?.categoryId ?? null,
+      label: label || saved?.label || '',
+      categoryId: categoryId ?? saved?.categoryId ?? null,
+      content: saved?.content || '',
+      startContent: saved?.startContent || '',
+      endContent: saved?.endContent || '',
     };
     state.error = null;
     rerender();
@@ -729,6 +841,7 @@ export function createUI({
     try {
       const movedCat = state.categories.find(c => c.id === categoryId);
       const targetParent = newParentId ? state.categories.find(c => c.id === newParentId) : null;
+      recordUndoCheckpoint(`Déplacement « ${movedCat?.label || 'Catégorie'} »`);
       state.categories = moveCategory(state.categories, categoryId, newParentId ?? null);
       await persist();
       trackEvent('category_moved');
@@ -746,6 +859,7 @@ export function createUI({
 
   async function handleMoveActivity(payload) {
     try {
+      recordUndoCheckpoint(`Déplacement « ${payload?.label || 'Activité'} »`);
       const nextSlice = moveActivity(
         {
           activities: state.activities,
@@ -797,6 +911,7 @@ export function createUI({
   async function handleMergeCategories({ sourceId, targetId }) {
     try {
       const merged = mergeCategoriesState(state, { sourceId, targetId });
+      recordUndoCheckpoint(`Fusion « ${merged.summary.sourceLabel} »`);
       if (_stateManager?.actions?.mergeCategories && _stateManager?.getState) {
         const smState = _stateManager.getState();
         if (smState !== state) {
@@ -853,6 +968,7 @@ export function createUI({
   async function handleMergeActivities({ source, target }) {
     try {
       const merged = mergeActivitiesState(state, { source, target });
+      recordUndoCheckpoint(`Fusion « ${merged.summary.sourceLabel} »`);
       if (_stateManager?.actions?.mergeActivities && _stateManager?.getState) {
         const smState = _stateManager.getState();
         if (smState !== state) {
@@ -940,6 +1056,7 @@ export function createUI({
 
   async function handleSaveTemplate({ id = null, name, steps, fromHistory = false, isEdit = false }) {
     try {
+      recordUndoCheckpoint(isEdit ? 'Modification de gabarit' : 'Création de gabarit');
       const saved = saveActivityTemplate(
         state.activityTemplates || [],
         { id, name, steps },
@@ -984,6 +1101,7 @@ export function createUI({
   async function handleRestoreDeletedItem(trashId = null) {
     const { nextState, restoredRecord } = restoreTrashRecord(state, trashId);
     if (!restoredRecord) return;
+    recordUndoCheckpoint(`Restauration « ${restoredRecord.label} »`);
     state.entries = nextState.entries;
     state.activities = nextState.activities;
     state.categories = nextState.categories;
@@ -998,6 +1116,7 @@ export function createUI({
   }
 
   async function handlePurgeTrashItem(trashId) {
+    recordUndoCheckpoint('Suppression de la corbeille');
     state.deletedItems = removeTrashRecord(state.deletedItems, trashId);
     syncCollectionRefsToStateManager();
     await persist();
@@ -1007,6 +1126,7 @@ export function createUI({
 
   async function handleEmptyTrash() {
     if (!state.deletedItems?.length) return;
+    recordUndoCheckpoint('Vidage de la corbeille');
     state.deletedItems = [];
     syncCollectionRefsToStateManager();
     await persist();
@@ -1015,6 +1135,7 @@ export function createUI({
   }
 
   async function handleDeleteTemplate(templateId) {
+    recordUndoCheckpoint('Suppression de gabarit');
     const existing = (state.activityTemplates || []).find(t => t.id === templateId);
     const trashRec = existing
       ? recordDeletedItem({ kind: TRASH_ITEM_KINDS.TEMPLATE, item: existing })
@@ -1051,6 +1172,16 @@ export function createUI({
     const endDate = t.date === today() ? t.date : today();
     const durationMinutes = elapsedMinutes(t, nowTs);
     const startLocation = normalizeLocation(t.startLocation ?? t.location);
+    const resolvedContents = resolveActivityContentPair(t.activity, t.categoryId ?? t.cat);
+    const content = typeof t.content === 'string' && t.content.trim()
+      ? t.content.trim()
+      : resolvedContents.content;
+    const startContent = typeof t.startContent === 'string' && t.startContent.trim()
+      ? t.startContent.trim()
+      : resolvedContents.startContent;
+    const endContent = typeof t.endContent === 'string' && t.endContent.trim()
+      ? t.endContent.trim()
+      : resolvedContents.endContent;
     const entry = createTimeEntry({
       id: crypto.randomUUID(),
       activity: t.activity,
@@ -1062,6 +1193,9 @@ export function createUI({
       mins: durationMinutes,
       viaTimer: true,
       startLocation,
+      content,
+      startContent,
+      endContent,
     });
     if (!startLocation && t.startTs) {
       pendingStartEntryByStartTs.set(t.startTs, entry.id);
@@ -1099,6 +1233,7 @@ export function createUI({
     if (!template) return;
 
     try {
+      recordUndoCheckpoint(`Lancement gabarit « ${template.name} »`);
       const nowTs = Date.now();
       const clockNow = nowTime();
       const currentDay = today();
@@ -1110,13 +1245,18 @@ export function createUI({
       }
 
       const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(nowTs).toISOString() });
+      const contents = resolveActivityContentPair(firstStep.activity, firstStep.categoryId);
       state.activeTimer = createActiveTimer({
         activity: firstStep.activity,
         categoryId: firstStep.categoryId,
         date: currentDay,
         startTime: clockNow,
         startTs: nowTs,
+        content: contents.content,
+        startContent: contents.startContent,
+        endContent: contents.endContent,
       });
+      lastCompletedEndPrompt = null;
       state.timerUpdatedAt = nowTs;
       state.activeTemplateRun = run;
       state.activityTemplates = recordTemplateUse(state.activityTemplates || [], template.id, nowTs);
@@ -1149,6 +1289,7 @@ export function createUI({
 
   async function handleAdvanceTemplateRun({ recordCurrent = true } = {}) {
     if (!state.activeTemplateRun) return;
+    recordUndoCheckpoint('Avancement de gabarit');
     const nowTs = Date.now();
     const clockNow = nowTime();
     const currentDay = today();
@@ -1163,13 +1304,18 @@ export function createUI({
     const transition = advanceTemplateRun(state.activeTemplateRun, { recordedStep: recordCurrent });
 
     if (!transition.completed && transition.nextStep) {
+      const contents = resolveActivityContentPair(transition.nextStep.activity, transition.nextStep.categoryId);
       state.activeTimer = createActiveTimer({
         activity: transition.nextStep.activity,
         categoryId: transition.nextStep.categoryId,
         date: currentDay,
         startTime: clockNow,
         startTs: nowTs,
+        content: contents.content,
+        startContent: contents.startContent,
+        endContent: contents.endContent,
       });
+      lastCompletedEndPrompt = null;
       state.timerUpdatedAt = nowTs;
       state.activeTemplateRun = transition.nextRun;
 
@@ -1216,6 +1362,7 @@ export function createUI({
   async function handleResumeTemplateRun() {
     const resumed = resumeReadyTemplateRun(state.activeTemplateRun);
     if (!resumed) return;
+    recordUndoCheckpoint('Reprise de gabarit');
     const nowTs = Date.now();
     const clockNow = nowTime();
     const currentDay = today();
@@ -1226,13 +1373,18 @@ export function createUI({
       closedEntryId = closed?.entry?.id || null;
     }
 
+    const contents = resolveActivityContentPair(resumed.currentStep.activity, resumed.currentStep.categoryId);
     state.activeTimer = createActiveTimer({
       activity: resumed.currentStep.activity,
       categoryId: resumed.currentStep.categoryId,
       date: currentDay,
       startTime: clockNow,
       startTs: nowTs,
+      content: contents.content,
+      startContent: contents.startContent,
+      endContent: contents.endContent,
     });
+    lastCompletedEndPrompt = null;
     state.timerUpdatedAt = nowTs;
     state.activeTemplateRun = resumed.nextRun;
 
@@ -1254,6 +1406,7 @@ export function createUI({
 
   async function handleStopTemplateRun() {
     if (!state.activeTemplateRun) return;
+    recordUndoCheckpoint('Arrêt du gabarit');
     state.activeTemplateRun = null;
     await persist();
     errorManager.notifyInfo('Séquence du gabarit terminée.');
@@ -1262,6 +1415,7 @@ export function createUI({
 
   async function handleSubmitManualTemplateLog({ template, date, startTime, fallbackMins }) {
     try {
+      recordUndoCheckpoint(`Journalisation « ${template.name} »`);
       const built = buildEntriesFromTemplate(template, { date, startTime, fallbackMins });
       state.entries = [...built.slice().reverse(), ...state.entries];
       state.activityTemplates = recordTemplateUse(state.activityTemplates || [], template.id);
@@ -1287,6 +1441,7 @@ export function createUI({
     persist,
     rerender,
     onUiStateChange: (patch) => updateUiState(patch),
+    onBeforeMutation: (label) => recordUndoCheckpoint(label),
     onStartActivity: (activityName, categoryId) => {
       startTimer(activityName, categoryId || state.categories[0]?.id, today(), nowTime());
     },
@@ -1501,6 +1656,42 @@ export function createUI({
     brandLeft.append(iconWrap, titleGroup);
 
     const brandRight = node('div', 'header-brand-right');
+
+    const historyStatus = getHistoryStatus();
+    const historyControls = node('div', 'header-history-controls');
+    const undoBtn = document.createElement('button');
+    undoBtn.type = 'button';
+    undoBtn.className = 'header-history-btn';
+    undoBtn.dataset.behaviorTarget = 'history-undo';
+    undoBtn.disabled = !historyStatus.canUndo;
+    undoBtn.setAttribute(
+      'aria-label',
+      historyStatus.undoLabel ? `Annuler : ${historyStatus.undoLabel}` : 'Annuler'
+    );
+    undoBtn.title = historyStatus.undoLabel
+      ? `Annuler : ${historyStatus.undoLabel} (Ctrl+Z)`
+      : 'Rien à annuler (Ctrl+Z)';
+    undoBtn.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>`;
+    undoBtn.onclick = () => performUndo();
+
+    const redoBtn = document.createElement('button');
+    redoBtn.type = 'button';
+    redoBtn.className = 'header-history-btn';
+    redoBtn.dataset.behaviorTarget = 'history-redo';
+    redoBtn.disabled = !historyStatus.canRedo;
+    redoBtn.setAttribute(
+      'aria-label',
+      historyStatus.redoLabel ? `Rétablir : ${historyStatus.redoLabel}` : 'Rétablir'
+    );
+    redoBtn.title = historyStatus.redoLabel
+      ? `Rétablir : ${historyStatus.redoLabel} (Ctrl+Y)`
+      : 'Rien à rétablir (Ctrl+Y)';
+    redoBtn.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5 20H13"/></svg>`;
+    redoBtn.onclick = () => performRedo();
+
+    historyControls.append(undoBtn, redoBtn);
+    brandRight.appendChild(historyControls);
+
     if (state.activeTimer) {
       const activeBadge = node('div', 'header-active-timer-badge');
       activeBadge.innerHTML = `<span class="pulse-dot"></span><span>Chrono en cours</span>`;
@@ -1790,6 +1981,7 @@ export function createUI({
     const f = document.createDocumentFragment();
     f.append(
       timerCard(),
+      activitySearchCard(),
       quickStartCard(),
       entryCard()
     );
@@ -2000,11 +2192,47 @@ export function createUI({
     return wrap;
   }
 
+  function renderTimerContentBlock(labelText, contentText, kind = 'start') {
+    const clean = typeof contentText === 'string' ? contentText.trim() : '';
+    if (!clean) return null;
+    const block = node('div', `timer-content-block is-${kind}`);
+    block.dataset.timerContentKind = kind;
+    block.append(
+      node('div', 'timer-content-block-label', labelText),
+      node('div', 'timer-content-block-text', clean)
+    );
+    return block;
+  }
+
   function timerCard() {
     const c = card('Chronomètre');
     const runProgress = computeTemplateRunProgress(state.activeTemplateRun);
 
     if (!state.activeTimer) {
+      if (lastCompletedEndPrompt?.endContent) {
+        const endPrompt = node('div', 'timer-end-prompt-card');
+        endPrompt.dataset.timerEndPrompt = 'true';
+        const promptHead = node('div', 'timer-end-prompt-head');
+        promptHead.appendChild(
+          node(
+            'strong',
+            'timer-end-prompt-title',
+            `Fin de « ${lastCompletedEndPrompt.activity} » · À lire / dire`
+          )
+        );
+        const dismissBtn = button('Compris ×', 'small secondary', 'timer-end-prompt-dismiss');
+        dismissBtn.onclick = () => {
+          lastCompletedEndPrompt = null;
+          rerender();
+        };
+        promptHead.appendChild(dismissBtn);
+        endPrompt.append(
+          promptHead,
+          node('div', 'timer-content-block-text', lastCompletedEndPrompt.endContent)
+        );
+        c.appendChild(endPrompt);
+      }
+
       if (runProgress && runProgress.stepState === 'ready') {
         const readyBox = node('div', 'template-runner-ready-box');
         readyBox.dataset.templateRunner = 'ready';
@@ -2038,6 +2266,17 @@ export function createUI({
     }
 
     const t = state.activeTimer;
+    const resolvedContents = resolveActivityContentPair(t.activity, t.categoryId ?? t.cat);
+    const activeContent = (typeof t.content === 'string' && t.content.trim())
+      ? t.content.trim()
+      : resolvedContents.content;
+    const activeStartContent = (typeof t.startContent === 'string' && t.startContent.trim())
+      ? t.startContent.trim()
+      : resolvedContents.startContent;
+    const activeEndContent = (typeof t.endContent === 'string' && t.endContent.trim())
+      ? t.endContent.trim()
+      : resolvedContents.endContent;
+
     const box = node('div', 'timer-active');
 
     if (runProgress) {
@@ -2086,7 +2325,30 @@ export function createUI({
     geoActionBtn.onclick = () => captureTimerLocationAsync(t.startTs, { force: true });
     geoRow.append(geoStatusEl, geoActionBtn);
 
-    box.append(metaRow, clockNode, geoRow);
+    box.append(metaRow, clockNode);
+
+    const alwaysBlock = renderTimerContentBlock('Contenu de l’activité', activeContent, 'always');
+    if (alwaysBlock) box.appendChild(alwaysBlock);
+    const startBlock = renderTimerContentBlock('Au début de l’activité', activeStartContent, 'start');
+    if (startBlock) box.appendChild(startBlock);
+    const endBlock = renderTimerContentBlock('À la fin de l’activité', activeEndContent, 'end');
+    if (endBlock) box.appendChild(endBlock);
+
+    const editContentRow = node('div', 'timer-content-actions');
+    const hasAnyContent = Boolean(activeContent || activeStartContent || activeEndContent);
+    const editContentBtn = button(
+      hasAnyContent ? '✎ Modifier le contenu associé' : '+ Définir un contenu permanent',
+      'small secondary',
+      'timer-edit-content'
+    );
+    editContentBtn.onclick = () => openActivityEditModal({
+      label: t.activity,
+      categoryId: t.categoryId ?? t.cat ?? null,
+    });
+    editContentRow.appendChild(editContentBtn);
+    box.appendChild(editContentRow);
+
+    box.appendChild(geoRow);
 
     if (runProgress) {
       const runnerActions = node('div', 'template-runner-actions');
@@ -2120,6 +2382,160 @@ export function createUI({
 
     c.appendChild(box);
     c.appendChild(renderGeoOptInControl());
+    return c;
+  }
+
+  function activitySearchCard() {
+    const c = node('section', 'card activity-search-card');
+    c.dataset.activityChronoSearch = 'true';
+
+    const headerRow = node('div', 'activity-search-card-header');
+    headerRow.appendChild(node('h2', 'card-title', 'Lancer un chrono par recherche'));
+    headerRow.appendChild(node('span', 'muted activity-search-subtitle', 'Tapez une activité ou catégorie pour démarrer immédiatement'));
+    c.appendChild(headerRow);
+
+    const inputRow = node('div', 'activity-search-input-row');
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'activity-chrono-search-input';
+    searchInput.value = activitySearchQuery;
+    searchInput.placeholder = 'Rechercher une activité (ex : Lecture, Prière, Sport…)';
+    searchInput.setAttribute('aria-label', 'Rechercher une activité pour lancer le chronomètre');
+    searchInput.dataset.behaviorTarget = 'activity-chrono-search';
+
+    const clearBtn = button('×', 'small secondary activity-search-clear-btn', 'activity-chrono-search-clear');
+    clearBtn.setAttribute('aria-label', 'Effacer la recherche');
+    clearBtn.hidden = !activitySearchQuery.trim();
+    inputRow.append(searchInput, clearBtn);
+    c.appendChild(inputRow);
+
+    const resultsList = node('div', 'activity-search-results');
+    resultsList.dataset.activitySearchResults = 'true';
+    c.appendChild(resultsList);
+
+    const launchSearchResult = (item) => {
+      const targetCatId = item.categoryId || state.categories[0]?.id;
+      trackEvent('saved_activity_started');
+      activitySearchQuery = '';
+      startTimer(item.name, targetCatId, today(), nowTime(), {
+        activityId: item.activityId || null,
+        content: item.content || '',
+        startContent: item.startContent || '',
+        endContent: item.endContent || '',
+      });
+    };
+
+    const renderResults = () => {
+      const raw = String(activitySearchQuery || '');
+      const trimmed = raw.trim();
+      clearBtn.hidden = !trimmed;
+      resultsList.replaceChildren();
+
+      if (!trimmed) {
+        return [];
+      }
+
+      const matches = searchLaunchableActivities({
+        query: trimmed,
+        entries: state.entries,
+        activities: state.activities,
+        categories: state.categories,
+        limit: 8,
+      });
+
+      for (const item of matches) {
+        const row = node('div', 'activity-search-result-row');
+        row.dataset.activitySearchResult = item.name;
+
+        const main = node('div', 'activity-search-result-main');
+        const titleRow = node('div', 'activity-search-result-title-row');
+        const dot = node('span', 'activity-search-result-dot');
+        dot.style.backgroundColor = item.color;
+        const nameEl = node('strong', 'activity-search-result-name', item.name);
+        titleRow.append(dot, nameEl);
+
+        const metaParts = [item.categoryPath];
+        if (item.count > 0) metaParts.push(`${item.count}×`);
+        if (item.avgDurationMins) metaParts.push(`~${formatDuration(item.avgDurationMins)}`);
+        if (item.content || item.startContent || item.endContent) {
+          const contentHints = [
+            item.content ? 'permanent' : null,
+            item.startContent ? 'début' : null,
+            item.endContent ? 'fin' : null,
+          ].filter(Boolean).join('/');
+          metaParts.push(`Contenu ${contentHints}`);
+        }
+        const metaEl = node('div', 'activity-search-result-meta', metaParts.join(' · '));
+        main.append(titleRow, metaEl);
+
+        const launchBtn = button('▶ Démarrer', 'small primary activity-search-launch-btn', 'search-launch-chrono');
+        launchBtn.setAttribute('aria-label', `Démarrer le chronomètre pour ${item.name}`);
+        launchBtn.onclick = () => launchSearchResult(item);
+
+        row.append(main, launchBtn);
+        resultsList.appendChild(row);
+      }
+
+      const hasExactMatch = matches.some(
+        m => normalizeSearchText(m.name) === normalizeSearchText(trimmed)
+      );
+      if (!hasExactMatch) {
+        const customRow = node('div', 'activity-search-result-row is-create-new');
+        const main = node('div', 'activity-search-result-main');
+        main.append(
+          node('strong', 'activity-search-result-name', trimmed),
+          node('div', 'activity-search-result-meta', `Nouvelle activité · ${state.categories[0]?.label || 'Autre'}`)
+        );
+        const startNewBtn = button(`▶ Démarrer`, 'small secondary activity-search-launch-btn', 'search-launch-chrono-new');
+        startNewBtn.onclick = () => {
+          activitySearchQuery = '';
+          startTimer(trimmed, state.categories[0]?.id, today(), nowTime());
+        };
+        customRow.append(main, startNewBtn);
+        resultsList.appendChild(customRow);
+      }
+
+      return matches;
+    };
+
+    searchInput.addEventListener('input', () => {
+      activitySearchQuery = searchInput.value;
+      renderResults();
+    });
+
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const trimmed = activitySearchQuery.trim();
+        if (!trimmed) return;
+        e.preventDefault();
+        const matches = searchLaunchableActivities({
+          query: trimmed,
+          entries: state.entries,
+          activities: state.activities,
+          categories: state.categories,
+          limit: 1,
+        });
+        if (matches.length > 0) {
+          launchSearchResult(matches[0]);
+        } else {
+          activitySearchQuery = '';
+          startTimer(trimmed, state.categories[0]?.id, today(), nowTime());
+        }
+      } else if (e.key === 'Escape') {
+        activitySearchQuery = '';
+        searchInput.value = '';
+        renderResults();
+      }
+    });
+
+    clearBtn.onclick = () => {
+      activitySearchQuery = '';
+      searchInput.value = '';
+      renderResults();
+      searchInput.focus();
+    };
+
+    renderResults();
     return c;
   }
 
@@ -2361,20 +2777,48 @@ export function createUI({
     const activity = input('Activité', 'text', old?.activity || '', true, 'activity');
     const category = selectCategory(old?.categoryId);
 
+    const associatedHint = node('div', 'entry-associated-content-hint');
+    associatedHint.dataset.entryAssociatedContent = 'true';
+    associatedHint.hidden = true;
+
+    const refreshAssociatedHint = () => {
+      const actName = activity.input.value.trim();
+      const catId = category.select.value || null;
+      if (!actName) {
+        associatedHint.hidden = true;
+        associatedHint.textContent = '';
+        return;
+      }
+      const savedContents = resolveActivityContentPair(actName, catId);
+      const hints = [
+        savedContents.content ? `Permanent : ${savedContents.content}` : null,
+        savedContents.startContent ? `Début : ${savedContents.startContent}` : null,
+        savedContents.endContent ? `Fin : ${savedContents.endContent}` : null,
+      ].filter(Boolean);
+      if (!hints.length) {
+        associatedHint.hidden = true;
+        associatedHint.textContent = '';
+        return;
+      }
+      associatedHint.hidden = false;
+      associatedHint.textContent = `Contenu déjà associé à cette activité — ${hints.join(' · ')}`;
+    };
+
     // Auto-memorization: when typing an activity, automatically discover and select the usual category!
     activity.input.addEventListener('input', () => {
       const val = activity.input.value.trim();
-      if (!val) return;
-      const usualCatId = getUsualCategoryForActivity(val, state.entries, state.activities);
-      if (usualCatId && category.select.value !== usualCatId) {
-        category.select.value = usualCatId;
-        category.select.dispatchEvent(new Event('change', { bubbles: true }));
+      if (val) {
+        const usualCatId = getUsualCategoryForActivity(val, state.entries, state.activities);
+        if (usualCatId && category.select.value !== usualCatId) {
+          category.select.value = usualCatId;
+          category.select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
       }
+      refreshAssociatedHint();
     });
+    category.select.addEventListener('change', refreshAssociatedHint);
 
     attachActivitySuggestions(activity, category);
-
-    form.append(activity.wrap, category.wrap);
 
     // Manual fields (date, start, end)
     const manualFieldsWrap = node('div', `manual-entry-fields ${!isEditing && entryFormMode === 'timer' ? 'is-collapsed' : ''}`);
@@ -2464,7 +2908,54 @@ export function createUI({
       })
     );
 
-    form.appendChild(manualFieldsWrap);
+    // Optional Permanent / Start & End Content
+    const contentDetails = document.createElement('details');
+    contentDetails.className = 'entry-content-details';
+    if (old?.content || old?.startContent || old?.endContent) {
+      contentDetails.open = true;
+    }
+    const contentSummary = document.createElement('summary');
+    contentSummary.className = 'entry-content-summary';
+    contentSummary.textContent = 'Contenu permanent / début / fin (optionnel)';
+    const alwaysContentField = textareaInput(
+      'Contenu permanent (affiché sur tous les chronos)',
+      old?.content || '',
+      'always-content',
+      'Ex : Rappel, versets, checklist affichés à chaque chrono de cette activité…'
+    );
+    const startContentField = textareaInput(
+      'Contenu au début de l’activité',
+      old?.startContent || '',
+      'start-content',
+      'Ex : Doua à dire au début, intention, préparation…'
+    );
+    const endContentField = textareaInput(
+      'Contenu à la fin de l’activité',
+      old?.endContent || '',
+      'end-content',
+      'Ex : Doua à dire à la fin, bilan, note…'
+    );
+    const rememberRow = document.createElement('label');
+    rememberRow.className = 'entry-remember-content-label';
+    const rememberCheckbox = document.createElement('input');
+    rememberCheckbox.type = 'checkbox';
+    rememberCheckbox.checked = true;
+    rememberCheckbox.dataset.behaviorField = 'remember-activity-content';
+    rememberRow.append(
+      rememberCheckbox,
+      document.createTextNode('Associer ce contenu à tous les chronos de cette activité')
+    );
+
+    contentDetails.append(
+      contentSummary,
+      alwaysContentField.wrap,
+      startContentField.wrap,
+      endContentField.wrap,
+      rememberRow
+    );
+
+    form.append(activity.wrap, category.wrap, associatedHint, contentDetails, manualFieldsWrap);
+    refreshAssociatedHint();
 
     // Action buttons based on active mode
     if (!isEditing && entryFormMode === 'timer') {
@@ -2477,7 +2968,15 @@ export function createUI({
           errorManager.handleError(new Error('Veuillez saisir un nom d’activité.'), 'entry');
           return;
         }
-        startTimer(actName, catId || state.categories[0]?.id, today(), nowTime());
+        const typedAlways = alwaysContentField.textarea.value.trim();
+        const typedStart = startContentField.textarea.value.trim();
+        const typedEnd = endContentField.textarea.value.trim();
+        startTimer(actName, catId || state.categories[0]?.id, today(), nowTime(), {
+          ...(typedAlways ? { content: typedAlways } : {}),
+          ...(typedStart ? { startContent: typedStart } : {}),
+          ...(typedEnd ? { endContent: typedEnd } : {}),
+          rememberContent: rememberCheckbox.checked,
+        });
       };
       form.appendChild(timerBtn);
     } else {
@@ -2505,6 +3004,9 @@ export function createUI({
       const resolvedEndLoc = manualEndLocationOverride !== undefined
         ? manualEndLocationOverride
         : oldGeo.endLocation;
+      const typedAlways = alwaysContentField.textarea.value.trim();
+      const typedStart = startContentField.textarea.value.trim();
+      const typedEnd = endContentField.textarea.value.trim();
       const value = createTimeEntry({
         id: old?.id || crypto.randomUUID(),
         activity: activity.input.value,
@@ -2515,6 +3017,9 @@ export function createUI({
         viaTimer: old ? old.viaTimer : false,
         startLocation: resolvedStartLoc,
         endLocation: resolvedEndLoc,
+        content: typedAlways,
+        startContent: typedStart,
+        endContent: typedEnd,
       });
 
       if (!value.activity || value.mins <= 0) {
@@ -2523,6 +3028,21 @@ export function createUI({
         return;
       }
 
+      recordUndoCheckpoint(old ? `Modification « ${value.activity} »` : `Ajout « ${value.activity} »`);
+      if (rememberCheckbox.checked && (typedAlways || typedStart || typedEnd)) {
+        const synced = upsertActivityContent(
+          { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
+          {
+            label: value.activity,
+            categoryId: value.categoryId,
+            ...(typedAlways ? { content: typedAlways } : {}),
+            ...(typedStart ? { startContent: typedStart } : {}),
+            ...(typedEnd ? { endContent: typedEnd } : {}),
+          }
+        );
+        state.activities = synced.activities;
+        state.activeTimer = synced.activeTimer;
+      }
       state.entries = old ? state.entries.map(x => x.id === old.id ? value : x) : [value, ...state.entries];
       state.editingEntryId = null;
       manualStartLocationOverride = undefined;
@@ -2647,9 +3167,7 @@ export function createUI({
     const actionRow = node('div', 'action-row');
     const add = button('Ajouter une activité', 'secondary', 'activity-add-open');
     add.onclick = () => {
-      state.modal = { type: 'activity' };
-      state.error = null;
-      rerender();
+      openActivityCreateModal();
     };
     const mergeActivitiesBtn = button('⇄ Fusionner', 'secondary', 'activity-merge-open');
     const mergeableCount = collectMergeableActivities({
@@ -2664,46 +3182,106 @@ export function createUI({
     actionRow.append(add, mergeActivitiesBtn);
     c.appendChild(actionRow);
 
-    for (const a of state.activities) {
-      const r = node('div', 'entry-row');
-      const infoWrap = node('div');
-      const headerRow = node('div', 'entry-header');
-      headerRow.appendChild(node('strong', null, a.label || a.activity || ''));
-      headerRow.appendChild(createCategoryBadge(a.categoryId, state.categories, { showPath: true, size: 'small' }));
-      infoWrap.appendChild(headerRow);
-      r.appendChild(infoWrap);
+    const filterInput = document.createElement('input');
+    filterInput.type = 'search';
+    filterInput.className = 'activities-filter-input';
+    filterInput.value = savedActivitiesFilterQuery;
+    filterInput.placeholder = 'Rechercher une activité ou un contenu…';
+    filterInput.setAttribute('aria-label', 'Rechercher dans les activités enregistrées');
+    filterInput.dataset.behaviorTarget = 'activities-search';
+    c.appendChild(filterInput);
 
-      const go = button('Démarrer', 'small', 'activity-start');
-      go.onclick = () => {
-        trackEvent('saved_activity_started');
-        startTimer(a.label || a.activity, a.categoryId, today(), nowTime());
-      };
-      const del = button('×', 'small danger', 'activity-delete');
-      del.onclick = async () => {
-        const trashRec = recordDeletedItem({ kind: TRASH_ITEM_KINDS.ACTIVITY, item: a });
-        state.activities = state.activities.filter(x => x.id !== a.id);
-        syncCollectionRefsToStateManager();
-        await persist();
-        syncQuickTilesToNative();
-        trackEvent('saved_activity_deleted');
-        errorManager.notifyInfo(
-          `Activité « ${a.label || a.activity || ''} » supprimée.`,
-          6000,
-          trashRec
-            ? {
-                action: {
-                  label: 'Annuler',
-                  behaviorTarget: 'notice-undo-delete',
-                  onAction: () => handleRestoreDeletedItem(trashRec.id),
-                },
-              }
-            : {}
-        );
-        rerender();
-      };
-      r.append(go, del);
-      c.appendChild(r);
-    }
+    const listHost = node('div', 'activities-list-host');
+    c.appendChild(listHost);
+
+    const renderActivitiesList = () => {
+      listHost.replaceChildren();
+      const q = normalizeSearchText(savedActivitiesFilterQuery);
+      const filtered = state.activities.filter((a) => {
+        if (!q) return true;
+        const lbl = normalizeSearchText(a.label || a.activity || '');
+        const ac = normalizeSearchText(a.content || '');
+        const sc = normalizeSearchText(a.startContent || '');
+        const ec = normalizeSearchText(a.endContent || '');
+        const catPath = normalizeSearchText(a.categoryId ? formatCategoryPath(state.categories, a.categoryId) : '');
+        return lbl.includes(q) || ac.includes(q) || sc.includes(q) || ec.includes(q) || catPath.includes(q);
+      });
+
+      if (!filtered.length) {
+        listHost.appendChild(node('p', 'empty', q ? 'Aucune activité ne correspond à votre recherche.' : 'Aucune activité enregistrée.'));
+        return;
+      }
+
+      for (const a of filtered) {
+        const r = node('div', 'entry-row');
+        const infoWrap = node('div');
+        const headerRow = node('div', 'entry-header');
+        headerRow.appendChild(node('strong', null, a.label || a.activity || ''));
+        headerRow.appendChild(createCategoryBadge(a.categoryId, state.categories, { showPath: true, size: 'small' }));
+        infoWrap.appendChild(headerRow);
+        if (a.content || a.startContent || a.endContent) {
+          const contentSummaryParts = [
+            a.content ? `Contenu : ${a.content}` : null,
+            a.startContent ? `Début : ${a.startContent}` : null,
+            a.endContent ? `Fin : ${a.endContent}` : null,
+          ].filter(Boolean);
+          infoWrap.appendChild(node('div', 'entry-meta activity-content-preview', contentSummaryParts.join(' · ')));
+        }
+        r.appendChild(infoWrap);
+
+        const rowActions = node('div', 'entry-row-actions');
+        const go = button('▶ Démarrer', 'small', 'activity-start');
+        go.onclick = () => {
+          trackEvent('saved_activity_started');
+          startTimer(a.label || a.activity, a.categoryId, today(), nowTime(), {
+            activityId: a.id,
+            content: a.content || '',
+            startContent: a.startContent || '',
+            endContent: a.endContent || '',
+          });
+        };
+        const editBtn = button('Modifier', 'small secondary', 'activity-edit');
+        editBtn.onclick = () => openActivityEditModal({
+          activityId: a.id,
+          label: a.label || a.activity || '',
+          categoryId: a.categoryId ?? null,
+        });
+        const del = button('×', 'small danger', 'activity-delete');
+        del.onclick = async () => {
+          recordUndoCheckpoint(`Suppression « ${a.label || a.activity || ''} »`);
+          const trashRec = recordDeletedItem({ kind: TRASH_ITEM_KINDS.ACTIVITY, item: a });
+          state.activities = state.activities.filter(x => x.id !== a.id);
+          syncCollectionRefsToStateManager();
+          await persist();
+          syncQuickTilesToNative();
+          trackEvent('saved_activity_deleted');
+          errorManager.notifyInfo(
+            `Activité « ${a.label || a.activity || ''} » supprimée.`,
+            6000,
+            trashRec
+              ? {
+                  action: {
+                    label: 'Annuler',
+                    behaviorTarget: 'notice-undo-delete',
+                    onAction: () => handleRestoreDeletedItem(trashRec.id),
+                  },
+                }
+              : {}
+          );
+          rerender();
+        };
+        rowActions.append(go, editBtn, del);
+        r.appendChild(rowActions);
+        listHost.appendChild(r);
+      }
+    };
+
+    filterInput.addEventListener('input', () => {
+      savedActivitiesFilterQuery = filterInput.value;
+      renderActivitiesList();
+    });
+
+    renderActivitiesList();
     return c;
   }
 
@@ -2769,6 +3347,17 @@ export function createUI({
       }
       info.appendChild(meta);
 
+      if (e.content || e.startContent || e.endContent) {
+        const contentNote = node('div', 'entry-meta entry-content-note');
+        const parts = [
+          e.content ? `Contenu : ${e.content}` : null,
+          e.startContent ? `Début : ${e.startContent}` : null,
+          e.endContent ? `Fin : ${e.endContent}` : null,
+        ].filter(Boolean);
+        contentNote.textContent = parts.join(' · ');
+        info.appendChild(contentNote);
+      }
+
       const edit = button('Modifier', 'small', 'entry-edit');
       edit.onclick = () => {
         routeManager.navigate('entry');
@@ -2780,6 +3369,7 @@ export function createUI({
 
       const del = button('Supprimer', 'small danger', 'entry-delete');
       del.onclick = async () => {
+        recordUndoCheckpoint(`Suppression « ${e.activity} »`);
         const trashRec = recordDeletedItem({ kind: TRASH_ITEM_KINDS.ENTRY, item: e });
         state.entries = state.entries.filter(x => x.id !== e.id);
         syncCollectionRefsToStateManager();
@@ -2812,6 +3402,7 @@ export function createUI({
   }
 
   function setDashboardConfig(nextConfig) {
+    recordUndoCheckpoint('Tableau de bord');
     updateUiState({ dashboardConfig: normalizeDashboardConfig(nextConfig) });
   }
 
@@ -3646,7 +4237,13 @@ export function createUI({
     if (!m) return document.createDocumentFragment();
 
     if (m.type === 'custom-category-editor') {
-      return renderCategoryEditorModal({ state, modal: m, persist, rerender });
+      return renderCategoryEditorModal({
+        state,
+        modal: m,
+        persist,
+        rerender,
+        onBeforeMutation: (label) => recordUndoCheckpoint(label),
+      });
     }
 
     if (m.type === 'custom-category-delete-confirm') {
@@ -3655,6 +4252,7 @@ export function createUI({
         modal: m,
         persist,
         rerender,
+        onBeforeMutation: (label) => recordUndoCheckpoint(label),
         onCategoryDeleted: ({
           category,
           descendants,
@@ -3744,6 +4342,7 @@ export function createUI({
         },
         persist,
         rerender,
+        onBeforeMutation: (label) => recordUndoCheckpoint(label),
       });
     }
 
@@ -4057,10 +4656,28 @@ export function createUI({
       isEditActivity ? (m.categoryId ?? null) : (m.categoryId || state.categories[0]?.id),
       isEditActivity && m.categoryId === null
     );
+    const alwaysContentField = textareaInput(
+      'Contenu permanent (affiché sur tous les chronos)',
+      m.content || '',
+      'always-content',
+      'Ex : Rappel, versets, checklist affichés à chaque chronomètre de cette activité…'
+    );
+    const startContentField = textareaInput(
+      'Contenu au début de l’activité (optionnel)',
+      m.startContent || '',
+      'start-content',
+      'Ex : Doua à dire au début, intention, préparation…'
+    );
+    const endContentField = textareaInput(
+      'Contenu à la fin de l’activité (optionnel)',
+      m.endContent || '',
+      'end-content',
+      'Ex : Doua à dire à la fin, bilan, étape suivante…'
+    );
     const save = button(isEditActivity ? 'Enregistrer les modifications' : 'Enregistrer', undefined, 'activity-save');
     save.type = 'submit';
 
-    form.append(a.wrap, c.wrap, save);
+    form.append(a.wrap, c.wrap, alwaysContentField.wrap, startContentField.wrap, endContentField.wrap, save);
     form.onsubmit = async e => {
       e.preventDefault();
       const labelVal = a.input.value.trim();
@@ -4070,7 +4687,12 @@ export function createUI({
         return;
       }
 
+      const alwaysContentVal = alwaysContentField.textarea.value.trim();
+      const startContentVal = startContentField.textarea.value.trim();
+      const endContentVal = endContentField.textarea.value.trim();
+
       if (isEditActivity) {
+        recordUndoCheckpoint(`Modification « ${labelVal} »`);
         const nextSlice = updateActivityAndEntries(
           {
             activities: state.activities,
@@ -4083,11 +4705,35 @@ export function createUI({
             oldCategoryId: m.oldCategoryId ?? null,
             newLabel: labelVal,
             newCategoryId: c.select.value || null,
+            content: alwaysContentVal,
+            startContent: startContentVal,
+            endContent: endContentVal,
           }
         );
-        state.activities = nextSlice.activities;
+        let updatedActivities = nextSlice.activities;
+        let updatedActiveTimer = nextSlice.activeTimer;
+        // If edited activity was entry-only (not yet in saved activities) and has permanent/start/end content, save it
+        if (!m.activityId && (alwaysContentVal || startContentVal || endContentVal)) {
+          const upserted = upsertActivityContent(
+            {
+              activities: updatedActivities,
+              entries: nextSlice.entries,
+              activeTimer: updatedActiveTimer,
+            },
+            {
+              label: labelVal,
+              categoryId: c.select.value || null,
+              content: alwaysContentVal,
+              startContent: startContentVal,
+              endContent: endContentVal,
+            }
+          );
+          updatedActivities = upserted.activities;
+          updatedActiveTimer = upserted.activeTimer;
+        }
+        state.activities = updatedActivities;
         state.entries = nextSlice.entries;
-        state.activeTimer = nextSlice.activeTimer;
+        state.activeTimer = updatedActiveTimer;
         state.modal = null;
         await persist();
         syncQuickTilesToNative();
@@ -4097,6 +4743,7 @@ export function createUI({
         return;
       }
 
+      recordUndoCheckpoint(`Ajout « ${labelVal} »`);
       state.activities = [
         ...state.activities,
         {
@@ -4105,6 +4752,9 @@ export function createUI({
           categoryId: c.select.value || null,
           useCount: 1,
           lastUsedAt: new Date().toISOString(),
+          ...(alwaysContentVal ? { content: alwaysContentVal } : {}),
+          ...(startContentVal ? { startContent: startContentVal } : {}),
+          ...(endContentVal ? { endContent: endContentVal } : {}),
         },
       ];
       state.modal = null;
@@ -4906,6 +5556,7 @@ export function createUI({
   }
 
   async function updateQuickTilesConfig(updaterOrConfig) {
+    recordUndoCheckpoint('Tuiles rapides');
     const current = normalizeQuickTilesConfig(state.quickTilesConfig, {
       categories: state.categories,
       activities: state.activities,
@@ -5182,6 +5833,7 @@ export function createUI({
     if (!file) return;
     try {
       const data = parseImportPayload(await file.text());
+      recordUndoCheckpoint('Import de données');
       const builtins = state.categories.filter(c => c.builtin);
       const ids = new Set(builtins.map(c => c.id));
       state.entries = data.entries;
@@ -5208,6 +5860,9 @@ export function createUI({
     try {
       await clearAllData();
       await authClient.signOut();
+      _stateManager?.clearHistory?.();
+      fallbackHistoryManager.clear();
+      lastCompletedEndPrompt = null;
       state.entries = [];
       state.activities = [];
       state.categories = DEFAULT_CATEGORIES.map(c => ({ ...c }));
@@ -5250,18 +5905,48 @@ export function createUI({
     }
   }
 
-  async function startTimer(activity, categoryId, date, startTime) {
+  async function startTimer(activity, categoryId, date, startTime, options = {}) {
     if (!activity || !categoryId) {
       errorManager.handleError(new Error('Activité ou catégorie manquante.'), 'timer');
       return;
     }
+    recordUndoCheckpoint(`Démarrage « ${activity} »`);
+
+    const typedContent = typeof options?.content === 'string' ? options.content.trim() : '';
+    const typedStart = typeof options?.startContent === 'string' ? options.startContent.trim() : '';
+    const typedEnd = typeof options?.endContent === 'string' ? options.endContent.trim() : '';
+
+    if (options?.rememberContent && (typedContent || typedStart || typedEnd)) {
+      const upserted = upsertActivityContent(
+        { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
+        {
+          activityId: options?.activityId || null,
+          label: activity,
+          categoryId,
+          ...(typedContent ? { content: typedContent } : {}),
+          ...(typedStart ? { startContent: typedStart } : {}),
+          ...(typedEnd ? { endContent: typedEnd } : {}),
+        }
+      );
+      state.activities = upserted.activities;
+    }
+
+    const resolved = resolveActivityContentPair(activity, categoryId, options?.activityId || null);
+    const content = typedContent || resolved.content;
+    const startContent = typedStart || resolved.startContent;
+    const endContent = typedEnd || resolved.endContent;
+
     const nowTs = Date.now();
+    lastCompletedEndPrompt = null;
     state.activeTimer = createActiveTimer({
       activity,
       categoryId,
       startTs: nowTs,
       startTime: startTime || nowTime(),
       date: date || today(),
+      content,
+      startContent,
+      endContent,
     });
     state.timerUpdatedAt = nowTs;
     if (state.geoTrackingEnabled) {
@@ -5280,8 +5965,20 @@ export function createUI({
   async function stopTimer() {
     const t = state.activeTimer;
     if (!t) return;
+    recordUndoCheckpoint(`Arrêt « ${t.activity} »`);
     const nowTs = Date.now();
     const recorded = recordRunningTimerIntoEntries(nowTs, nowTime());
+    const completedEndContent = recorded?.entry?.endContent
+      || (typeof t.endContent === 'string' ? t.endContent.trim() : '')
+      || resolveActivityContentPair(t.activity, t.categoryId ?? t.cat).endContent;
+    lastCompletedEndPrompt = completedEndContent
+      ? {
+          activity: t.activity,
+          endContent: completedEndContent,
+          durationMinutes: recorded?.durationMinutes || 0,
+        }
+      : null;
+
     state.activeTimer = null;
     state.timerUpdatedAt = nowTs;
 
@@ -5428,6 +6125,18 @@ export function createUI({
     return { wrap, input: inp };
   }
 
+  function textareaInput(labelText, value, fieldRole = null, placeholder = '') {
+    const wrap = node('div', 'field');
+    wrap.appendChild(label(labelText));
+    const ta = document.createElement('textarea');
+    ta.rows = 3;
+    ta.value = value ?? '';
+    if (placeholder) ta.placeholder = placeholder;
+    if (fieldRole) ta.dataset.behaviorField = fieldRole;
+    wrap.appendChild(ta);
+    return { wrap, textarea: ta };
+  }
+
   function card(title) {
     const c = node('section', 'card');
     c.appendChild(node('h2', 'card-title', title));
@@ -5470,6 +6179,23 @@ export function createUI({
     }
   };
   const handleDesktopShortcut = (e) => {
+    const tag = e.target?.tagName;
+    const isEditableTarget = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(e.target?.isContentEditable);
+
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !isEditableTarget && !state.modal) {
+      const key = String(e.key || '').toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        performUndo();
+        return;
+      }
+      if ((key === 'y' && !e.shiftKey) || (key === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        performRedo();
+        return;
+      }
+    }
+
     if (deviceNavController.getProfile().deviceType !== 'desktop') return;
     const route = resolveRouteShortcutKey(e);
     if (!route) return;

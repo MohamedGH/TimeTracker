@@ -13,6 +13,7 @@ export function createCategoryManager({
   persist,
   rerender,
   onUiStateChange = null,
+  onBeforeMutation = null,
   onStartActivity = null,
   onAddActivity = null,
   onEditActivity = null,
@@ -51,6 +52,7 @@ export function createCategoryManager({
     if (typeof onMoveCategory === 'function') {
       return onMoveCategory(categoryId, newParentId);
     }
+    onBeforeMutation?.('Déplacement de catégorie');
     state.categories = moveCategory(state.categories, categoryId, newParentId ?? null);
     await persist?.();
     rerender();
@@ -773,7 +775,7 @@ export function createCategoryManager({
 /**
  * Renders the category create/edit modal dialog.
  */
-export function renderCategoryEditorModal({ state, modal, persist, rerender }) {
+export function renderCategoryEditorModal({ state, modal, persist, rerender, onBeforeMutation = null }) {
   const isEdit = modal.mode === 'edit';
   const existingCategory = isEdit ? state.categories.find(c => c.id === modal.categoryId) : null;
 
@@ -1005,6 +1007,7 @@ export function renderCategoryEditorModal({ state, modal, persist, rerender }) {
     const colorVal = currentColor || DEFAULT_CATEGORY_COLOR;
 
     try {
+      onBeforeMutation?.(isEdit ? 'Modification de catégorie' : 'Création de catégorie');
       if (isEdit) {
         state.categories = updateCategory(state.categories, modal.categoryId, {
           label: labelVal,
@@ -1049,6 +1052,7 @@ export function renderCategoryDeleteConfirmModal({
   modal,
   persist,
   rerender,
+  onBeforeMutation = null,
   onCategoryDeleted = null,
 }) {
   const { category, descendants, entryCount, activityCount } = modal;
@@ -1141,6 +1145,7 @@ export function renderCategoryDeleteConfirmModal({
   };
 
   confirmBtn.onclick = async () => {
+    onBeforeMutation?.(`Suppression de catégorie « ${category.label} »`);
     const allIdsToDelete = new Set([category.id, ...descendants.map(d => d.id)]);
     const reassignedEntryCategoryIds = {};
     const reassignedActivityCategoryIds = {};

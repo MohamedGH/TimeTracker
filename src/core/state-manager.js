@@ -5,12 +5,16 @@
 
 import { DEFAULT_CATEGORIES } from './model.js';
 import { createTimeEntry } from './time-entry.js';
-import { createActiveTimer, elapsedMinutes } from './timer.js';
+import { createActiveTimer, createTimerState, elapsedMinutes } from './timer.js';
 import { today } from './time.js';
 import { createDefaultQuickTilesConfig } from './mobile/quick-tiles.js';
 import { normalizeLocation, stripEntryGeoLocations } from './geo/geo-location.js';
 import { mergeCategoriesState } from '../state/category-actions.js';
-import { mergeActivitiesState } from '../state/activity-actions.js';
+import { mergeActivitiesState, findSavedActivityMatch } from '../state/activity-actions.js';
+import {
+  createHistoryManager,
+  applyUndoableSnapshot,
+} from './history-manager.js';
 import {
   saveActivityTemplate,
   deleteActivityTemplate,
@@ -82,6 +86,8 @@ export const ACTION_TYPES = Object.freeze({
   CLEAR_ALL: 'CLEAR_ALL',
   SET_AUTH_USER: 'SET_AUTH_USER',
   CLEAR_AUTH_USER: 'CLEAR_AUTH_USER',
+  UNDO: 'UNDO',
+  REDO: 'REDO',
 });
 
 /**
@@ -156,7 +162,29 @@ export function appReducer(state, action) {
       };
 
     case ACTION_TYPES.START_TIMER: {
-      const { activity, categoryId, date, startTime, startTs = Date.now(), updatedAt, startLocation = null, location = null } = action.payload;
+      const {
+        activity,
+        categoryId,
+        date,
+        startTime,
+        startTs = Date.now(),
+        updatedAt,
+        startLocation = null,
+        location = null,
+        content,
+        startContent,
+        endContent,
+      } = action.payload;
+      const savedMatch = findSavedActivityMatch(state.activities, { label: activity, categoryId });
+      const resolvedContent = typeof content === 'string'
+        ? content
+        : (savedMatch?.content || '');
+      const resolvedStartContent = typeof startContent === 'string'
+        ? startContent
+        : (savedMatch?.startContent || '');
+      const resolvedEndContent = typeof endContent === 'string'
+        ? endContent
+        : (savedMatch?.endContent || '');
       const timer = createActiveTimer({
         activity,
         categoryId,
@@ -164,6 +192,9 @@ export function appReducer(state, action) {
         startTime: startTime || formatCurrentClock(),
         startTs,
         startLocation: startLocation ?? location,
+        content: resolvedContent,
+        startContent: resolvedStartContent,
+        endContent: resolvedEndContent,
       });
       return {
         ...state,
@@ -190,6 +221,9 @@ export function appReducer(state, action) {
         viaTimer: true,
         startLocation: t.startLocation ?? t.location ?? null,
         endLocation: action.payload?.endLocation ?? action.payload?.location ?? null,
+        content: action.payload?.content ?? t.content ?? '',
+        startContent: action.payload?.startContent ?? t.startContent ?? '',
+        endContent: action.payload?.endContent ?? t.endContent ?? '',
       });
 
       // Update or record the activity usage metadata
@@ -280,11 +314,27 @@ export function appReducer(state, action) {
 
     case ACTION_TYPES.RECONCILE_NATIVE_TIMER: {
       const next = action.payload || {};
+      const nextActivities = Array.isArray(next.activities) ? next.activities : state.activities;
+      let nextTimer = next.activeTimer !== undefined ? next.activeTimer : state.activeTimer;
+      if (nextTimer) {
+        const savedMatch = findSavedActivityMatch(nextActivities, {
+          label: nextTimer.activity,
+          categoryId: nextTimer.categoryId ?? nextTimer.cat ?? null,
+        });
+        if (savedMatch) {
+          nextTimer = createTimerState({
+            ...nextTimer,
+            content: nextTimer.content || savedMatch.content || '',
+            startContent: nextTimer.startContent || savedMatch.startContent || '',
+            endContent: nextTimer.endContent || savedMatch.endContent || '',
+          });
+        }
+      }
       return {
         ...state,
         entries: Array.isArray(next.entries) ? next.entries : state.entries,
-        activities: Array.isArray(next.activities) ? next.activities : state.activities,
-        activeTimer: next.activeTimer !== undefined ? next.activeTimer : state.activeTimer,
+        activities: nextActivities,
+        activeTimer: nextTimer,
         timerUpdatedAt: Number.isFinite(Number(next.timerUpdatedAt))
           ? Number(next.timerUpdatedAt)
           : state.timerUpdatedAt,
@@ -327,7 +377,17 @@ export function appReducer(state, action) {
     }
 
     case ACTION_TYPES.ADD_ACTIVITY: {
-      const { id = crypto.randomUUID(), label, categoryId = null } = action.payload;
+      const {
+        id = crypto.randomUUID(),
+        label,
+        categoryId = null,
+        content = '',
+        startContent = '',
+        endContent = '',
+      } = action.payload;
+      const cleanContent = typeof content === 'string' ? content.trim() : '';
+      const cleanStart = typeof startContent === 'string' ? startContent.trim() : '';
+      const cleanEnd = typeof endContent === 'string' ? endContent.trim() : '';
       const newActivity = {
         id,
         label: String(label).trim(),
@@ -335,6 +395,9 @@ export function appReducer(state, action) {
         useCount: 1,
         lastUsedAt: new Date().toISOString(),
         avgDurationMins: null,
+        ...(cleanContent ? { content: cleanContent } : {}),
+        ...(cleanStart ? { startContent: cleanStart } : {}),
+        ...(cleanEnd ? { endContent: cleanEnd } : {}),
       };
       return {
         ...state,
@@ -448,6 +511,10 @@ export function appReducer(state, action) {
     case ACTION_TYPES.START_TEMPLATE_RUN: {
       const { template, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
       const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(startTs).toISOString() });
+      const savedMatch = findSavedActivityMatch(state.activities, {
+        label: firstStep.activity,
+        categoryId: firstStep.categoryId,
+      });
       const timer = createActiveTimer({
         activity: firstStep.activity,
         categoryId: firstStep.categoryId,
@@ -455,6 +522,9 @@ export function appReducer(state, action) {
         startTime,
         startTs,
         startLocation: startLocation ?? location,
+        content: savedMatch?.content || '',
+        startContent: savedMatch?.startContent || '',
+        endContent: savedMatch?.endContent || '',
       });
       return {
         ...state,
@@ -486,12 +556,21 @@ export function appReducer(state, action) {
           viaTimer: true,
           startLocation: t.startLocation ?? t.location ?? null,
           endLocation,
+          content: t.content || '',
+          startContent: t.startContent || '',
+          endContent: t.endContent || '',
         });
         nextEntries = [entry, ...state.entries];
         nextActivities = updateActivityUsage(state.activities, t.activity, t.categoryId, durationMinutes);
       }
 
       const transition = advanceTemplateRun(state.activeTemplateRun, { recordedStep: recordCurrent });
+      const nextStepSaved = !transition.completed && transition.nextStep
+        ? findSavedActivityMatch(nextActivities, {
+            label: transition.nextStep.activity,
+            categoryId: transition.nextStep.categoryId,
+          })
+        : null;
       const nextTimer = !transition.completed && transition.nextStep
         ? createActiveTimer({
             activity: transition.nextStep.activity,
@@ -500,6 +579,9 @@ export function appReducer(state, action) {
             startTime,
             startTs: nowTs,
             startLocation: startLocation ?? location,
+            content: nextStepSaved?.content || '',
+            startContent: nextStepSaved?.startContent || '',
+            endContent: nextStepSaved?.endContent || '',
           })
         : null;
 
@@ -526,6 +608,10 @@ export function appReducer(state, action) {
       const resumed = resumeReadyTemplateRun(state.activeTemplateRun);
       if (!resumed) return state;
       const { date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
+      const savedMatch = findSavedActivityMatch(state.activities, {
+        label: resumed.currentStep.activity,
+        categoryId: resumed.currentStep.categoryId,
+      });
       const timer = createActiveTimer({
         activity: resumed.currentStep.activity,
         categoryId: resumed.currentStep.categoryId,
@@ -533,6 +619,9 @@ export function appReducer(state, action) {
         startTime,
         startTs,
         startLocation: startLocation ?? location,
+        content: savedMatch?.content || '',
+        startContent: savedMatch?.startContent || '',
+        endContent: savedMatch?.endContent || '',
       });
       return {
         ...state,
@@ -715,10 +804,48 @@ function formatCurrentClock() {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+const UNDOABLE_ACTION_LABELS = Object.freeze({
+  [ACTION_TYPES.START_TIMER]: 'Démarrage du chrono',
+  [ACTION_TYPES.STOP_TIMER]: 'Arrêt du chrono',
+  [ACTION_TYPES.UPSERT_ENTRY]: 'Enregistrement de session',
+  [ACTION_TYPES.DELETE_ENTRY]: 'Suppression de session',
+  [ACTION_TYPES.ADD_ACTIVITY]: 'Ajout d’activité',
+  [ACTION_TYPES.DELETE_ACTIVITY]: 'Suppression d’activité',
+  [ACTION_TYPES.SET_CATEGORIES]: 'Modification des catégories',
+  [ACTION_TYPES.MERGE_CATEGORIES]: 'Fusion de catégories',
+  [ACTION_TYPES.MERGE_ACTIVITIES]: 'Fusion d’activités',
+  [ACTION_TYPES.SAVE_TEMPLATE]: 'Enregistrement de gabarit',
+  [ACTION_TYPES.DELETE_TEMPLATE]: 'Suppression de gabarit',
+  [ACTION_TYPES.START_TEMPLATE_RUN]: 'Lancement de gabarit',
+  [ACTION_TYPES.ADVANCE_TEMPLATE_RUN]: 'Étape de gabarit',
+  [ACTION_TYPES.PAUSE_TEMPLATE_RUN]: 'Pause de gabarit',
+  [ACTION_TYPES.RESUME_TEMPLATE_RUN]: 'Reprise de gabarit',
+  [ACTION_TYPES.STOP_TEMPLATE_RUN]: 'Arrêt de gabarit',
+  [ACTION_TYPES.LOG_TEMPLATE_ENTRIES]: 'Journalisation de gabarit',
+  [ACTION_TYPES.SET_QUICK_TILES_CONFIG]: 'Configuration des tuiles rapides',
+  [ACTION_TYPES.SET_GEO_TRACKING]: 'Réglage GPS',
+  [ACTION_TYPES.PATCH_ENTRY_LOCATION]: 'Position GPS de session',
+  [ACTION_TYPES.CLEAR_ALL_GEO_LOCATIONS]: 'Suppression des positions GPS',
+  [ACTION_TYPES.RESTORE_DELETED_ITEM]: 'Restauration depuis la corbeille',
+  [ACTION_TYPES.RESTORE_LAST_DELETED]: 'Restauration depuis la corbeille',
+  [ACTION_TYPES.PURGE_TRASH_ITEM]: 'Suppression définitive',
+  [ACTION_TYPES.EMPTY_TRASH]: 'Vidage de la corbeille',
+  [ACTION_TYPES.RESTORE_DATA]: 'Import de données',
+});
+
+function isUndoableAction(action) {
+  if (!action?.type) return false;
+  if (UNDOABLE_ACTION_LABELS[action.type]) return true;
+  if (action.type === ACTION_TYPES.SET_UI_STATE && action.payload?.dashboardConfig !== undefined) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Creates the reactive StateManager instance.
  */
-export function createStateManager({ initialState, persistFn, onError } = {}) {
+export function createStateManager({ initialState, persistFn, onError, maxHistory = 50 } = {}) {
   let currentState = {
     entries: [],
     activities: [],
@@ -754,6 +881,7 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
   });
 
   const listeners = new Set();
+  const historyManager = createHistoryManager({ maxHistory });
 
   function notify() {
     listeners.forEach(fn => fn(currentState));
@@ -790,9 +918,53 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     }
   }
 
+  function recordUndoCheckpoint(label = 'Modification', stateOverride = null) {
+    return historyManager.push(stateOverride || currentState, label);
+  }
+
+  function undo(stateOverride = null) {
+    const prevState = stateOverride || currentState;
+    const restored = historyManager.undo(prevState);
+    if (!restored) return null;
+    const nextState = applyUndoableSnapshot(prevState, restored.snapshot);
+    currentState = nextState;
+    notify();
+    persistIfChanged(prevState, nextState);
+    return { state: nextState, label: restored.label };
+  }
+
+  function redo(stateOverride = null) {
+    const prevState = stateOverride || currentState;
+    const restored = historyManager.redo(prevState);
+    if (!restored) return null;
+    const nextState = applyUndoableSnapshot(prevState, restored.snapshot);
+    currentState = nextState;
+    notify();
+    persistIfChanged(prevState, nextState);
+    return { state: nextState, label: restored.label };
+  }
+
   function dispatch(action) {
+    if (action?.type === ACTION_TYPES.UNDO) {
+      return undo()?.state || currentState;
+    }
+    if (action?.type === ACTION_TYPES.REDO) {
+      return redo()?.state || currentState;
+    }
+    if (action?.type === ACTION_TYPES.CLEAR_ALL) {
+      historyManager.clear();
+    }
+
     const prevState = currentState;
-    currentState = appReducer(currentState, action);
+    const nextState = appReducer(currentState, action);
+    if (nextState !== prevState && isUndoableAction(action)) {
+      const label = action.meta?.undoLabel
+        || UNDOABLE_ACTION_LABELS[action.type]
+        || (action.type === ACTION_TYPES.SET_UI_STATE ? 'Tableau de bord' : 'Modification');
+      historyManager.push(prevState, label);
+    }
+
+    currentState = nextState;
     notify();
     persistIfChanged(prevState, currentState);
     return currentState;
@@ -804,6 +976,13 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
     },
 
     dispatch,
+    recordUndoCheckpoint,
+    undo,
+    redo,
+    canUndo: () => historyManager.canUndo(),
+    canRedo: () => historyManager.canRedo(),
+    getHistoryStatus: () => historyManager.getStatus(),
+    clearHistory: () => historyManager.clear(),
 
     subscribe(listener) {
       listeners.add(listener);
@@ -934,6 +1113,12 @@ export function createStateManager({ initialState, persistFn, onError } = {}) {
       },
       clearAuthUser() {
         return dispatch({ type: ACTION_TYPES.CLEAR_AUTH_USER });
+      },
+      undo() {
+        return undo();
+      },
+      redo() {
+        return redo();
       },
     },
   };

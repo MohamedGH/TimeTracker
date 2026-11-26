@@ -5,6 +5,7 @@
 
 import { formatCategoryPath, getAncestors } from './category-tree.js';
 import { getCategoryColor } from './category-palette.js';
+import { normalizeSearchText } from './ui-state.js';
 import {
   getRecentActivities,
   getFrequentActivities,
@@ -301,4 +302,135 @@ export function filterShortcutGroups(groups = [], selectedFilter = 'all') {
   if (!selectedFilter || selectedFilter === 'all') return groups;
   const matched = groups.filter(g => g.filterKey === selectedFilter);
   return matched.length ? matched : groups;
+}
+
+/**
+ * Searches saved activities and historical entries (accent-insensitive) so users can
+ * immediately launch the chronometer on a matching activity.
+ * Pure function.
+ */
+export function searchLaunchableActivities({
+  query = '',
+  entries = [],
+  activities = [],
+  categories = [],
+  limit = 12,
+} = {}) {
+  const safeCategories = Array.isArray(categories) ? categories : [];
+  const safeActivities = Array.isArray(activities) ? activities : [];
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  const categoryMap = new Map(safeCategories.map(c => [c.id, c]));
+  const cleanQuery = normalizeSearchText(query);
+
+  const byKey = new Map();
+
+  for (const act of safeActivities) {
+    const name = String(act?.label || act?.name || act?.activity || '').trim();
+    if (!name) continue;
+    const rawCatId = act?.categoryId ?? act?.cat ?? null;
+    const categoryId = rawCatId && categoryMap.has(rawCatId) ? rawCatId : null;
+    const key = `${name.toLowerCase()}::${categoryId || ''}`;
+    const content = typeof act?.content === 'string' ? act.content.trim() : '';
+    const startContent = typeof act?.startContent === 'string' ? act.startContent.trim() : '';
+    const endContent = typeof act?.endContent === 'string' ? act.endContent.trim() : '';
+    byKey.set(key, {
+      name,
+      activityId: act.id || null,
+      categoryId,
+      count: Math.max(0, Number(act.useCount) || 0),
+      avgDurationMins: Number.isFinite(Number(act.avgDurationMins)) ? Number(act.avgDurationMins) : null,
+      lastDate: act.lastUsedAt ? String(act.lastUsedAt).slice(0, 10) : null,
+      content,
+      startContent,
+      endContent,
+      isSaved: true,
+    });
+  }
+
+  for (const entry of safeEntries) {
+    const name = String(entry?.activity || '').trim();
+    if (!name) continue;
+    const rawCatId = entry?.categoryId ?? null;
+    const categoryId = rawCatId && categoryMap.has(rawCatId) ? rawCatId : null;
+    const key = `${name.toLowerCase()}::${categoryId || ''}`;
+    const existing = byKey.get(key);
+    const entryContent = typeof entry?.content === 'string' ? entry.content.trim() : '';
+    const entryStart = typeof entry?.startContent === 'string' ? entry.startContent.trim() : '';
+    const entryEnd = typeof entry?.endContent === 'string' ? entry.endContent.trim() : '';
+    if (existing) {
+      existing.count += 1;
+      if (entry.date && (!existing.lastDate || entry.date > existing.lastDate)) {
+        existing.lastDate = entry.date;
+      }
+      if (!existing.content && entryContent) existing.content = entryContent;
+      if (!existing.startContent && entryStart) existing.startContent = entryStart;
+      if (!existing.endContent && entryEnd) existing.endContent = entryEnd;
+    } else {
+      byKey.set(key, {
+        name,
+        activityId: null,
+        categoryId,
+        count: 1,
+        avgDurationMins: Number.isFinite(Number(entry.mins)) ? Number(entry.mins) : null,
+        lastDate: entry.date || null,
+        content: entryContent,
+        startContent: entryStart,
+        endContent: entryEnd,
+        isSaved: false,
+      });
+    }
+  }
+
+  const results = [];
+  for (const item of byKey.values()) {
+    const cat = item.categoryId ? categoryMap.get(item.categoryId) : null;
+    const categoryPath = item.categoryId
+      ? (formatCategoryPath(safeCategories, item.categoryId) || cat?.label || 'Catégorie')
+      : 'Sans catégorie';
+    const color = item.categoryId ? getCategoryColor(cat || item.categoryId, safeCategories) : '#8B93A1';
+
+    let matchScore = 0;
+    if (cleanQuery) {
+      const normName = normalizeSearchText(item.name);
+      const normPath = normalizeSearchText(categoryPath);
+      const normContent = normalizeSearchText(item.content);
+      const normStart = normalizeSearchText(item.startContent);
+      const normEnd = normalizeSearchText(item.endContent);
+
+      if (normName === cleanQuery) {
+        matchScore = 4;
+      } else if (normName.startsWith(cleanQuery)) {
+        matchScore = 3;
+      } else if (normName.includes(cleanQuery)) {
+        matchScore = 2;
+      } else if (
+        normPath.includes(cleanQuery)
+        || normContent.includes(cleanQuery)
+        || normStart.includes(cleanQuery)
+        || normEnd.includes(cleanQuery)
+      ) {
+        matchScore = 1;
+      } else {
+        continue;
+      }
+    }
+
+    results.push({
+      ...item,
+      categoryPath,
+      color,
+      _matchScore: matchScore,
+    });
+  }
+
+  return results
+    .sort((a, b) => (
+      b._matchScore - a._matchScore
+      || (b.isSaved ? 1 : 0) - (a.isSaved ? 1 : 0)
+      || b.count - a.count
+      || (b.lastDate || '').localeCompare(a.lastDate || '')
+      || a.name.localeCompare(b.name, 'fr')
+    ))
+    .slice(0, Math.max(1, limit))
+    .map(({ _matchScore, ...item }) => item);
 }

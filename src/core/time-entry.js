@@ -20,10 +20,16 @@ export function createTimeEntry({
   startLocation,
   endLocation,
   location,
+  content,
+  startContent,
+  endContent,
 } = {}) {
   const duration = Number.isFinite(mins) ? Math.max(0, mins) : durationBetween(start, end);
   const resolvedStartLoc = normalizeLocation(startLocation ?? location);
   const resolvedEndLoc = normalizeLocation(endLocation);
+  const resolvedContent = typeof content === 'string' ? content.trim() : '';
+  const resolvedStartContent = typeof startContent === 'string' ? startContent.trim() : '';
+  const resolvedEndContent = typeof endContent === 'string' ? endContent.trim() : '';
 
   return {
     id,
@@ -37,6 +43,9 @@ export function createTimeEntry({
     ...(typeof viaTimer === 'boolean' ? { viaTimer } : {}),
     ...(resolvedStartLoc ? { startLocation: resolvedStartLoc } : {}),
     ...(resolvedEndLoc ? { endLocation: resolvedEndLoc } : {}),
+    ...(resolvedContent ? { content: resolvedContent } : {}),
+    ...(resolvedStartContent ? { startContent: resolvedStartContent } : {}),
+    ...(resolvedEndContent ? { endContent: resolvedEndContent } : {}),
   };
 }
 
@@ -61,6 +70,9 @@ export function isTimeEntry(value) {
     (value.viaTimer === undefined || typeof value.viaTimer === 'boolean') &&
     (value.startLocation === undefined || value.startLocation === null || isValidCoordinates(value.startLocation)) &&
     (value.endLocation === undefined || value.endLocation === null || isValidCoordinates(value.endLocation)) &&
-    (value.location === undefined || value.location === null || isValidCoordinates(value.location)),
+    (value.location === undefined || value.location === null || isValidCoordinates(value.location)) &&
+    (value.content === undefined || value.content === null || typeof value.content === 'string') &&
+    (value.startContent === undefined || value.startContent === null || typeof value.startContent === 'string') &&
+    (value.endContent === undefined || value.endContent === null || typeof value.endContent === 'string'),
   );
 }

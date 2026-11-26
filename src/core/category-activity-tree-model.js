@@ -301,6 +301,7 @@ export function collectMatchingTreeSuggestions(rawTree, query = '', limit = 8) {
             id: node.id,
             type: node.type,
             label,
+            categoryId: node.categoryId ?? null,
             categoryPath: pathText,
             color: node.color || '#948C7E',
             totalMins: node.totalMins || 0,

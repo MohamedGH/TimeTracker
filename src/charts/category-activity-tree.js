@@ -337,7 +337,7 @@ export function renderCategoryActivityTree({
     <span class="cat-tree-legend-item" aria-hidden="true">·</span>
     <span class="cat-tree-legend-item"><span class="legend-swatch legend-swatch--act"></span>Activité (feuille)</span>
     <span class="cat-tree-legend-item" aria-hidden="true">·</span>
-    <span class="cat-tree-legend-item">${canDragAny ? 'Cliquez pour activer le graphique · Glissez-déposez pour déplacer' : 'Cliquez sur le graphique pour zoomer · Cliquez sur un nœud pour replier'}</span>
+    <span class="cat-tree-legend-item">${canDragAny ? 'Cliquez pour déplier/replier · Glissez la poignée ⋮⋮ pour déplacer' : 'Cliquez sur le graphique pour zoomer · Cliquez sur un nœud pour replier'}</span>
   `;
 
   wrapper.append(toolbar, summaryBar, stage, legend);
@@ -475,12 +475,12 @@ export function renderCategoryActivityTree({
     .drag()
     .filter((event, d) => {
       if (isModalActive() || isEventInsideModal(event)) return false;
-      if (!isChartFocused) return false;
       if (event.button && event.button !== 0) return false;
-      if (event.target?.closest?.(ACTION_CONTROL_SELECTOR)) return false;
-      return isNodeDraggable(d);
+      if (!isNodeDraggable(d)) return false;
+      // Only initiate drag when grabbing the explicit drag grip handle so clicking/panning on node cards never reparents accidentally
+      return Boolean(event.target?.closest?.('[data-action="drag-handle"]'));
     })
-    .clickDistance(6)
+    .clickDistance(8)
     .subject((_event, d) => ({ x: d.y, y: d.x }))
     .on('start', function onDragStart(event, d) {
       if (!isNodeDraggable(d)) return;
@@ -498,7 +498,7 @@ export function renderCategoryActivityTree({
       if (!dragSession || dragSession.node.data.id !== d.data.id) return;
       const dx = event.x - dragSession.startX;
       const dy = event.y - dragSession.startY;
-      if (!dragSession.hasMoved && Math.hypot(dx, dy) < 8) return;
+      if (!dragSession.hasMoved && Math.hypot(dx, dy) < 10) return;
 
       if (!dragSession.hasMoved) {
         dragSession.hasMoved = true;
@@ -693,6 +693,10 @@ export function renderCategoryActivityTree({
     }
 
     suggestions.forEach((item, index) => {
+      const canQuickStart = item.type === TREE_NODE_TYPES.ACTIVITY && typeof onStartActivity === 'function';
+      const rowWrap = document.createElement('div');
+      rowWrap.className = 'cat-tree-search-suggestion-row';
+
       const optionBtn = document.createElement('button');
       optionBtn.type = 'button';
       optionBtn.className = 'cat-tree-search-suggestion';
@@ -731,7 +735,31 @@ export function renderCategoryActivityTree({
         ev.preventDefault();
         applySearchSuggestion(item);
       });
-      searchSuggestionsEl.appendChild(optionBtn);
+      rowWrap.appendChild(optionBtn);
+
+      if (canQuickStart) {
+        const startBtn = document.createElement('button');
+        startBtn.type = 'button';
+        startBtn.className = 'cat-tree-search-start-btn';
+        startBtn.dataset.treeSuggestionStart = 'true';
+        startBtn.setAttribute('aria-label', `Démarrer le chrono : ${item.label}`);
+        startBtn.title = `Démarrer le chrono : ${item.label}`;
+        startBtn.textContent = '▶';
+        const triggerStart = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          hideSearchSuggestions();
+          onStartActivity(item.label, item.categoryId);
+        };
+        startBtn.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+        startBtn.addEventListener('click', triggerStart);
+        rowWrap.appendChild(startBtn);
+      }
+
+      searchSuggestionsEl.appendChild(rowWrap);
     });
 
     searchSuggestionsEl.hidden = false;
@@ -975,6 +1003,7 @@ export function renderCategoryActivityTree({
         .attr('height', dims.height)
         .attr('rx', dims.rx);
 
+      const draggable = isNodeDraggable(d);
       if (d.data.type === TREE_NODE_TYPES.ROOT) {
         rect.attr('fill', '#232821').attr('stroke', '#B3833C').attr('stroke-width', 1.5);
       } else if (d.data.type === TREE_NODE_TYPES.CATEGORY) {
@@ -985,7 +1014,7 @@ export function renderCategoryActivityTree({
 
         g.append('circle')
           .attr('class', 'tree-node-dot')
-          .attr('cx', 14)
+          .attr('cx', draggable ? 25 : 14)
           .attr('cy', -4)
           .attr('r', 5)
           .attr('fill', d.data.color || '#948C7E');
@@ -998,7 +1027,7 @@ export function renderCategoryActivityTree({
 
         g.append('circle')
           .attr('class', 'tree-node-dot')
-          .attr('cx', 13)
+          .attr('cx', draggable ? 24 : 13)
           .attr('cy', -4)
           .attr('r', 4.5)
           .attr('fill', d.data.color || '#948C7E');
@@ -1010,10 +1039,58 @@ export function renderCategoryActivityTree({
           .attr('stroke-width', 1);
       }
 
+      // Explicit drag handle grip on draggable category/activity nodes
+      if (draggable) {
+        const handleGroup = g
+          .append('g')
+          .attr('class', 'tree-node-drag-handle')
+          .attr('data-action', 'drag-handle')
+          .attr('role', 'button')
+          .attr('aria-label', `Déplacer ${d.data.label}`)
+          .style('cursor', 'grab')
+          .on('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          });
+
+        handleGroup
+          .append('title')
+          .text(`Glisser pour déplacer « ${d.data.label} »`);
+
+        handleGroup
+          .append('rect')
+          .attr('class', 'tree-node-drag-hit')
+          .attr('x', 2)
+          .attr('y', -halfH + 4)
+          .attr('width', 18)
+          .attr('height', dims.height - 8)
+          .attr('rx', 5)
+          .attr('fill', 'transparent');
+
+        handleGroup
+          .append('text')
+          .attr('class', 'tree-node-drag-glyph')
+          .attr('x', 11)
+          .attr('y', 4)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', '12px')
+          .attr('font-weight', '700')
+          .attr('fill', '#7A766C')
+          .text('⋮⋮');
+      }
+
       // Primary label
-      const labelX = d.data.type === TREE_NODE_TYPES.ROOT ? 14 : d.data.type === TREE_NODE_TYPES.SESSION ? 12 : 26;
+      const labelX = d.data.type === TREE_NODE_TYPES.ROOT
+        ? 14
+        : d.data.type === TREE_NODE_TYPES.SESSION
+          ? 12
+          : (draggable ? 36 : 26);
       const labelY = d.data.type === TREE_NODE_TYPES.SESSION ? 4 : -2;
-      const maxChars = d.data.type === TREE_NODE_TYPES.ACTIVITY ? 18 : d.data.type === TREE_NODE_TYPES.SESSION ? 26 : 19;
+      const maxChars = d.data.type === TREE_NODE_TYPES.ACTIVITY
+        ? (draggable ? 16 : 18)
+        : d.data.type === TREE_NODE_TYPES.SESSION
+          ? 26
+          : (draggable ? 17 : 19);
 
       g.append('text')
         .attr('class', 'tree-node-label')

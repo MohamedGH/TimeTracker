@@ -4,14 +4,24 @@
 
 import { normalizeLocation } from './geo/geo-location.js';
 
+function cleanContent(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 export function createTimerState(timer = null) {
   if (!timer) return null;
   const startLocation = normalizeLocation(timer.startLocation ?? timer.location);
-  const { location: _legacyLoc, ...rest } = timer;
+  const content = cleanContent(timer.content);
+  const startContent = cleanContent(timer.startContent);
+  const endContent = cleanContent(timer.endContent);
+  const { location: _legacyLoc, content: _c, startContent: _sc, endContent: _ec, ...rest } = timer;
   return {
     ...rest,
     categoryId: timer.categoryId ?? timer.cat ?? null,
     ...(startLocation ? { startLocation } : {}),
+    ...(content ? { content } : {}),
+    ...(startContent ? { startContent } : {}),
+    ...(endContent ? { endContent } : {}),
   };
 }
 
@@ -24,12 +34,18 @@ export function createActiveTimer({
   date,
   startLocation = null,
   location = null,
+  content = '',
+  startContent = '',
+  endContent = '',
 }) {
   const resolvedCategoryId = categoryId ?? cat;
   if (!activity || !resolvedCategoryId || !Number.isFinite(startTs) || !startTime || !date) {
     throw new Error('Timer invalide.');
   }
   const normalizedStart = normalizeLocation(startLocation ?? location);
+  const cleanPermanentContent = cleanContent(content);
+  const cleanStartContent = cleanContent(startContent);
+  const cleanEndContent = cleanContent(endContent);
   return {
     activity,
     categoryId: resolvedCategoryId,
@@ -38,6 +54,9 @@ export function createActiveTimer({
     startTime,
     date,
     ...(normalizedStart ? { startLocation: normalizedStart } : {}),
+    ...(cleanPermanentContent ? { content: cleanPermanentContent } : {}),
+    ...(cleanStartContent ? { startContent: cleanStartContent } : {}),
+    ...(cleanEndContent ? { endContent: cleanEndContent } : {}),
   };
 }
 
@@ -55,6 +74,9 @@ export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID(), 
   if (!timer) throw new Error('Aucun timer actif.');
   const startLocation = normalizeLocation(timer.startLocation ?? timer.location);
   const normalizedEnd = normalizeLocation(endLocation);
+  const content = cleanContent(timer.content);
+  const startContent = cleanContent(timer.startContent);
+  const endContent = cleanContent(timer.endContent);
   return {
     id,
     activity: timer.activity,
@@ -67,5 +89,8 @@ export function timerToEntry(timer, endTime, endDate, id = crypto.randomUUID(), 
     viaTimer: true,
     ...(startLocation ? { startLocation } : {}),
     ...(normalizedEnd ? { endLocation: normalizedEnd } : {}),
+    ...(content ? { content } : {}),
+    ...(startContent ? { startContent } : {}),
+    ...(endContent ? { endContent } : {}),
   };
 }

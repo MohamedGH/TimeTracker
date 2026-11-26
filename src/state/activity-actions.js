@@ -11,8 +11,30 @@ function activityLabel(item) {
   return String(item?.label || item?.name || item?.activity || '').trim();
 }
 
+function cleanContent(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+export function findSavedActivityMatch(activities = [], { activityId = null, label = '', categoryId = undefined } = {}) {
+  const safe = Array.isArray(activities) ? activities : [];
+  if (activityId) {
+    const byId = safe.find(item => item?.id === activityId);
+    if (byId) return byId;
+  }
+  const key = normalizeKey(label);
+  if (!key) return null;
+  if (categoryId !== undefined) {
+    const exactCat = safe.find(item =>
+      normalizeKey(activityLabel(item)) === key
+      && (item.categoryId ?? item.cat ?? null) === (categoryId ?? null)
+    );
+    if (exactCat) return exactCat;
+  }
+  return safe.find(item => normalizeKey(activityLabel(item)) === key) || null;
+}
+
 /**
- * Updates an activity's label and category across saved activities,
+ * Updates an activity's label, category, and optional start/end content across saved activities,
  * time entries, and any matching active timer.
  * Pure function: (stateSlice, editPayload) -> nextStateSlice
  */
@@ -24,6 +46,9 @@ export function updateActivityAndEntries(
     oldCategoryId = null,
     newLabel,
     newCategoryId = null,
+    content = undefined,
+    startContent = undefined,
+    endContent = undefined,
   } = {}
 ) {
   const trimmedLabel = String(newLabel ?? '').trim();
@@ -34,6 +59,12 @@ export function updateActivityAndEntries(
   const oldKey = normalizeKey(oldLabel);
   const oldCat = oldCategoryId || null;
   const nextCat = newCategoryId || null;
+  const hasContentUpdate = content !== undefined;
+  const hasStartContentUpdate = startContent !== undefined;
+  const hasEndContentUpdate = endContent !== undefined;
+  const nextContent = hasContentUpdate ? cleanContent(content) : undefined;
+  const nextStartContent = hasStartContentUpdate ? cleanContent(startContent) : undefined;
+  const nextEndContent = hasEndContentUpdate ? cleanContent(endContent) : undefined;
 
   let matchedSaved = false;
   const updatedActivities = (Array.isArray(activities) ? activities : []).map(item => {
@@ -47,11 +78,24 @@ export function updateActivityAndEntries(
 
     if (isIdMatch || isNameCatMatch) {
       matchedSaved = true;
-      return {
+      const updated = {
         ...item,
         label: trimmedLabel,
         categoryId: nextCat,
       };
+      if (hasContentUpdate) {
+        if (nextContent) updated.content = nextContent;
+        else delete updated.content;
+      }
+      if (hasStartContentUpdate) {
+        if (nextStartContent) updated.startContent = nextStartContent;
+        else delete updated.startContent;
+      }
+      if (hasEndContentUpdate) {
+        if (nextEndContent) updated.endContent = nextEndContent;
+        else delete updated.endContent;
+      }
+      return updated;
     }
     return item;
   });
@@ -95,11 +139,108 @@ export function updateActivityAndEntries(
       activity: trimmedLabel,
       categoryId: nextCat,
     };
+    if (hasContentUpdate) {
+      if (nextContent) nextActiveTimer.content = nextContent;
+      else delete nextActiveTimer.content;
+    }
+    if (hasStartContentUpdate) {
+      if (nextStartContent) nextActiveTimer.startContent = nextStartContent;
+      else delete nextActiveTimer.startContent;
+    }
+    if (hasEndContentUpdate) {
+      if (nextEndContent) nextActiveTimer.endContent = nextEndContent;
+      else delete nextActiveTimer.endContent;
+    }
   }
 
   return {
     activities: nextActivities,
     entries: nextEntries,
+    activeTimer: nextActiveTimer,
+  };
+}
+
+/**
+ * Defines or updates persistent content on a saved activity (creating the saved record
+ * if needed when any content is non-empty) and synchronizes any matching active timer.
+ */
+export function upsertActivityContent(
+  { activities = [], entries = [], activeTimer = null } = {},
+  {
+    activityId = null,
+    label = '',
+    categoryId = null,
+    content = undefined,
+    startContent = undefined,
+    endContent = undefined,
+  } = {}
+) {
+  const safeActivities = Array.isArray(activities) ? activities : [];
+  const trimmedLabel = String(label || '').trim();
+  if (!trimmedLabel) {
+    return { activities: safeActivities, entries, activeTimer };
+  }
+
+  const matched = findSavedActivityMatch(safeActivities, {
+    activityId,
+    label: trimmedLabel,
+    categoryId,
+  });
+
+  if (matched) {
+    return updateActivityAndEntries(
+      { activities: safeActivities, entries, activeTimer },
+      {
+        activityId: matched.id,
+        oldLabel: activityLabel(matched),
+        oldCategoryId: matched.categoryId ?? matched.cat ?? null,
+        newLabel: activityLabel(matched) || trimmedLabel,
+        newCategoryId: matched.categoryId ?? matched.cat ?? categoryId ?? null,
+        content,
+        startContent,
+        endContent,
+      }
+    );
+  }
+
+  const nextContent = cleanContent(content);
+  const nextStart = cleanContent(startContent);
+  const nextEnd = cleanContent(endContent);
+  if (!nextContent && !nextStart && !nextEnd) {
+    return { activities: safeActivities, entries, activeTimer };
+  }
+
+  const newRecord = {
+    id: crypto.randomUUID(),
+    label: trimmedLabel,
+    categoryId: categoryId ?? null,
+    useCount: 1,
+    lastUsedAt: new Date().toISOString(),
+    ...(nextContent ? { content: nextContent } : {}),
+    ...(nextStart ? { startContent: nextStart } : {}),
+    ...(nextEnd ? { endContent: nextEnd } : {}),
+  };
+
+  let nextActiveTimer = activeTimer;
+  if (
+    activeTimer
+    && normalizeKey(activeTimer.activity) === normalizeKey(trimmedLabel)
+    && (activeTimer.categoryId ?? activeTimer.cat ?? null) === (categoryId ?? null)
+  ) {
+    nextActiveTimer = {
+      ...activeTimer,
+      ...(content !== undefined ? (nextContent ? { content: nextContent } : {}) : {}),
+      ...(startContent !== undefined ? (nextStart ? { startContent: nextStart } : {}) : {}),
+      ...(endContent !== undefined ? (nextEnd ? { endContent: nextEnd } : {}) : {}),
+    };
+    if (content !== undefined && !nextContent) delete nextActiveTimer.content;
+    if (startContent !== undefined && !nextStart) delete nextActiveTimer.startContent;
+    if (endContent !== undefined && !nextEnd) delete nextActiveTimer.endContent;
+  }
+
+  return {
+    activities: [...safeActivities, newRecord],
+    entries,
     activeTimer: nextActiveTimer,
   };
 }
@@ -156,10 +297,17 @@ function mergeActivityMetadata(primary, secondary) {
     avgDurationMins = avgB;
   }
 
+  const content = cleanContent(primary?.content) || cleanContent(secondary?.content);
+  const startContent = cleanContent(primary?.startContent) || cleanContent(secondary?.startContent);
+  const endContent = cleanContent(primary?.endContent) || cleanContent(secondary?.endContent);
+
   return {
     useCount: Math.max(1, countA + countB),
     lastUsedAt: maxIsoTimestamp(primary?.lastUsedAt, secondary?.lastUsedAt),
     avgDurationMins,
+    ...(content ? { content } : {}),
+    ...(startContent ? { startContent } : {}),
+    ...(endContent ? { endContent } : {}),
   };
 }
 

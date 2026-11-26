@@ -1,12 +1,23 @@
 /** Canonical saved activities reference a category node at any depth. */
+export function normalizeContentText(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+}
+
 export function normalizeSavedActivity(activity, categories = []) {
   if (!activity || typeof activity !== 'object') return null;
   const categoryId = activity.categoryId ?? null;
   if (categoryId && !categories.some(category => category.id === categoryId)) return null;
+  const content = normalizeContentText(activity.content);
+  const startContent = normalizeContentText(activity.startContent);
+  const endContent = normalizeContentText(activity.endContent);
   return {
     id: String(activity.id ?? crypto.randomUUID()),
     label: String(activity.label ?? activity.activity ?? '').trim(),
     categoryId,
+    ...(content ? { content } : {}),
+    ...(startContent ? { startContent } : {}),
+    ...(endContent ? { endContent } : {}),
   };
 }
 

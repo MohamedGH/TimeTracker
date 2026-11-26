@@ -396,7 +396,7 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
     tree.destroy();
   });
 
-  function simulateD3Drag(sourceEl, targetEl) {
+  function simulateD3Drag(sourceEl, targetEl, { targetChildSelector = '[data-action="drag-handle"]' } = {}) {
     const win = sourceEl.ownerDocument.defaultView || window;
     const sourceDatum = d3.select(sourceEl).datum();
     const targetDatum = d3.select(targetEl).datum();
@@ -418,12 +418,15 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       return ev;
     };
 
-    sourceEl.dispatchEvent(makeMouseEvent('mousedown', 100, 100));
+    const dragStartTarget = targetChildSelector
+      ? (sourceEl.querySelector(targetChildSelector) || sourceEl)
+      : sourceEl;
+    dragStartTarget.dispatchEvent(makeMouseEvent('mousedown', 100, 100));
     win.dispatchEvent(makeMouseEvent('mousemove', 100 + deltaX, 100 + deltaY));
     win.dispatchEvent(makeMouseEvent('mouseup', 100 + deltaX, 100 + deltaY));
   }
 
-  it('supports drag-and-drop of categories and activities directly in the D3 tree', () => {
+  it('supports drag-and-drop of categories and activities only via the explicit drag handle, never accidentally on card body', () => {
     const onMoveCategory = vi.fn();
     const onMoveActivity = vi.fn();
 
@@ -448,8 +451,15 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
     expect(devNode.dataset.draggable).toBe('true');
     expect(frontendNode.dataset.draggable).toBe('true');
     expect(rootNode.dataset.draggable).toBe('false');
+    expect(devNode.querySelector('[data-action="drag-handle"]')).toBeTruthy();
 
-    // 1. Drag category 'dev' onto 'sport'
+    // 0. Dragging on the node card body (not the drag handle) must NOT reparent categories or activities
+    simulateD3Drag(devNode, sportNode, { targetChildSelector: '.tree-node-card' });
+    simulateD3Drag(frontendNode, sportNode, { targetChildSelector: '.tree-node-card' });
+    expect(onMoveCategory).not.toHaveBeenCalled();
+    expect(onMoveActivity).not.toHaveBeenCalled();
+
+    // 1. Drag category 'dev' onto 'sport' via drag handle
     simulateD3Drag(devNode, sportNode);
     expect(onMoveCategory).toHaveBeenCalledTimes(1);
     expect(onMoveCategory).toHaveBeenCalledWith('dev', 'sport');
@@ -463,7 +473,7 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
     simulateD3Drag(travailNode, devNode);
     expect(onMoveCategory).toHaveBeenCalledTimes(2);
 
-    // 4. Drag activity 'Code Frontend' onto 'sport'
+    // 4. Drag activity 'Code Frontend' onto 'sport' via drag handle
     simulateD3Drag(frontendNode, sportNode);
     expect(onMoveActivity).toHaveBeenCalledTimes(1);
     expect(onMoveActivity).toHaveBeenCalledWith({
@@ -472,6 +482,34 @@ describe('category-activity-tree (D3 animated collapsible tree)', () => {
       oldCategoryId: 'dev',
       newCategoryId: 'sport',
     });
+
+    tree.destroy();
+  });
+
+  it('allows launching the chronometer directly from an activity suggestion in the tree search dropdown', () => {
+    const onStartActivity = vi.fn();
+    const tree = renderCategoryActivityTree({
+      container,
+      categories,
+      activities,
+      entries,
+      animationDuration: 0,
+      onStartActivity,
+    });
+
+    const search = container.querySelector('.cat-tree-search');
+    const suggestionsBox = container.querySelector('.cat-tree-search-suggestions');
+    search.value = 'Code Frontend';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(suggestionsBox.hidden).toBe(false);
+    const startBtn = suggestionsBox.querySelector('[data-tree-suggestion-start="true"]');
+    expect(startBtn).toBeTruthy();
+    startBtn.click();
+
+    expect(onStartActivity).toHaveBeenCalledTimes(1);
+    expect(onStartActivity).toHaveBeenCalledWith('Code Frontend', 'dev');
+    expect(suggestionsBox.hidden).toBe(true);
 
     tree.destroy();
   });

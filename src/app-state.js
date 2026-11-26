@@ -74,15 +74,23 @@ export async function createAppState() {
           if (name === 'sans catégorie') return false;
           return true;
         })
-        .map(a => stampItem({
-          id: a.id,
-          label: String(a.label || a.name || a.activity || '').trim(),
-          categoryId: a.categoryId ?? a.cat ?? null,
-          useCount: Number.isFinite(a.useCount) ? Math.max(0, a.useCount) : 1,
-          lastUsedAt: a.lastUsedAt || null,
-          avgDurationMins: Number.isFinite(a.avgDurationMins) ? Math.max(0, a.avgDurationMins) : null,
-          ...(Number.isFinite(Number(a.updatedAt)) ? { updatedAt: Number(a.updatedAt) } : {}),
-        }, 1))
+        .map(a => {
+          const content = typeof a.content === 'string' ? a.content.trim() : '';
+          const startContent = typeof a.startContent === 'string' ? a.startContent.trim() : '';
+          const endContent = typeof a.endContent === 'string' ? a.endContent.trim() : '';
+          return stampItem({
+            id: a.id,
+            label: String(a.label || a.name || a.activity || '').trim(),
+            categoryId: a.categoryId ?? a.cat ?? null,
+            useCount: Number.isFinite(a.useCount) ? Math.max(0, a.useCount) : 1,
+            lastUsedAt: a.lastUsedAt || null,
+            avgDurationMins: Number.isFinite(a.avgDurationMins) ? Math.max(0, a.avgDurationMins) : null,
+            ...(content ? { content } : {}),
+            ...(startContent ? { startContent } : {}),
+            ...(endContent ? { endContent } : {}),
+            ...(Number.isFinite(Number(a.updatedAt)) ? { updatedAt: Number(a.updatedAt) } : {}),
+          }, 1);
+        })
     : [];
 
   const normalizedEntries = normalizeEntries(entries, categories, []).map(e => stampItem(e, 1));
