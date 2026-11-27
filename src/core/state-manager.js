@@ -13,6 +13,14 @@ import { mergeCategoriesState } from '../state/category-actions.js';
 import { mergeActivitiesState, findSavedActivityMatch } from '../state/activity-actions.js';
 import { splitTimeEntryState } from '../state/entry-actions.js';
 import {
+  startAsyncTimerInList,
+  stopAsyncTimerInList,
+  discardAsyncTimerInList,
+  demoteActiveTimerToAsync,
+  promoteAsyncTimerToActive,
+  updateAsyncTimerTargetInList,
+} from '../state/async-timer-actions.js';
+import {
   createHistoryManager,
   applyUndoableSnapshot,
 } from './history-manager.js';
@@ -56,6 +64,12 @@ export const ACTION_TYPES = Object.freeze({
   SET_EDITING_ENTRY: 'SET_EDITING_ENTRY',
   START_TIMER: 'START_TIMER',
   STOP_TIMER: 'STOP_TIMER',
+  START_ASYNC_TIMER: 'START_ASYNC_TIMER',
+  STOP_ASYNC_TIMER: 'STOP_ASYNC_TIMER',
+  DISCARD_ASYNC_TIMER: 'DISCARD_ASYNC_TIMER',
+  DEMOTE_ACTIVE_TIMER_TO_ASYNC: 'DEMOTE_ACTIVE_TIMER_TO_ASYNC',
+  PROMOTE_ASYNC_TIMER_TO_ACTIVE: 'PROMOTE_ASYNC_TIMER_TO_ACTIVE',
+  UPDATE_ASYNC_TIMER_TARGET: 'UPDATE_ASYNC_TIMER_TARGET',
   SET_GEO_TRACKING: 'SET_GEO_TRACKING',
   SET_ACTIVE_TIMER_LOCATION: 'SET_ACTIVE_TIMER_LOCATION',
   PATCH_ENTRY_LOCATION: 'PATCH_ENTRY_LOCATION',
@@ -252,6 +266,138 @@ export function appReducer(state, action) {
           : Date.now(),
         entries: [entry, ...state.entries],
         activities: nextActivities,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.START_ASYNC_TIMER: {
+      const {
+        id,
+        activity,
+        categoryId,
+        date,
+        startTime,
+        startTs = Date.now(),
+        targetMins = null,
+        startLocation = null,
+        location = null,
+        content,
+        startContent,
+        endContent,
+      } = action.payload || {};
+      const savedMatch = findSavedActivityMatch(state.activities, { label: activity, categoryId });
+      const resolvedContent = typeof content === 'string'
+        ? content
+        : (savedMatch?.content || '');
+      const resolvedStartContent = typeof startContent === 'string'
+        ? startContent
+        : (savedMatch?.startContent || '');
+      const resolvedEndContent = typeof endContent === 'string'
+        ? endContent
+        : (savedMatch?.endContent || '');
+      const resolvedTargetMins = targetMins !== undefined && targetMins !== null
+        ? targetMins
+        : (savedMatch?.defaultTargetMins ?? null);
+
+      const { timers } = startAsyncTimerInList(state.activeAsyncTimers || [], {
+        id,
+        activity,
+        categoryId,
+        date: date || today(),
+        startTime: startTime || formatCurrentClock(),
+        startTs,
+        targetMins: resolvedTargetMins,
+        startLocation: startLocation ?? location,
+        content: resolvedContent,
+        startContent: resolvedStartContent,
+        endContent: resolvedEndContent,
+      });
+
+      return {
+        ...state,
+        activeAsyncTimers: timers,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.STOP_ASYNC_TIMER: {
+      const {
+        timerId,
+        nowTs = Date.now(),
+        endTime = formatCurrentClock(),
+        endDate = today(),
+        entryId,
+        endLocation = null,
+      } = action.payload || {};
+      const result = stopAsyncTimerInList(state.activeAsyncTimers || [], timerId, {
+        nowTs,
+        endTime,
+        endDate,
+        entryId,
+        endLocation,
+      });
+      if (!result.stoppedTimer || !result.entry) return state;
+
+      const nextActivities = updateActivityUsage(
+        state.activities,
+        result.entry.activity,
+        result.entry.categoryId,
+        result.durationMinutes
+      );
+
+      return {
+        ...state,
+        activeAsyncTimers: result.timers,
+        entries: [result.entry, ...state.entries],
+        activities: nextActivities,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.DISCARD_ASYNC_TIMER: {
+      const { timerId } = action.payload || {};
+      const { timers, discardedTimer } = discardAsyncTimerInList(state.activeAsyncTimers || [], timerId);
+      if (!discardedTimer) return state;
+      return {
+        ...state,
+        activeAsyncTimers: timers,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.DEMOTE_ACTIVE_TIMER_TO_ASYNC: {
+      if (!state.activeTimer) return state;
+      const { targetMins = null, id } = action.payload || {};
+      const res = demoteActiveTimerToAsync(state.activeTimer, state.activeAsyncTimers || [], { targetMins, id });
+      return {
+        ...state,
+        activeTimer: res.activeTimer,
+        activeAsyncTimers: res.activeAsyncTimers,
+        timerUpdatedAt: Date.now(),
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.PROMOTE_ASYNC_TIMER_TO_ACTIVE: {
+      const { timerId } = action.payload || {};
+      const res = promoteAsyncTimerToActive(state.activeTimer, state.activeAsyncTimers || [], timerId);
+      if (!res.promotedTimer) return state;
+      return {
+        ...state,
+        activeTimer: res.activeTimer,
+        activeAsyncTimers: res.activeAsyncTimers,
+        timerUpdatedAt: Date.now(),
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.UPDATE_ASYNC_TIMER_TARGET: {
+      const { timerId, targetMins } = action.payload || {};
+      const res = updateAsyncTimerTargetInList(state.activeAsyncTimers || [], timerId, targetMins);
+      if (!res.updatedTimer) return state;
+      return {
+        ...state,
+        activeAsyncTimers: res.timers,
         error: null,
       };
     }
@@ -831,6 +977,7 @@ export function appReducer(state, action) {
         deletedItems: [],
         activeTemplateRun: null,
         activeTimer: null,
+        activeAsyncTimers: [],
         geoTrackingEnabled: false,
         editingEntryId: null,
         modal: null,
@@ -907,6 +1054,12 @@ function formatCurrentClock() {
 const UNDOABLE_ACTION_LABELS = Object.freeze({
   [ACTION_TYPES.START_TIMER]: 'Démarrage du chrono',
   [ACTION_TYPES.STOP_TIMER]: 'Arrêt du chrono',
+  [ACTION_TYPES.START_ASYNC_TIMER]: 'Lancement activité parallèle',
+  [ACTION_TYPES.STOP_ASYNC_TIMER]: 'Fin activité parallèle',
+  [ACTION_TYPES.DISCARD_ASYNC_TIMER]: 'Annulation activité parallèle',
+  [ACTION_TYPES.DEMOTE_ACTIVE_TIMER_TO_ASYNC]: 'Passage en parallèle',
+  [ACTION_TYPES.PROMOTE_ASYNC_TIMER_TO_ACTIVE]: 'Passage au chrono principal',
+  [ACTION_TYPES.UPDATE_ASYNC_TIMER_TARGET]: 'Durée cible parallèle',
   [ACTION_TYPES.UPSERT_ENTRY]: 'Enregistrement de session',
   [ACTION_TYPES.SPLIT_ENTRY]: 'Découpage de session',
   [ACTION_TYPES.DELETE_ENTRY]: 'Suppression de session',
@@ -959,6 +1112,7 @@ export function createStateManager({ initialState, persistFn, onError, maxHistor
     deletedItems: [],
     activeTemplateRun: null,
     activeTimer: null,
+    activeAsyncTimers: [],
     timerUpdatedAt: 0,
     geoTrackingEnabled: false,
     quickTilesConfig: createDefaultQuickTilesConfig(),
@@ -1001,6 +1155,7 @@ export function createStateManager({ initialState, persistFn, onError, maxHistor
       prevState.deletedItems !== nextState.deletedItems ||
       prevState.activeTemplateRun !== nextState.activeTemplateRun ||
       prevState.activeTimer !== nextState.activeTimer ||
+      prevState.activeAsyncTimers !== nextState.activeAsyncTimers ||
       prevState.quickTilesConfig !== nextState.quickTilesConfig ||
       prevState.geoTrackingEnabled !== nextState.geoTrackingEnabled ||
       prevState.timerUpdatedAt !== nextState.timerUpdatedAt ||
@@ -1116,6 +1271,24 @@ export function createStateManager({ initialState, persistFn, onError, maxHistor
       },
       stopTimer(payload) {
         return dispatch({ type: ACTION_TYPES.STOP_TIMER, payload });
+      },
+      startAsyncTimer(payload) {
+        return dispatch({ type: ACTION_TYPES.START_ASYNC_TIMER, payload });
+      },
+      stopAsyncTimer(payload) {
+        return dispatch({ type: ACTION_TYPES.STOP_ASYNC_TIMER, payload });
+      },
+      discardAsyncTimer(timerId) {
+        return dispatch({ type: ACTION_TYPES.DISCARD_ASYNC_TIMER, payload: { timerId } });
+      },
+      demoteActiveTimerToAsync(payload) {
+        return dispatch({ type: ACTION_TYPES.DEMOTE_ACTIVE_TIMER_TO_ASYNC, payload });
+      },
+      promoteAsyncTimerToActive(timerId) {
+        return dispatch({ type: ACTION_TYPES.PROMOTE_ASYNC_TIMER_TO_ACTIVE, payload: { timerId } });
+      },
+      updateAsyncTimerTarget(timerId, targetMins) {
+        return dispatch({ type: ACTION_TYPES.UPDATE_ASYNC_TIMER_TARGET, payload: { timerId, targetMins } });
       },
       setGeoTracking(enabled) {
         return dispatch({ type: ACTION_TYPES.SET_GEO_TRACKING, payload: enabled });

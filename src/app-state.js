@@ -16,6 +16,10 @@ import {
   normalizeTemplatesList,
   normalizeActiveTemplateRun,
 } from './state/template-actions.js';
+import {
+  normalizeAsyncTimersList,
+  normalizeTargetMins,
+} from './state/async-timer-actions.js';
 import { normalizeTrashList } from './core/trash-manager.js';
 import { normalizeUiState } from './core/ui-state.js';
 
@@ -29,6 +33,7 @@ export async function createAppState() {
     storedTemplates,
     storedActiveTemplateRun,
     activeTimer,
+    storedActiveAsyncTimers,
     storedTimerUpdatedAt,
     storedQuickTilesConfig,
     storedGeoTrackingEnabled,
@@ -44,6 +49,7 @@ export async function createAppState() {
     getValue(STORAGE_KEYS.activityTemplates, []),
     getValue(STORAGE_KEYS.activeTemplateRun, null),
     getValue(STORAGE_KEYS.activeTimer, null),
+    getValue(STORAGE_KEYS.activeAsyncTimers, []),
     getValue(STORAGE_KEYS.timerUpdatedAt, 0),
     getValue(STORAGE_KEYS.quickTilesConfig, null),
     getValue(STORAGE_KEYS.geoTrackingEnabled, false),
@@ -78,6 +84,7 @@ export async function createAppState() {
           const content = typeof a.content === 'string' ? a.content.trim() : '';
           const startContent = typeof a.startContent === 'string' ? a.startContent.trim() : '';
           const endContent = typeof a.endContent === 'string' ? a.endContent.trim() : '';
+          const defaultTargetMins = normalizeTargetMins(a.defaultTargetMins);
           return stampItem({
             id: a.id,
             label: String(a.label || a.name || a.activity || '').trim(),
@@ -85,6 +92,8 @@ export async function createAppState() {
             useCount: Number.isFinite(a.useCount) ? Math.max(0, a.useCount) : 1,
             lastUsedAt: a.lastUsedAt || null,
             avgDurationMins: Number.isFinite(a.avgDurationMins) ? Math.max(0, a.avgDurationMins) : null,
+            ...(a.isAsync ? { isAsync: true } : {}),
+            ...(defaultTargetMins ? { defaultTargetMins } : {}),
             ...(content ? { content } : {}),
             ...(startContent ? { startContent } : {}),
             ...(endContent ? { endContent } : {}),
@@ -96,6 +105,7 @@ export async function createAppState() {
   const normalizedEntries = normalizeEntries(entries, categories, []).map(e => stampItem(e, 1));
   const normalizedTemplates = normalizeTemplatesList(storedTemplates, categories).map(t => stampItem(t, 1));
   const normalizedActiveTemplateRun = normalizeActiveTemplateRun(storedActiveTemplateRun);
+  const normalizedActiveAsyncTimers = normalizeAsyncTimersList(storedActiveAsyncTimers);
   const normalizedQuickTilesConfig = normalizeQuickTilesConfig(storedQuickTilesConfig, {
     categories,
     activities: normalizedActivities,
@@ -134,6 +144,7 @@ export async function createAppState() {
     deletedItems: normalizeTrashList(storedTrash),
     activeTemplateRun: normalizedActiveTemplateRun,
     activeTimer: activeTimer || null,
+    activeAsyncTimers: normalizedActiveAsyncTimers,
     timerUpdatedAt: initialTimerUpdatedAt,
     quickTilesConfig: normalizedQuickTilesConfig,
     geoTrackingEnabled: Boolean(storedGeoTrackingEnabled),
@@ -191,6 +202,7 @@ export async function createAppState() {
         smState.deletedItems = s.deletedItems;
         smState.activeTemplateRun = s.activeTemplateRun;
         smState.activeTimer = s.activeTimer;
+        smState.activeAsyncTimers = s.activeAsyncTimers;
         smState.timerUpdatedAt = s.timerUpdatedAt;
         smState.quickTilesConfig = s.quickTilesConfig;
         smState.geoTrackingEnabled = s.geoTrackingEnabled;
@@ -223,6 +235,7 @@ export async function createAppState() {
         setValue(STORAGE_KEYS.activityTemplates, s.activityTemplates),
         setValue(STORAGE_KEYS.activeTemplateRun, s.activeTemplateRun || null),
         setValue(STORAGE_KEYS.activeTimer, s.activeTimer),
+        setValue(STORAGE_KEYS.activeAsyncTimers, Array.isArray(s.activeAsyncTimers) ? s.activeAsyncTimers : []),
         setValue(STORAGE_KEYS.timerUpdatedAt, Number(s.timerUpdatedAt) || 0),
         setValue(STORAGE_KEYS.quickTilesConfig, s.quickTilesConfig || normalizedQuickTilesConfig),
         setValue(STORAGE_KEYS.geoTrackingEnabled, Boolean(s.geoTrackingEnabled)),

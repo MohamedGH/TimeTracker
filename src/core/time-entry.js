@@ -17,6 +17,7 @@ export function createTimeEntry({
   endDate,
   mins,
   viaTimer,
+  isAsync,
   startLocation,
   endLocation,
   location,
@@ -41,6 +42,7 @@ export function createTimeEntry({
     ...(endDate ? { endDate } : {}),
     mins: duration,
     ...(typeof viaTimer === 'boolean' ? { viaTimer } : {}),
+    ...(isAsync === true ? { isAsync: true } : {}),
     ...(resolvedStartLoc ? { startLocation: resolvedStartLoc } : {}),
     ...(resolvedEndLoc ? { endLocation: resolvedEndLoc } : {}),
     ...(resolvedContent ? { content: resolvedContent } : {}),
@@ -68,6 +70,7 @@ export function isTimeEntry(value) {
     Number.isFinite(value.mins) &&
     (value.categoryId === null || typeof value.categoryId === 'string') &&
     (value.viaTimer === undefined || typeof value.viaTimer === 'boolean') &&
+    (value.isAsync === undefined || typeof value.isAsync === 'boolean') &&
     (value.startLocation === undefined || value.startLocation === null || isValidCoordinates(value.startLocation)) &&
     (value.endLocation === undefined || value.endLocation === null || isValidCoordinates(value.endLocation)) &&
     (value.location === undefined || value.location === null || isValidCoordinates(value.location)) &&

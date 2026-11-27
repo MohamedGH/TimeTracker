@@ -133,6 +133,18 @@ import {
   reassignCategoryInTemplates,
   reassignActivityInTemplates,
 } from './state/template-actions.js';
+import {
+  normalizeAsyncTimersList,
+  normalizeTargetMins,
+  startAsyncTimerInList,
+  stopAsyncTimerInList,
+  discardAsyncTimerInList,
+  demoteActiveTimerToAsync,
+  promoteAsyncTimerToActive,
+  updateAsyncTimerTargetInList,
+  markAsyncTimerAlertedInList,
+  computeAsyncTimerProgress,
+} from './state/async-timer-actions.js';
 import { createGoogleOidcAuth, DRIVE_APPDATA_SCOPE, DRIVE_SYNC_SCOPES } from './core/auth/index.js';
 import { syncWithGoogleDrive, createP2PSyncManager } from './core/sync/index.js';
 import {
@@ -217,6 +229,7 @@ export function createUI({
       smState.deletedItems = state.deletedItems;
       smState.activeTemplateRun = state.activeTemplateRun;
       smState.activeTimer = state.activeTimer;
+      smState.activeAsyncTimers = state.activeAsyncTimers;
       smState.timerUpdatedAt = state.timerUpdatedAt;
       smState.quickTilesConfig = state.quickTilesConfig;
       smState.geoTrackingEnabled = state.geoTrackingEnabled;
@@ -240,6 +253,7 @@ export function createUI({
       state.categories = smState.categories;
       state.activityTemplates = smState.activityTemplates;
       state.deletedItems = smState.deletedItems;
+      state.activeAsyncTimers = smState.activeAsyncTimers;
       state.tab = smState.tab;
       state.period = smState.period;
       state.customStart = smState.customStart;
@@ -675,6 +689,7 @@ export function createUI({
     state.activityTemplates = nextState.activityTemplates;
     state.deletedItems = nextState.deletedItems;
     state.activeTimer = nextState.activeTimer;
+    state.activeAsyncTimers = Array.isArray(nextState.activeAsyncTimers) ? nextState.activeAsyncTimers : [];
     state.timerUpdatedAt = nextState.timerUpdatedAt;
     state.activeTemplateRun = nextState.activeTemplateRun;
     if (nextState.quickTilesConfig) state.quickTilesConfig = nextState.quickTilesConfig;
@@ -826,6 +841,8 @@ export function createUI({
       content: '',
       startContent: '',
       endContent: '',
+      isAsync: false,
+      defaultTargetMins: '',
     };
     state.error = null;
     rerender();
@@ -844,6 +861,8 @@ export function createUI({
       content: saved?.content || '',
       startContent: saved?.startContent || '',
       endContent: saved?.endContent || '',
+      isAsync: Boolean(saved?.isAsync),
+      defaultTargetMins: saved?.defaultTargetMins ? String(saved.defaultTargetMins) : '',
     };
     state.error = null;
     rerender();
@@ -1762,8 +1781,8 @@ export function createUI({
       entryPage()
     );
 
-    // If timer is running and user is on another tab, show floating mini-timer bar
-    if (state.activeTimer && state.tab !== 'entry') {
+    // If timer (foreground or async) is running and user is on another tab, show floating mini-timer bar
+    if ((state.activeTimer || (state.activeAsyncTimers && state.activeAsyncTimers.length > 0)) && state.tab !== 'entry') {
       main.appendChild(floatingTimerBar());
     }
 
@@ -1786,11 +1805,46 @@ export function createUI({
     if (hasModal) root.appendChild(modal());
     renderNoticeBanner();
 
-    if (state.activeTimer) {
+    const hasRunningTimers = Boolean(state.activeTimer || (state.activeAsyncTimers && state.activeAsyncTimers.length > 0));
+    if (hasRunningTimers) {
       clearInterval(ticker);
       ticker = setInterval(() => {
-        const c = root.querySelector('[data-timer-clock]');
-        if (c) c.textContent = clock(elapsedSeconds(state.activeTimer));
+        const nowMs = Date.now();
+        if (state.activeTimer) {
+          const c = root.querySelector('[data-timer-clock]');
+          if (c) c.textContent = clock(elapsedSeconds(state.activeTimer, nowMs));
+        }
+        const asyncList = Array.isArray(state.activeAsyncTimers) ? state.activeAsyncTimers : [];
+        let alertedChanged = false;
+        for (const asyncTimer of asyncList) {
+          const progress = computeAsyncTimerProgress(asyncTimer, nowMs);
+          root.querySelectorAll(`[data-async-timer-clock="${asyncTimer.id}"]`).forEach((el) => {
+            el.textContent = clock(progress.elapsedSecs);
+          });
+          if (progress.targetSecs) {
+            root.querySelectorAll(`[data-async-timer-remaining="${asyncTimer.id}"]`).forEach((el) => {
+              el.textContent = progress.isOverdue
+                ? `Durée atteinte (+${clock(progress.overdueSecs)})`
+                : `Reste ${clock(progress.remainingSecs)}`;
+            });
+            root.querySelectorAll(`[data-async-timer-bar="${asyncTimer.id}"]`).forEach((el) => {
+              el.style.width = `${Math.round(progress.progressRatio * 100)}%`;
+            });
+            root.querySelectorAll(`[data-async-timer-id="${asyncTimer.id}"]`).forEach((el) => {
+              el.classList.toggle('is-overdue', progress.isOverdue);
+            });
+            if (progress.isOverdue && !asyncTimer.alerted) {
+              alertedChanged = true;
+              state.activeAsyncTimers = markAsyncTimerAlertedInList(state.activeAsyncTimers, asyncTimer.id);
+              errorManager.notifyInfo(
+                `Activité en parallèle « ${asyncTimer.activity} » : durée cible atteinte (${asyncTimer.targetMins} min) !`
+              );
+            }
+          }
+        }
+        if (alertedChanged) {
+          persist().catch(() => {});
+        }
       }, 1000);
     } else {
       clearInterval(ticker);
@@ -2081,7 +2135,7 @@ export function createUI({
 
       const iconWrap = node('span', 'mobile-tab-icon');
       iconWrap.innerHTML = NAV_ICONS[id] || '';
-      if (id === 'entry' && state.activeTimer) {
+      if (id === 'entry' && (state.activeTimer || (state.activeAsyncTimers && state.activeAsyncTimers.length > 0))) {
         iconWrap.appendChild(node('span', 'tab-pulse-badge'));
       }
 
@@ -2161,54 +2215,81 @@ export function createUI({
 
   function floatingTimerBar() {
     const t = state.activeTimer;
-    if (!t) return document.createDocumentFragment();
-    const runProgress = computeTemplateRunProgress(state.activeTemplateRun);
+    const asyncList = normalizeAsyncTimersList(state.activeAsyncTimers);
+    if (!t && !asyncList.length) return document.createDocumentFragment();
 
     const bar = node('div', 'floating-timer-bar');
     const info = node('div', 'floating-timer-info');
-
-    const dot = node('span', 'pulse-dot');
-    const act = node('strong', 'floating-timer-activity', t.activity);
-    const cat = createCategoryBadge(t.categoryId ?? t.cat, state.categories, { showPath: false, size: 'small' });
-    info.append(dot, act, cat);
-    if (runProgress) {
-      info.appendChild(
-        node('span', 'floating-timer-template-step', `Gabarit ${runProgress.stepNumber}/${runProgress.totalSteps}`)
-      );
-    }
-
     const actions = node('div', 'floating-timer-actions');
-    const clockNode = node('span', 'floating-timer-clock', clock(elapsedSeconds(t)));
-    clockNode.dataset.timerClock = '1';
 
-    if (runProgress) {
-      const nextBtn = button(
-        runProgress.isLastStep ? 'Terminer ✓' : 'Suivante →',
-        'small primary',
-        runProgress.isLastStep ? 'floating-template-complete' : 'floating-template-next'
-      );
-      nextBtn.onclick = (e) => {
+    if (t) {
+      const runProgress = computeTemplateRunProgress(state.activeTemplateRun);
+      const dot = node('span', 'pulse-dot');
+      const act = node('strong', 'floating-timer-activity', t.activity);
+      const cat = createCategoryBadge(t.categoryId ?? t.cat, state.categories, { showPath: false, size: 'small' });
+      info.append(dot, act, cat);
+      if (runProgress) {
+        info.appendChild(
+          node('span', 'floating-timer-template-step', `Gabarit ${runProgress.stepNumber}/${runProgress.totalSteps}`)
+        );
+      }
+      if (asyncList.length > 0) {
+        info.appendChild(
+          node('span', 'floating-timer-async-summary', `· +${asyncList.length} en parallèle`)
+        );
+      }
+
+      const clockNode = node('span', 'floating-timer-clock', clock(elapsedSeconds(t)));
+      clockNode.dataset.timerClock = '1';
+
+      if (runProgress) {
+        const nextBtn = button(
+          runProgress.isLastStep ? 'Terminer ✓' : 'Suivante →',
+          'small primary',
+          runProgress.isLastStep ? 'floating-template-complete' : 'floating-template-next'
+        );
+        nextBtn.onclick = (e) => {
+          e.stopPropagation();
+          handleAdvanceTemplateRun({ recordCurrent: true });
+        };
+        const skipBtn = button('Passer', 'small secondary', 'floating-template-skip');
+        skipBtn.title = 'Passer l’étape en cours sans l’enregistrer';
+        skipBtn.onclick = (e) => {
+          e.stopPropagation();
+          handleAdvanceTemplateRun({ recordCurrent: false });
+        };
+        actions.append(clockNode, nextBtn, skipBtn);
+      } else {
+        actions.append(clockNode);
+      }
+
+      const stopBtn = button('Arrêter', 'small danger', 'floating-timer-stop');
+      stopBtn.onclick = (e) => {
         e.stopPropagation();
-        handleAdvanceTemplateRun({ recordCurrent: true });
+        stopTimer();
       };
-      const skipBtn = button('Passer', 'small secondary', 'floating-template-skip');
-      skipBtn.title = 'Passer l’étape en cours sans l’enregistrer';
-      skipBtn.onclick = (e) => {
-        e.stopPropagation();
-        handleAdvanceTemplateRun({ recordCurrent: false });
-      };
-      actions.append(clockNode, nextBtn, skipBtn);
+      actions.append(stopBtn);
     } else {
-      actions.append(clockNode);
+      const firstAsync = asyncList[0];
+      const dot = node('span', 'pulse-dot is-async');
+      const prefix = node('span', 'floating-timer-async-summary', 'En parallèle ·');
+      const act = node('strong', 'floating-timer-activity', firstAsync.activity);
+      const cat = createCategoryBadge(firstAsync.categoryId ?? firstAsync.cat, state.categories, { showPath: false, size: 'small' });
+      info.append(dot, prefix, act, cat);
+      if (asyncList.length > 1) {
+        info.appendChild(node('span', 'floating-timer-async-summary', `· +${asyncList.length - 1}`));
+      }
+
+      const clockNode = node('span', 'floating-timer-clock', clock(elapsedSeconds(firstAsync)));
+      clockNode.dataset.asyncTimerClock = firstAsync.id;
+      const stopAsyncBtn = button('Terminer ✓', 'small primary', 'floating-async-stop');
+      stopAsyncBtn.onclick = (e) => {
+        e.stopPropagation();
+        handleStopAsyncTimer(firstAsync.id);
+      };
+      actions.append(clockNode, stopAsyncBtn);
     }
 
-    const stopBtn = button('Arrêter', 'small danger', 'floating-timer-stop');
-    stopBtn.onclick = (e) => {
-      e.stopPropagation();
-      stopTimer();
-    };
-
-    actions.append(stopBtn);
     bar.append(info, actions);
 
     bar.onclick = () => {
@@ -2231,6 +2312,7 @@ export function createUI({
     const f = document.createDocumentFragment();
     f.append(
       timerCard(),
+      asyncTimersCard(),
       activitySearchCard(),
       quickStartCard(),
       entryCard()
@@ -2724,13 +2806,218 @@ export function createUI({
       runnerActions.appendChild(secondaryRow);
       box.appendChild(runnerActions);
     } else {
+      const mainTimerActions = node('div', 'timer-main-actions');
       const stop = button('Arrêter le chronomètre', 'danger', 'timer-stop');
       stop.onclick = stopTimer;
-      box.appendChild(stop);
+      const demoteBtn = button('⇄ Mettre en parallèle', 'secondary', 'timer-demote-async');
+      demoteBtn.title = 'Basculer ce chronomètre en arrière-plan pour lancer une autre activité';
+      demoteBtn.onclick = () => handleDemoteActiveTimerToAsync();
+      mainTimerActions.append(stop, demoteBtn);
+      box.appendChild(mainTimerActions);
     }
 
     c.appendChild(box);
     c.appendChild(renderGeoOptInControl());
+    return c;
+  }
+
+  function asyncTimersCard() {
+    const asyncList = normalizeAsyncTimersList(state.activeAsyncTimers);
+    const c = node('section', 'card async-timers-card');
+    c.dataset.asyncTimersCard = 'true';
+
+    const head = node('div', 'async-card-header');
+    const titleWrap = node('div', 'async-card-title-wrap');
+    titleWrap.appendChild(node('h2', 'card-title', 'Activités en parallèle'));
+    const subtitleText = asyncList.length > 0
+      ? `${asyncList.length} tâche${asyncList.length > 1 ? 's' : ''} en cours en arrière-plan · le chronomètre principal reste libre`
+      : 'Ex : faire à manger ou réchauffer un plat pendant que vous faites autre chose.';
+    titleWrap.appendChild(node('p', 'muted async-card-subtitle', subtitleText));
+    head.appendChild(titleWrap);
+    c.appendChild(head);
+
+    if (asyncList.length > 0) {
+      const listEl = node('div', 'async-timers-list');
+      listEl.dataset.asyncTimersList = 'true';
+      const nowMs = Date.now();
+
+      for (const item of asyncList) {
+        const progress = computeAsyncTimerProgress(item, nowMs);
+        const row = node('div', `async-timer-row ${progress.isOverdue ? 'is-overdue' : ''}`.trim());
+        row.dataset.asyncTimerId = item.id;
+
+        const topRow = node('div', 'async-timer-row-top');
+        const infoCol = node('div', 'async-timer-info');
+        const titleLine = node('div', 'async-timer-title-line');
+        titleLine.appendChild(node('strong', 'async-timer-name', item.activity));
+        titleLine.appendChild(createCategoryBadge(item.categoryId ?? item.cat, state.categories, { showPath: false, size: 'small' }));
+
+        const metaParts = [`Début ${item.startTime}`];
+        if (item.targetMins) {
+          metaParts.push(`Cible ${item.targetMins} min`);
+        }
+        const metaLine = node('div', 'async-timer-meta', metaParts.join(' · '));
+        if (progress.targetSecs) {
+          metaLine.appendChild(document.createTextNode(' · '));
+          const remSpan = node(
+            'span',
+            'async-timer-remaining',
+            progress.isOverdue
+              ? `Durée atteinte (+${clock(progress.overdueSecs)})`
+              : `Reste ${clock(progress.remainingSecs)}`
+          );
+          remSpan.dataset.asyncTimerRemaining = item.id;
+          metaLine.appendChild(remSpan);
+        }
+        infoCol.append(titleLine, metaLine);
+
+        const clockEl = node('div', 'async-timer-clock', clock(progress.elapsedSecs));
+        clockEl.dataset.asyncTimerClock = item.id;
+
+        topRow.append(infoCol, clockEl);
+        row.appendChild(topRow);
+
+        if (progress.targetSecs) {
+          const track = node('div', 'async-timer-progress-track');
+          const fill = node('div', 'async-timer-progress-fill');
+          fill.dataset.asyncTimerBar = item.id;
+          fill.style.width = `${Math.round(progress.progressRatio * 100)}%`;
+          track.appendChild(fill);
+          row.appendChild(track);
+        }
+
+        const resolvedContents = resolveActivityContentPair(item.activity, item.categoryId ?? item.cat);
+        const noteParts = [
+          (item.content || resolvedContents.content) ? `Contenu : ${item.content || resolvedContents.content}` : null,
+          (item.startContent || resolvedContents.startContent) ? `Début : ${item.startContent || resolvedContents.startContent}` : null,
+          (item.endContent || resolvedContents.endContent) ? `Fin : ${item.endContent || resolvedContents.endContent}` : null,
+        ].filter(Boolean);
+        if (noteParts.length) {
+          row.appendChild(node('div', 'async-timer-content-note muted', noteParts.join(' · ')));
+        }
+
+        const actionsRow = node('div', 'async-timer-actions');
+        const finishBtn = button('✓ Terminer', 'small primary', 'async-timer-stop');
+        finishBtn.onclick = () => handleStopAsyncTimer(item.id);
+
+        const promoteBtn = button('⇄ Principal', 'small secondary', 'async-timer-promote');
+        promoteBtn.title = state.activeTimer
+          ? 'Basculer au chrono principal (et mettre le chrono actuel en parallèle)'
+          : 'Passer au chronomètre principal';
+        promoteBtn.onclick = () => handlePromoteAsyncTimerToActive(item.id);
+
+        const add5Btn = button('+5 min', 'small secondary', 'async-timer-add-5');
+        add5Btn.title = 'Ajouter 5 minutes à la durée cible';
+        add5Btn.onclick = () => {
+          const nextMins = (Number(item.targetMins) || Math.max(5, progress.elapsedMins)) + 5;
+          handleUpdateAsyncTimerTarget(item.id, nextMins);
+        };
+
+        const cancelBtn = button('×', 'small danger', 'async-timer-discard');
+        cancelBtn.title = 'Annuler sans enregistrer';
+        cancelBtn.setAttribute('aria-label', `Annuler ${item.activity}`);
+        cancelBtn.onclick = () => handleDiscardAsyncTimer(item.id);
+
+        actionsRow.append(finishBtn, promoteBtn, add5Btn, cancelBtn);
+        row.appendChild(actionsRow);
+        listEl.appendChild(row);
+      }
+
+      c.appendChild(listEl);
+    }
+
+    const launchForm = node('form', 'async-launch-form');
+    launchForm.dataset.behaviorForm = 'async-launch-form';
+
+    const actWrap = node('div', 'async-launch-field async-launch-field--activity');
+    const actInput = document.createElement('input');
+    actInput.type = 'text';
+    actInput.required = true;
+    actInput.placeholder = 'Ex : Faire à manger (réchauffer le plat)…';
+    actInput.setAttribute('aria-label', 'Nom de l’activité en parallèle');
+    actInput.dataset.behaviorTarget = 'async-launch-activity';
+    const asyncListId = `async-suggestions-${crypto.randomUUID()}`;
+    const datalist = document.createElement('datalist');
+    datalist.id = asyncListId;
+    actInput.setAttribute('list', asyncListId);
+    const seenLabels = new Set();
+    for (const a of [...state.activities, ...state.entries.map(e => ({ label: e.activity }))]) {
+      const lbl = String(a.label || a.activity || '').trim();
+      if (!lbl || seenLabels.has(lbl.toLowerCase())) continue;
+      seenLabels.add(lbl.toLowerCase());
+      const opt = document.createElement('option');
+      opt.value = lbl;
+      datalist.appendChild(opt);
+    }
+    actWrap.append(actInput, datalist);
+
+    const catWrap = node('div', 'async-launch-field async-launch-field--cat');
+    const catSelect = selectCategory(state.categories[0]?.id);
+    catSelect.wrap.className = 'async-cat-wrap';
+    const catLabel = catSelect.wrap.querySelector('label');
+    if (catLabel) catLabel.remove();
+    catWrap.appendChild(catSelect.wrap);
+
+    const minsWrap = node('div', 'async-launch-field async-launch-field--mins');
+    const minsInput = document.createElement('input');
+    minsInput.type = 'number';
+    minsInput.min = '1';
+    minsInput.max = '720';
+    minsInput.step = '1';
+    minsInput.placeholder = 'Min (opt.)';
+    minsInput.setAttribute('aria-label', 'Durée cible en minutes (optionnel)');
+    minsInput.dataset.behaviorTarget = 'async-launch-mins';
+    minsWrap.appendChild(minsInput);
+
+    actInput.addEventListener('input', () => {
+      const val = actInput.value.trim();
+      if (!val) return;
+      const usualCatId = getUsualCategoryForActivity(val, state.entries, state.activities);
+      if (usualCatId && catSelect.select.value !== usualCatId) {
+        catSelect.select.value = usualCatId;
+        catSelect.select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      const matchedSaved = findSavedActivityMatch(state.activities, { label: val, categoryId: catSelect.select.value || null });
+      if (matchedSaved?.defaultTargetMins && !minsInput.value) {
+        minsInput.value = String(matchedSaved.defaultTargetMins);
+      }
+    });
+
+    const launchBtn = button('⏳ Lancer en parallèle', 'small primary async-launch-submit', 'async-timer-start');
+    launchBtn.type = 'submit';
+
+    const formRow = node('div', 'async-launch-row');
+    formRow.append(actWrap, catWrap, minsWrap, launchBtn);
+
+    const presetsRow = node('div', 'async-launch-presets');
+    presetsRow.appendChild(node('span', 'muted async-presets-label', 'Durée cible rapide :'));
+    [5, 10, 15, 20, 30, 45].forEach((m) => {
+      const pBtn = button(`${m} min`, 'small secondary async-preset-btn', 'async-launch-preset');
+      pBtn.onclick = () => {
+        minsInput.value = String(m);
+      };
+      presetsRow.appendChild(pBtn);
+    });
+
+    launchForm.onsubmit = (e) => {
+      e.preventDefault();
+      const label = actInput.value.trim();
+      if (!label) {
+        errorManager.handleError(new Error('Veuillez saisir une activité en parallèle.'), 'timer');
+        return;
+      }
+      const targetMins = normalizeTargetMins(minsInput.value);
+      const catId = catSelect.select.value || state.categories[0]?.id;
+      actInput.value = '';
+      minsInput.value = '';
+      handleStartAsyncTimer(label, catId, {
+        targetMins,
+        createIfMissing: true,
+      });
+    };
+
+    launchForm.append(formRow, presetsRow);
+    c.appendChild(launchForm);
     return c;
   }
 
@@ -2821,7 +3108,23 @@ export function createUI({
         launchBtn.setAttribute('aria-label', `Démarrer le chronomètre pour ${item.name}`);
         launchBtn.onclick = () => launchSearchResult(item);
 
-        row.append(main, launchBtn);
+        const asyncBtn = button('⏳ Parallèle', 'small secondary activity-search-async-btn', 'search-launch-async');
+        asyncBtn.title = 'Lancer en tâche parallèle sans couper le chrono principal';
+        asyncBtn.setAttribute('aria-label', `Lancer ${item.name} en parallèle`);
+        asyncBtn.onclick = () => {
+          const targetCatId = item.categoryId || state.categories[0]?.id;
+          activitySearchQuery = '';
+          handleStartAsyncTimer(item.name, targetCatId, {
+            activityId: item.activityId || null,
+            content: item.content || '',
+            startContent: item.startContent || '',
+            endContent: item.endContent || '',
+          });
+        };
+
+        const btnCluster = node('div', 'activity-search-row-actions');
+        btnCluster.append(launchBtn, asyncBtn);
+        row.append(main, btnCluster);
         resultsList.appendChild(row);
       }
 
@@ -2840,7 +3143,14 @@ export function createUI({
           activitySearchQuery = '';
           startTimer(trimmed, state.categories[0]?.id, today(), nowTime());
         };
-        customRow.append(main, startNewBtn);
+        const startNewAsyncBtn = button('⏳ Parallèle', 'small secondary activity-search-async-btn', 'search-launch-async-new');
+        startNewAsyncBtn.onclick = () => {
+          activitySearchQuery = '';
+          handleStartAsyncTimer(trimmed, state.categories[0]?.id, { createIfMissing: true });
+        };
+        const btnCluster = node('div', 'activity-search-row-actions');
+        btnCluster.append(startNewBtn, startNewAsyncBtn);
+        customRow.append(main, btnCluster);
         resultsList.appendChild(customRow);
       }
 
@@ -3432,7 +3742,29 @@ export function createUI({
           createIfMissing: !isEditing && createMissingCheckbox.checked,
         });
       };
-      form.appendChild(timerBtn);
+
+      const asyncEntryBtn = button('⏳ Lancer en parallèle (asynchrone)', 'secondary', 'entry-start-async');
+      asyncEntryBtn.type = 'button';
+      asyncEntryBtn.onclick = () => {
+        const actName = activity.input.value.trim();
+        const catId = category.select.value;
+        if (!actName) {
+          errorManager.handleError(new Error('Veuillez saisir un nom d’activité.'), 'entry');
+          return;
+        }
+        const typedAlways = alwaysContentField.textarea.value.trim();
+        const typedStart = startContentField.textarea.value.trim();
+        const typedEnd = endContentField.textarea.value.trim();
+        handleStartAsyncTimer(actName, catId || state.categories[0]?.id, {
+          ...(typedAlways ? { content: typedAlways } : {}),
+          ...(typedStart ? { startContent: typedStart } : {}),
+          ...(typedEnd ? { endContent: typedEnd } : {}),
+          rememberContent: rememberCheckbox.checked,
+          createIfMissing: !isEditing && createMissingCheckbox.checked,
+        });
+      };
+
+      form.append(timerBtn, asyncEntryBtn);
     } else {
       const saveBtn = button(old ? 'Enregistrer les modifications' : 'Enregistrer la session', 'primary', 'entry-save');
       saveBtn.type = 'submit';
@@ -3700,6 +4032,13 @@ export function createUI({
         headerRow.appendChild(node('strong', null, a.label || a.activity || ''));
         headerRow.appendChild(createCategoryBadge(a.categoryId, state.categories, { showPath: true, size: 'small' }));
         infoWrap.appendChild(headerRow);
+        if (a.isAsync || a.defaultTargetMins) {
+          const asyncHints = [
+            a.isAsync ? 'Asynchrone par défaut' : null,
+            a.defaultTargetMins ? `Cible ${a.defaultTargetMins} min` : null,
+          ].filter(Boolean);
+          infoWrap.appendChild(node('div', 'entry-meta', asyncHints.join(' · ')));
+        }
         if (a.content || a.startContent || a.endContent) {
           const contentSummaryParts = [
             a.content ? `Contenu : ${a.content}` : null,
@@ -3716,6 +4055,17 @@ export function createUI({
           trackEvent('saved_activity_started');
           startTimer(a.label || a.activity, a.categoryId, today(), nowTime(), {
             activityId: a.id,
+            content: a.content || '',
+            startContent: a.startContent || '',
+            endContent: a.endContent || '',
+          });
+        };
+        const goAsync = button('⏳ Parallèle', 'small secondary', 'activity-start-async');
+        goAsync.title = 'Lancer en parallèle sans arrêter le chrono principal';
+        goAsync.onclick = () => {
+          handleStartAsyncTimer(a.label || a.activity, a.categoryId, {
+            activityId: a.id,
+            targetMins: a.defaultTargetMins ?? null,
             content: a.content || '',
             startContent: a.startContent || '',
             endContent: a.endContent || '',
@@ -3751,7 +4101,7 @@ export function createUI({
           );
           rerender();
         };
-        rowActions.append(go, editBtn, del);
+        rowActions.append(go, goAsync, editBtn, del);
         r.appendChild(rowActions);
         listHost.appendChild(r);
       }
@@ -3783,7 +4133,8 @@ export function createUI({
       info.appendChild(headerRow);
 
       const meta = node('div', 'entry-meta');
-      meta.appendChild(document.createTextNode(`${e.date} · ${e.start}–${e.end} · ${formatDuration(e.mins)}`));
+      const asyncSuffix = e.isAsync ? ' · En parallèle' : '';
+      meta.appendChild(document.createTextNode(`${e.date} · ${e.start}–${e.end} · ${formatDuration(e.mins)}${asyncSuffix}`));
       if (hasEntryGeoLocations(e)) {
         const { startLocation, endLocation } = resolveEntryGeoLocations(e);
         const displayLoc = startLocation || endLocation;
@@ -5211,10 +5562,39 @@ export function createUI({
       'end-content',
       'Ex : Doua à dire à la fin, bilan, étape suivante…'
     );
+    const defaultTargetInput = input(
+      'Durée cible par défaut (min, optionnel)',
+      'number',
+      m.defaultTargetMins || '',
+      false,
+      'default-target-mins'
+    );
+    defaultTargetInput.input.min = '1';
+    defaultTargetInput.input.max = '720';
+    const isAsyncRow = document.createElement('label');
+    isAsyncRow.className = 'entry-remember-content-label';
+    const isAsyncCheckbox = document.createElement('input');
+    isAsyncCheckbox.type = 'checkbox';
+    isAsyncCheckbox.checked = Boolean(m.isAsync);
+    isAsyncCheckbox.dataset.behaviorField = 'activity-is-async';
+    isAsyncRow.append(
+      isAsyncCheckbox,
+      document.createTextNode('Activité habituellement en parallèle (asynchrone)')
+    );
+
     const save = button(isEditActivity ? 'Enregistrer les modifications' : 'Enregistrer', undefined, 'activity-save');
     save.type = 'submit';
 
-    form.append(a.wrap, c.wrap, alwaysContentField.wrap, startContentField.wrap, endContentField.wrap, save);
+    form.append(
+      a.wrap,
+      c.wrap,
+      alwaysContentField.wrap,
+      startContentField.wrap,
+      endContentField.wrap,
+      defaultTargetInput.wrap,
+      isAsyncRow,
+      save
+    );
     form.onsubmit = async e => {
       e.preventDefault();
       const labelVal = a.input.value.trim();
@@ -5227,6 +5607,8 @@ export function createUI({
       const alwaysContentVal = alwaysContentField.textarea.value.trim();
       const startContentVal = startContentField.textarea.value.trim();
       const endContentVal = endContentField.textarea.value.trim();
+      const targetMinsVal = normalizeTargetMins(defaultTargetInput.input.value);
+      const isAsyncVal = Boolean(isAsyncCheckbox.checked);
 
       if (isEditActivity) {
         recordUndoCheckpoint(`Modification « ${labelVal} »`);
@@ -5249,8 +5631,8 @@ export function createUI({
         );
         let updatedActivities = nextSlice.activities;
         let updatedActiveTimer = nextSlice.activeTimer;
-        // If edited activity was entry-only (not yet in saved activities) and has permanent/start/end content, save it
-        if (!m.activityId && (alwaysContentVal || startContentVal || endContentVal)) {
+        // If edited activity was entry-only (not yet in saved activities) and has permanent/start/end/async metadata, save it
+        if (!m.activityId && (alwaysContentVal || startContentVal || endContentVal || isAsyncVal || targetMinsVal)) {
           const upserted = upsertActivityContent(
             {
               activities: updatedActivities,
@@ -5268,6 +5650,18 @@ export function createUI({
           updatedActivities = upserted.activities;
           updatedActiveTimer = upserted.activeTimer;
         }
+        updatedActivities = updatedActivities.map((item) => {
+          const isMatch = (m.activityId && item.id === m.activityId)
+            || (String(item.label || '').trim().toLowerCase() === labelVal.toLowerCase()
+              && (item.categoryId ?? null) === (c.select.value || null));
+          if (!isMatch) return item;
+          const next = { ...item };
+          if (isAsyncVal) next.isAsync = true;
+          else delete next.isAsync;
+          if (targetMinsVal) next.defaultTargetMins = targetMinsVal;
+          else delete next.defaultTargetMins;
+          return next;
+        });
         state.activities = updatedActivities;
         state.entries = nextSlice.entries;
         state.activeTimer = updatedActiveTimer;
@@ -5289,6 +5683,8 @@ export function createUI({
           categoryId: c.select.value || null,
           useCount: 1,
           lastUsedAt: new Date().toISOString(),
+          ...(isAsyncVal ? { isAsync: true } : {}),
+          ...(targetMinsVal ? { defaultTargetMins: targetMinsVal } : {}),
           ...(alwaysContentVal ? { content: alwaysContentVal } : {}),
           ...(startContentVal ? { startContent: startContentVal } : {}),
           ...(endContentVal ? { endContent: endContentVal } : {}),
@@ -6407,6 +6803,7 @@ export function createUI({
       state.deletedItems = [];
       state.activeTemplateRun = null;
       state.activeTimer = null;
+      state.activeAsyncTimers = [];
       state.timerUpdatedAt = Date.now();
       state.quickTilesConfig = createDefaultQuickTilesConfig();
       state.geoTrackingEnabled = false;
@@ -6572,6 +6969,244 @@ export function createUI({
     } else {
       errorManager.notifySuccess(`Session « ${t.activity} » enregistrée (${formatDuration(recorded?.durationMinutes || 0)})`);
     }
+    rerender();
+  }
+
+  function captureAsyncTimerLocationAsync(timerId) {
+    if (!timerId || !state.geoTrackingEnabled) {
+      return Promise.resolve({ ok: false, location: null, reason: 'disabled' });
+    }
+    const snapshotTimer = (state.activeAsyncTimers || []).find(t => t.id === timerId);
+    const targetStartTs = snapshotTimer?.startTs || null;
+    return captureCurrentLocation({ geolocation }).then(async (res) => {
+      if (destroyed) return res;
+      syncGeoPermissionFromResult(res);
+      if (!res.ok || !res.location) return res;
+      const idx = (state.activeAsyncTimers || []).findIndex(t => t.id === timerId);
+      if (idx >= 0) {
+        state.activeAsyncTimers = state.activeAsyncTimers.map(t =>
+          t.id === timerId ? { ...t, startLocation: res.location } : t
+        );
+        await persist().catch(() => {});
+        if (state.tab === 'entry' && !state.modal && document.activeElement?.tagName !== 'INPUT') {
+          rerender();
+        }
+        return res;
+      }
+      if (targetStartTs) {
+        const completedEntryId = pendingStartEntryByStartTs.get(targetStartTs);
+        pendingStartEntryByStartTs.delete(targetStartTs);
+        if (completedEntryId) {
+          state.entries = state.entries.map(item =>
+            item.id === completedEntryId ? { ...item, startLocation: res.location } : item
+          );
+          await persist().catch(() => {});
+        }
+      }
+      return res;
+    });
+  }
+
+  async function handleStartAsyncTimer(activity, categoryId, options = {}) {
+    const cleanActivity = String(activity || '').trim();
+    const resolvedCatId = categoryId || state.categories[0]?.id;
+    if (!cleanActivity || !resolvedCatId) {
+      errorManager.handleError(new Error('Activité ou catégorie manquante.'), 'timer');
+      return;
+    }
+
+    recordUndoCheckpoint(`Lancement en parallèle « ${cleanActivity} »`);
+    const typedContent = typeof options?.content === 'string' ? options.content.trim() : '';
+    const typedStart = typeof options?.startContent === 'string' ? options.startContent.trim() : '';
+    const typedEnd = typeof options?.endContent === 'string' ? options.endContent.trim() : '';
+
+    let createdActivity = false;
+    if (options?.createIfMissing) {
+      const ensured = ensureSavedActivity(
+        { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
+        {
+          activityId: options?.activityId || null,
+          label: cleanActivity,
+          categoryId: resolvedCatId,
+          content: typedContent,
+          startContent: typedStart,
+          endContent: typedEnd,
+          rememberContent: Boolean(options?.rememberContent),
+        }
+      );
+      state.activities = ensured.activities;
+      createdActivity = ensured.created;
+    } else if (options?.rememberContent && (typedContent || typedStart || typedEnd)) {
+      const upserted = upsertActivityContent(
+        { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
+        {
+          activityId: options?.activityId || null,
+          label: cleanActivity,
+          categoryId: resolvedCatId,
+          ...(typedContent ? { content: typedContent } : {}),
+          ...(typedStart ? { startContent: typedStart } : {}),
+          ...(typedEnd ? { endContent: typedEnd } : {}),
+        }
+      );
+      state.activities = upserted.activities;
+    }
+
+    const savedMatch = findSavedActivityMatch(state.activities, {
+      activityId: options?.activityId || null,
+      label: cleanActivity,
+      categoryId: resolvedCatId,
+    });
+    const resolved = resolveActivityContentPair(cleanActivity, resolvedCatId, options?.activityId || null);
+    const targetMins = options?.targetMins !== undefined && options?.targetMins !== null
+      ? normalizeTargetMins(options.targetMins)
+      : normalizeTargetMins(savedMatch?.defaultTargetMins);
+
+    const nowTs = Date.now();
+    const started = startAsyncTimerInList(state.activeAsyncTimers || [], {
+      activity: cleanActivity,
+      categoryId: resolvedCatId,
+      startTs: nowTs,
+      startTime: options?.startTime || nowTime(),
+      date: options?.date || today(),
+      targetMins,
+      content: typedContent || resolved.content,
+      startContent: typedStart || resolved.startContent,
+      endContent: typedEnd || resolved.endContent,
+    });
+    state.activeAsyncTimers = started.timers;
+    if (state.geoTrackingEnabled) {
+      captureAsyncTimerLocationAsync(started.timer.id);
+    }
+    await persist();
+    if (createdActivity) {
+      syncQuickTilesToNative();
+      trackEvent('saved_activity_created');
+    }
+    trackEvent('timer_started', timerStartedPayload({
+      hasCategory: Boolean(resolvedCatId),
+      hasLocation: Boolean(state.geoTrackingEnabled),
+    }));
+    errorManager.notifySuccess(
+      `En parallèle : « ${cleanActivity} »${targetMins ? ` (cible ${targetMins} min)` : ''} — vous pouvez continuer une autre activité.`
+    );
+    rerender();
+  }
+
+  async function handleStopAsyncTimer(timerId) {
+    const target = normalizeAsyncTimersList(state.activeAsyncTimers).find(t => t.id === timerId);
+    if (!target) return;
+    recordUndoCheckpoint(`Fin en parallèle « ${target.activity} »`);
+    const nowTs = Date.now();
+    const res = stopAsyncTimerInList(state.activeAsyncTimers || [], timerId, {
+      nowTs,
+      endTime: nowTime(),
+      endDate: today(),
+    });
+    if (!res.entry) return;
+    if (!res.entry.startLocation && target.startTs) {
+      pendingStartEntryByStartTs.set(target.startTs, res.entry.id);
+    }
+    state.activeAsyncTimers = res.timers;
+    state.entries = [res.entry, ...state.entries];
+
+    const actIdx = state.activities.findIndex(a => (a.label || a.activity) === target.activity);
+    if (actIdx >= 0) {
+      const usedAtIso = new Date(nowTs).toISOString();
+      state.activities = state.activities.map((a, idx) =>
+        idx === actIdx
+          ? {
+              ...a,
+              useCount: (a.useCount || 0) + 1,
+              lastUsedAt: usedAtIso,
+            }
+          : a
+      );
+    }
+
+    if (res.entry.endContent && !state.activeTimer) {
+      lastCompletedEndPrompt = {
+        activity: target.activity,
+        endContent: res.entry.endContent,
+        durationMinutes: res.durationMinutes,
+      };
+    }
+
+    if (state.geoTrackingEnabled) {
+      captureEntryEndLocationAsync(res.entry.id);
+    }
+    await persist();
+    trackEvent('time_entry_created', timeEntryCreatedPayload({
+      durationMinutes: res.durationMinutes,
+      hasCategory: Boolean(res.entry.categoryId),
+      viaTimer: true,
+      hasLocation: Boolean(res.entry.startLocation || res.entry.endLocation),
+    }));
+    errorManager.notifySuccess(
+      `Activité parallèle « ${target.activity} » enregistrée (${formatDuration(res.durationMinutes)}).`
+    );
+    rerender();
+  }
+
+  async function handleDiscardAsyncTimer(timerId) {
+    const res = discardAsyncTimerInList(state.activeAsyncTimers || [], timerId);
+    if (!res.discardedTimer) return;
+    recordUndoCheckpoint(`Annulation en parallèle « ${res.discardedTimer.activity} »`);
+    state.activeAsyncTimers = res.timers;
+    await persist();
+    errorManager.notifyInfo(`Activité en parallèle « ${res.discardedTimer.activity} » annulée.`);
+    rerender();
+  }
+
+  async function handleDemoteActiveTimerToAsync(targetMins = null) {
+    if (!state.activeTimer) return;
+    const prevName = state.activeTimer.activity;
+    recordUndoCheckpoint(`Passage en parallèle « ${prevName} »`);
+    const savedMatch = findSavedActivityMatch(state.activities, {
+      label: state.activeTimer.activity,
+      categoryId: state.activeTimer.categoryId ?? state.activeTimer.cat ?? null,
+    });
+    const resolvedTarget = targetMins ?? savedMatch?.defaultTargetMins ?? null;
+    const res = demoteActiveTimerToAsync(state.activeTimer, state.activeAsyncTimers || [], {
+      targetMins: resolvedTarget,
+    });
+    state.activeTimer = null;
+    state.activeAsyncTimers = res.activeAsyncTimers;
+    state.timerUpdatedAt = Date.now();
+    if (state.activeTemplateRun?.stepState === 'running') {
+      state.activeTemplateRun = { ...state.activeTemplateRun, stepState: 'ready' };
+    }
+    await persist();
+    pushActiveTimerToNative(null, state.timerUpdatedAt).catch(() => {});
+    errorManager.notifyInfo(
+      `« ${prevName} » déplacée en parallèle — vous pouvez lancer une autre activité.`
+    );
+    rerender();
+  }
+
+  async function handlePromoteAsyncTimerToActive(timerId) {
+    recordUndoCheckpoint('Passage au chronomètre principal');
+    const res = promoteAsyncTimerToActive(state.activeTimer, state.activeAsyncTimers || [], timerId);
+    if (!res.promotedTimer) return;
+    state.activeTimer = res.activeTimer;
+    state.activeAsyncTimers = res.activeAsyncTimers;
+    state.timerUpdatedAt = Date.now();
+    lastCompletedEndPrompt = null;
+    await persist();
+    pushActiveTimerToNative(state.activeTimer, state.timerUpdatedAt).catch(() => {});
+    errorManager.notifyInfo(
+      res.demotedTimer
+        ? `« ${res.promotedTimer.activity} » passée au chrono principal et « ${res.demotedTimer.activity} » en parallèle.`
+        : `« ${res.promotedTimer.activity} » passée au chrono principal.`
+    );
+    rerender();
+  }
+
+  async function handleUpdateAsyncTimerTarget(timerId, targetMins) {
+    recordUndoCheckpoint('Durée cible parallèle');
+    const res = updateAsyncTimerTargetInList(state.activeAsyncTimers || [], timerId, targetMins);
+    if (!res.updatedTimer) return;
+    state.activeAsyncTimers = res.timers;
+    await persist();
     rerender();
   }
 

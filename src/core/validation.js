@@ -24,12 +24,22 @@ export function isTimeEntry(value) {
     && isFiniteNumber(value.mins)
     && value.mins >= 0
     && (value.viaTimer === undefined || typeof value.viaTimer === 'boolean')
+    && (value.isAsync === undefined || typeof value.isAsync === 'boolean')
     && (value.startLocation === undefined || value.startLocation === null || isValidCoordinates(value.startLocation))
     && (value.endLocation === undefined || value.endLocation === null || isValidCoordinates(value.endLocation))
     && (value.location === undefined || value.location === null || isValidCoordinates(value.location))
   );
 }
-export function isSavedActivity(value) { return Boolean(value && isString(value.id) && isString(value.label) && (value.categoryId === null || isString(value.categoryId))); }
+export function isSavedActivity(value) {
+  return Boolean(
+    value
+    && isString(value.id)
+    && isString(value.label)
+    && (value.categoryId === null || isString(value.categoryId))
+    && (value.isAsync === undefined || typeof value.isAsync === 'boolean')
+    && (value.defaultTargetMins === undefined || value.defaultTargetMins === null || (isFiniteNumber(value.defaultTargetMins) && value.defaultTargetMins > 0))
+  );
+}
 export function isCategory(value) { return Boolean(value && isString(value.id) && isString(value.label) && (value.color === null || isString(value.color)) && (value.parentId === null || value.parentId === undefined || isString(value.parentId))); }
 export function isActivityTemplate(value) {
   return Boolean(

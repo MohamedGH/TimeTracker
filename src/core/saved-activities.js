@@ -11,6 +11,11 @@ export function normalizeSavedActivity(activity, categories = []) {
   const content = normalizeContentText(activity.content);
   const startContent = normalizeContentText(activity.startContent);
   const endContent = normalizeContentText(activity.endContent);
+  const rawTarget = activity.defaultTargetMins;
+  const parsedTarget = rawTarget !== null && rawTarget !== undefined && rawTarget !== ''
+    ? Math.round(Number(rawTarget))
+    : NaN;
+  const defaultTargetMins = Number.isFinite(parsedTarget) && parsedTarget > 0 ? parsedTarget : null;
   return {
     id: String(activity.id ?? crypto.randomUUID()),
     label: String(activity.label ?? activity.activity ?? '').trim(),
@@ -18,6 +23,8 @@ export function normalizeSavedActivity(activity, categories = []) {
     ...(content ? { content } : {}),
     ...(startContent ? { startContent } : {}),
     ...(endContent ? { endContent } : {}),
+    ...(activity.isAsync ? { isAsync: true } : {}),
+    ...(defaultTargetMins ? { defaultTargetMins } : {}),
   };
 }
 
