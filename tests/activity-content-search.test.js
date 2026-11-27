@@ -4,7 +4,7 @@ import { createTimeEntry, isTimeEntry } from '../src/core/time-entry.js';
 import { createActiveTimer, timerToEntry } from '../src/core/timer.js';
 import { appReducer, ACTION_TYPES } from '../src/core/state-manager.js';
 import { DEFAULT_CATEGORIES } from '../src/core/model.js';
-import { updateActivityAndEntries, upsertActivityContent } from '../src/state/activity-actions.js';
+import { updateActivityAndEntries, upsertActivityContent, ensureSavedActivity } from '../src/state/activity-actions.js';
 import { searchLaunchableActivities } from '../src/core/shortcuts-by-category.js';
 import { clearAllData } from '../src/core/storage.js';
 import { createAppState } from '../src/app-state.js';
@@ -415,6 +415,116 @@ describe('UI activity content, permanent content & launch-from-search workflow',
       expect(app.state.activeTimer).toBeNull();
       expect(root.querySelector('.timer-active')).toBeNull();
     });
+
+    ui.destroy();
+    root.remove();
+  });
+
+  it('ensureSavedActivity creates missing activity without requiring content and avoids duplicates', () => {
+    const first = ensureSavedActivity(
+      { activities: [], entries: [], activeTimer: null },
+      { label: 'Yoga', categoryId: 'sport', durationMins: 40 }
+    );
+    expect(first.created).toBe(true);
+    expect(first.activities).toHaveLength(1);
+    expect(first.activities[0].label).toBe('Yoga');
+    expect(first.activities[0].categoryId).toBe('sport');
+    expect(first.activities[0].avgDurationMins).toBe(40);
+
+    const second = ensureSavedActivity(
+      { activities: first.activities, entries: [], activeTimer: null },
+      { label: 'yoga', categoryId: 'sport', content: 'Tapis + respiration' }
+    );
+    expect(second.created).toBe(false);
+    expect(second.activities).toHaveLength(1);
+    expect(second.activities[0].content).toBe('Tapis + respiration');
+  });
+
+  it('auto-creates missing activities when starting chrono, submitting manual session, or clicking + Créer in Nouvelle session', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    const app = await createAppState();
+    const ui = createUI({
+      root,
+      ...app,
+      authClient: { isConfigured: () => false, signOut: async () => {} },
+    });
+
+    // 1. Typing a non-existing activity shows the inline new-activity creation row; starting timer auto-creates it
+    const entryForm = root.querySelector('[data-behavior-form="entry-form"]');
+    const actInput = entryForm.querySelector('[data-behavior-field="activity"]');
+    actInput.value = 'Méditation matin';
+    actInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const newRow = entryForm.querySelector('[data-entry-new-activity="true"]');
+    expect(newRow.hidden).toBe(false);
+    expect(entryForm.querySelector('[data-behavior-field="create-missing-activity"]').checked).toBe(true);
+
+    root.querySelector('[data-behavior-target="timer-start"]').click();
+    await vi.waitFor(() => {
+      expect(app.state.activeTimer?.activity).toBe('Méditation matin');
+      expect(app.state.activities.some(a => a.label === 'Méditation matin')).toBe(true);
+      expect(root.querySelector('[data-behavior-target="timer-stop"]')).toBeTruthy();
+    });
+
+    root.querySelector('[data-behavior-target="timer-stop"]').click();
+    await vi.waitFor(() => {
+      expect(app.state.activeTimer).toBeNull();
+      expect(root.querySelector('.timer-active')).toBeNull();
+    });
+
+    // 2. Typing the now-existing activity hides the new-activity notice
+    const formAfterStop = root.querySelector('[data-behavior-form="entry-form"]');
+    const inputAfterStop = formAfterStop.querySelector('[data-behavior-field="activity"]');
+    inputAfterStop.value = 'Méditation matin';
+    inputAfterStop.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(formAfterStop.querySelector('[data-entry-new-activity="true"]').hidden).toBe(true);
+
+    // 3. Switch to manual mode: clicking + Créer creates immediately without clearing form inputs
+    root.querySelector('[data-behavior-target="entry-mode-manual"]').click();
+    const manualForm = root.querySelector('[data-behavior-form="entry-form"]');
+    const manualAct = manualForm.querySelector('[data-behavior-field="activity"]');
+    manualAct.value = 'Gainage';
+    manualAct.dispatchEvent(new Event('input', { bubbles: true }));
+    manualForm.querySelector('[data-behavior-field="start"]').value = '08:00';
+    manualForm.querySelector('[data-behavior-field="end"]').value = '08:30';
+
+    expect(manualForm.querySelector('[data-entry-new-activity="true"]').hidden).toBe(false);
+    manualForm.querySelector('[data-behavior-target="entry-create-activity"]').click();
+
+    await vi.waitFor(() => {
+      expect(app.state.activities.some(a => a.label === 'Gainage')).toBe(true);
+      expect(manualForm.querySelector('[data-entry-new-activity="true"]').hidden).toBe(true);
+    });
+    expect(manualForm.querySelector('[data-behavior-field="start"]').value).toBe('08:00');
+
+    // 4. Submitting a manual session for a new activity auto-creates it (and respects unchecking opt-out)
+    manualAct.value = 'Natation';
+    manualAct.dispatchEvent(new Event('input', { bubbles: true }));
+    manualForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => {
+      expect(app.state.entries.some(e => e.activity === 'Natation')).toBe(true);
+      expect(app.state.activities.some(a => a.label === 'Natation')).toBe(true);
+      expect(root.textContent).toContain('Natation');
+    });
+
+    // 5. Unchecking create-missing-activity skips creating a saved activity for a one-off session
+    const nextManualForm = root.querySelector('[data-behavior-form="entry-form"]');
+    const nextAct = nextManualForm.querySelector('[data-behavior-field="activity"]');
+    nextAct.value = 'Course ponctuelle';
+    nextAct.dispatchEvent(new Event('input', { bubbles: true }));
+    nextManualForm.querySelector('[data-behavior-field="create-missing-activity"]').checked = false;
+    nextManualForm.querySelector('[data-behavior-field="start"]').value = '09:00';
+    nextManualForm.querySelector('[data-behavior-field="end"]').value = '09:30';
+    nextManualForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => {
+      expect(app.state.entries.some(e => e.activity === 'Course ponctuelle')).toBe(true);
+      expect(root.textContent).toContain('Course ponctuelle');
+    });
+    expect(app.state.activities.some(a => a.label === 'Course ponctuelle')).toBe(false);
 
     ui.destroy();
     root.remove();

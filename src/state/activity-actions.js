@@ -246,6 +246,100 @@ export function upsertActivityContent(
 }
 
 /**
+ * Ensures a saved activity exists when creating a session/timer (if missing),
+ * optionally persisting associated permanent/start/end content.
+ */
+export function ensureSavedActivity(
+  { activities = [], entries = [], activeTimer = null } = {},
+  {
+    activityId = null,
+    label = '',
+    categoryId = null,
+    content = undefined,
+    startContent = undefined,
+    endContent = undefined,
+    rememberContent = true,
+    durationMins = null,
+  } = {}
+) {
+  const safeActivities = Array.isArray(activities) ? activities : [];
+  const trimmedLabel = String(label || '').trim();
+  if (!trimmedLabel) {
+    return { activities: safeActivities, entries, activeTimer, created: false, activity: null };
+  }
+
+  const matched = findSavedActivityMatch(safeActivities, {
+    activityId,
+    label: trimmedLabel,
+    categoryId,
+  });
+
+  if (matched) {
+    const nextContent = cleanContent(content);
+    const nextStart = cleanContent(startContent);
+    const nextEnd = cleanContent(endContent);
+    if (rememberContent && (nextContent || nextStart || nextEnd)) {
+      const updated = updateActivityAndEntries(
+        { activities: safeActivities, entries, activeTimer },
+        {
+          activityId: matched.id,
+          oldLabel: activityLabel(matched),
+          oldCategoryId: matched.categoryId ?? matched.cat ?? null,
+          newLabel: activityLabel(matched) || trimmedLabel,
+          newCategoryId: matched.categoryId ?? matched.cat ?? categoryId ?? null,
+          ...(nextContent ? { content: nextContent } : {}),
+          ...(nextStart ? { startContent: nextStart } : {}),
+          ...(nextEnd ? { endContent: nextEnd } : {}),
+        }
+      );
+      const updatedAct = updated.activities.find(a => a.id === matched.id) || matched;
+      return { ...updated, created: false, activity: updatedAct };
+    }
+    return { activities: safeActivities, entries, activeTimer, created: false, activity: matched };
+  }
+
+  const nextContent = rememberContent ? cleanContent(content) : '';
+  const nextStart = rememberContent ? cleanContent(startContent) : '';
+  const nextEnd = rememberContent ? cleanContent(endContent) : '';
+
+  const newRecord = {
+    id: crypto.randomUUID(),
+    label: trimmedLabel,
+    categoryId: categoryId ?? null,
+    useCount: 1,
+    lastUsedAt: new Date().toISOString(),
+    avgDurationMins: Number.isFinite(durationMins) && durationMins > 0 ? Math.round(durationMins) : null,
+    ...(nextContent ? { content: nextContent } : {}),
+    ...(nextStart ? { startContent: nextStart } : {}),
+    ...(nextEnd ? { endContent: nextEnd } : {}),
+  };
+
+  let nextActiveTimer = activeTimer;
+  if (
+    rememberContent
+    && (nextContent || nextStart || nextEnd)
+    && activeTimer
+    && normalizeKey(activeTimer.activity) === normalizeKey(trimmedLabel)
+    && (activeTimer.categoryId ?? activeTimer.cat ?? null) === (categoryId ?? null)
+  ) {
+    nextActiveTimer = {
+      ...activeTimer,
+      ...(nextContent ? { content: nextContent } : {}),
+      ...(nextStart ? { startContent: nextStart } : {}),
+      ...(nextEnd ? { endContent: nextEnd } : {}),
+    };
+  }
+
+  return {
+    activities: [...safeActivities, newRecord],
+    entries,
+    activeTimer: nextActiveTimer,
+    created: true,
+    activity: newRecord,
+  };
+}
+
+/**
  * Moves an activity (and its matching entries / active timer) to another category.
  * Pure function: (stateSlice, movePayload) -> nextStateSlice
  */

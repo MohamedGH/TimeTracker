@@ -481,25 +481,30 @@ export function detectRecurringSequences(
  * Starts a template run from step 0.
  * Pure function.
  */
-export function startTemplateRun(template, { startedAt = new Date().toISOString() } = {}) {
+export function startTemplateRun(template, { startedAt = new Date().toISOString(), startIndex = 0 } = {}) {
   const normalized = normalizeActivityTemplate(template);
   if (!normalized || !normalized.steps.length) {
     throw new Error('Ce gabarit ne contient aucune étape valide.');
   }
 
+  const rawIndex = Number(startIndex);
+  const currentIndex = Number.isInteger(rawIndex) && rawIndex >= 0 && rawIndex < normalized.steps.length
+    ? rawIndex
+    : 0;
+
   const run = {
     templateId: normalized.id,
     templateName: normalized.name,
-    currentIndex: 0,
+    currentIndex,
     steps: normalized.steps.map(step => ({ ...step })),
     startedAt,
     stepState: 'running',
-    completedEntriesCount: 0,
+    completedEntriesCount: currentIndex,
   };
 
   return {
     run,
-    firstStep: run.steps[0],
+    firstStep: run.steps[currentIndex],
   };
 }
 

@@ -509,8 +509,8 @@ export function appReducer(state, action) {
     }
 
     case ACTION_TYPES.START_TEMPLATE_RUN: {
-      const { template, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
-      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(startTs).toISOString() });
+      const { template, startIndex = 0, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
+      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(startTs).toISOString(), startIndex });
       const savedMatch = findSavedActivityMatch(state.activities, {
         label: firstStep.activity,
         categoryId: firstStep.categoryId,

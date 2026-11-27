@@ -33,6 +33,8 @@ import {
 } from './components/categories/category-manager.js';
 import { renderMergeModal } from './components/merge/merge-modal.js';
 import { renderTemplateEditorModal, renderTemplateManualLogModal } from './components/templates/template-modal.js';
+import { renderTemplateStartPickerModal } from './components/templates/template-start-modal.js';
+import { renderGeoPickerModal } from './components/geo/geo-picker-modal.js';
 import {
   renderActivityMapCard,
   mountActivityMap,
@@ -97,6 +99,7 @@ import { moveCategory, mergeCategoriesState } from './state/category-actions.js'
 import {
   updateActivityAndEntries,
   upsertActivityContent,
+  ensureSavedActivity,
   moveActivity,
   mergeActivitiesState,
   collectMergeableActivities,
@@ -1047,11 +1050,78 @@ export function createUI({
     state.modal = {
       type: 'template-manual-log',
       templateId,
-      date: today(),
-      startTime: nowTime(),
     };
     state.error = null;
     rerender();
+  }
+
+  function openTemplateStartModal(templateId) {
+    state.modal = {
+      type: 'template-start-picker',
+      templateId,
+      startIndex: 0,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  async function handleStartTemplateRunWithOptions(templateId, startIndex = 0) {
+    const template = (state.activityTemplates || []).find(t => t.id === templateId);
+    if (!template) return;
+
+    try {
+      recordUndoCheckpoint(`Lancement gabarit « ${template.name} »`);
+      const nowTs = Date.now();
+      const clockNow = nowTime();
+      const currentDay = today();
+
+      let closedEntryId = null;
+      if (state.activeTimer) {
+        const closed = recordRunningTimerIntoEntries(nowTs, clockNow);
+        closedEntryId = closed?.entry?.id || null;
+      }
+
+      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(nowTs).toISOString(), startIndex });
+      const contents = resolveActivityContentPair(firstStep.activity, firstStep.categoryId);
+      state.activeTimer = createActiveTimer({
+        activity: firstStep.activity,
+        categoryId: firstStep.categoryId,
+        date: currentDay,
+        startTime: clockNow,
+        startTs: nowTs,
+        content: contents.content,
+        startContent: contents.startContent,
+        endContent: contents.endContent,
+      });
+      lastCompletedEndPrompt = null;
+      state.timerUpdatedAt = nowTs;
+      state.activeTemplateRun = run;
+      state.activityTemplates = recordTemplateUse(state.activityTemplates || [], template.id, nowTs);
+      state.error = null;
+
+      if (state.geoTrackingEnabled) {
+        if (closedEntryId) captureEntryEndLocationAsync(closedEntryId);
+        captureTimerLocationAsync(nowTs);
+      }
+      await persist();
+      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
+      trackEvent(
+        ANALYTICS_EVENTS.TEMPLATE_STARTED,
+        templateEventPayload({ stepCount: run.steps.length })
+      );
+      trackEvent('timer_started', timerStartedPayload({
+        hasCategory: Boolean(firstStep.categoryId),
+        hasLocation: Boolean(state.geoTrackingEnabled),
+      }));
+      errorManager.notifySuccess(
+        `Gabarit « ${template.name} » lancé — Étape ${run.currentIndex + 1}/${run.steps.length} : ${firstStep.activity}`
+      );
+      routeManager.navigate('entry');
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'template');
+      rerender();
+    }
   }
 
   async function handleSaveTemplate({ id = null, name, steps, fromHistory = false, isEdit = false }) {
@@ -2600,6 +2670,10 @@ export function createUI({
       const launchBtn = button('▶ Lancer', 'small primary', 'template-start');
       launchBtn.onclick = () => handleStartTemplateRun(tpl.id);
 
+      const startPickerBtn = button('Étape…', 'small secondary', 'template-start-picker-open');
+      startPickerBtn.title = 'Commencer à une étape prédéfinie';
+      startPickerBtn.onclick = () => openTemplateStartModal(tpl.id);
+
       const logBtn = button('📝 Saisir', 'small secondary', 'template-log-manual');
       logBtn.title = 'Enregistrer toutes les étapes sans chrono';
       logBtn.onclick = () => openTemplateManualLogModal(tpl.id);
@@ -2611,7 +2685,7 @@ export function createUI({
       delBtn.setAttribute('aria-label', `Supprimer le gabarit ${tpl.name}`);
       delBtn.onclick = () => handleDeleteTemplate(tpl.id);
 
-      actions.append(launchBtn, logBtn, editBtn, delBtn);
+      actions.append(launchBtn, startPickerBtn, logBtn, editBtn, delBtn);
       row.append(info, actions);
       list.appendChild(row);
     }
@@ -2781,6 +2855,24 @@ export function createUI({
     associatedHint.dataset.entryAssociatedContent = 'true';
     associatedHint.hidden = true;
 
+    const newActivityNotice = node('div', 'entry-new-activity-row');
+    newActivityNotice.dataset.entryNewActivity = 'true';
+    newActivityNotice.hidden = true;
+
+    const createMissingLabel = document.createElement('label');
+    createMissingLabel.className = 'entry-create-activity-label';
+    const createMissingCheckbox = document.createElement('input');
+    createMissingCheckbox.type = 'checkbox';
+    createMissingCheckbox.checked = true;
+    createMissingCheckbox.dataset.behaviorField = 'create-missing-activity';
+    const createMissingText = document.createElement('span');
+    createMissingText.className = 'entry-create-activity-text';
+    createMissingLabel.append(createMissingCheckbox, createMissingText);
+
+    const createNowBtn = button('+ Créer', 'small secondary entry-create-activity-btn', 'entry-create-activity');
+    createNowBtn.type = 'button';
+    newActivityNotice.append(createMissingLabel, createNowBtn);
+
     const refreshAssociatedHint = () => {
       const actName = activity.input.value.trim();
       const catId = category.select.value || null;
@@ -2804,6 +2896,27 @@ export function createUI({
       associatedHint.textContent = `Contenu déjà associé à cette activité — ${hints.join(' · ')}`;
     };
 
+    const refreshNewActivityNotice = () => {
+      const actName = activity.input.value.trim();
+      const catId = category.select.value || null;
+      if (isEditing || !actName) {
+        newActivityNotice.hidden = true;
+        return;
+      }
+      const existingSaved = findSavedActivityMatch(state.activities, { label: actName, categoryId: catId });
+      if (existingSaved) {
+        newActivityNotice.hidden = true;
+        return;
+      }
+      createMissingText.textContent = `Nouvelle activité « ${actName} » — créer automatiquement`;
+      newActivityNotice.hidden = false;
+    };
+
+    const refreshActivityHelpers = () => {
+      refreshAssociatedHint();
+      refreshNewActivityNotice();
+    };
+
     // Auto-memorization: when typing an activity, automatically discover and select the usual category!
     activity.input.addEventListener('input', () => {
       const val = activity.input.value.trim();
@@ -2814,9 +2927,9 @@ export function createUI({
           category.select.dispatchEvent(new Event('change', { bubbles: true }));
         }
       }
-      refreshAssociatedHint();
+      refreshActivityHelpers();
     });
-    category.select.addEventListener('change', refreshAssociatedHint);
+    category.select.addEventListener('change', refreshActivityHelpers);
 
     attachActivitySuggestions(activity, category);
 
@@ -2860,8 +2973,10 @@ export function createUI({
           loc ? `📍 ${labelPrefix} : ${formatCoordinates(loc, 4)}` : `📍 ${labelPrefix} : aucune`
         )
       );
+
+      const btnGroup = node('div', 'manual-geo-btn-group');
       const captureBtn = button(
-        loc ? 'Actualiser' : 'Ajouter GPS',
+        loc ? 'Actualiser' : 'GPS',
         'small secondary',
         captureTarget
       );
@@ -2875,15 +2990,37 @@ export function createUI({
           notifyGeoUnavailable(res.reason, labelPrefix.toLowerCase());
         }
       };
-      geoRow.appendChild(captureBtn);
+
+      const mapPickBtn = button('🗺️ Carte', 'small secondary', `${captureTarget}-map`);
+      mapPickBtn.title = 'Choisir sur la carte manuellement';
+      mapPickBtn.onclick = () => {
+        state.modal = {
+          type: 'geo-picker',
+          labelPrefix,
+          location: loc,
+          onConfirm: (chosenLoc) => {
+            onCaptured(chosenLoc);
+            state.modal = null;
+            errorManager.notifySuccess(`${labelPrefix} mise à jour depuis la carte.`);
+            rerender();
+          },
+        };
+        rerender();
+      };
+
+      btnGroup.append(captureBtn, mapPickBtn);
+
       if (loc) {
-        const clearBtn = button('Retirer', 'small danger', clearTarget);
+        const clearBtn = button('×', 'small danger', clearTarget);
+        clearBtn.title = 'Retirer la position';
         clearBtn.onclick = () => {
           onCleared();
           rerender();
         };
-        geoRow.appendChild(clearBtn);
+        btnGroup.appendChild(clearBtn);
       }
+
+      geoRow.append(btnGroup);
       return geoRow;
     };
 
@@ -2954,8 +3091,45 @@ export function createUI({
       rememberRow
     );
 
-    form.append(activity.wrap, category.wrap, associatedHint, contentDetails, manualFieldsWrap);
-    refreshAssociatedHint();
+    form.append(activity.wrap, category.wrap, newActivityNotice, associatedHint, contentDetails, manualFieldsWrap);
+    refreshActivityHelpers();
+
+    createNowBtn.onclick = async () => {
+      const actName = activity.input.value.trim();
+      if (!actName) {
+        errorManager.handleError(new Error('Veuillez saisir un nom d’activité.'), 'activity');
+        return;
+      }
+      const catId = category.select.value || state.categories[0]?.id || null;
+      const typedAlways = alwaysContentField.textarea.value.trim();
+      const typedStart = startContentField.textarea.value.trim();
+      const typedEnd = endContentField.textarea.value.trim();
+      recordUndoCheckpoint(`Création « ${actName} »`);
+      const ensured = ensureSavedActivity(
+        { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
+        {
+          label: actName,
+          categoryId: catId,
+          content: typedAlways,
+          startContent: typedStart,
+          endContent: typedEnd,
+          rememberContent: rememberCheckbox.checked,
+        }
+      );
+      state.activities = ensured.activities;
+      state.activeTimer = ensured.activeTimer;
+      await persist();
+      if (ensured.created) {
+        syncQuickTilesToNative();
+        trackEvent('saved_activity_created');
+      }
+      refreshActivityHelpers();
+      errorManager.notifySuccess(
+        ensured.created
+          ? `Activité « ${actName} » créée !`
+          : `Activité « ${actName} » déjà existante.`
+      );
+    };
 
     // Action buttons based on active mode
     if (!isEditing && entryFormMode === 'timer') {
@@ -2976,6 +3150,7 @@ export function createUI({
           ...(typedStart ? { startContent: typedStart } : {}),
           ...(typedEnd ? { endContent: typedEnd } : {}),
           rememberContent: rememberCheckbox.checked,
+          createIfMissing: !isEditing && createMissingCheckbox.checked,
         });
       };
       form.appendChild(timerBtn);
@@ -3029,7 +3204,24 @@ export function createUI({
       }
 
       recordUndoCheckpoint(old ? `Modification « ${value.activity} »` : `Ajout « ${value.activity} »`);
-      if (rememberCheckbox.checked && (typedAlways || typedStart || typedEnd)) {
+      let createdActivity = false;
+      if (!isEditing && createMissingCheckbox.checked) {
+        const ensured = ensureSavedActivity(
+          { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
+          {
+            label: value.activity,
+            categoryId: value.categoryId,
+            content: typedAlways,
+            startContent: typedStart,
+            endContent: typedEnd,
+            rememberContent: rememberCheckbox.checked,
+            durationMins: value.mins,
+          }
+        );
+        state.activities = ensured.activities;
+        state.activeTimer = ensured.activeTimer;
+        createdActivity = ensured.created;
+      } else if (rememberCheckbox.checked && (typedAlways || typedStart || typedEnd)) {
         const synced = upsertActivityContent(
           { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
           {
@@ -3049,6 +3241,10 @@ export function createUI({
       manualEndLocationOverride = undefined;
       state.error = null;
       await persist();
+      if (createdActivity) {
+        syncQuickTilesToNative();
+        trackEvent('saved_activity_created');
+      }
       trackEvent(
         old ? 'time_entry_updated' : 'time_entry_created',
         old
@@ -3065,7 +3261,13 @@ export function createUI({
             })
       );
       getBehaviorTracking()?.tracker.trackFormResult('entry-form', 'success', { object: 'time_entry' });
-      errorManager.notifySuccess(old ? 'Modifications enregistrées.' : 'Session enregistrée !');
+      errorManager.notifySuccess(
+        old
+          ? 'Modifications enregistrées.'
+          : (createdActivity
+              ? `Activité « ${value.activity} » créée et session enregistrée !`
+              : 'Session enregistrée !')
+      );
       rerender();
     };
 
@@ -4306,6 +4508,39 @@ export function createUI({
           rerender();
         },
         onSubmitManualLog: handleSubmitManualTemplateLog,
+      });
+    }
+
+    if (m.type === 'template-start-picker') {
+      return renderTemplateStartPickerModal({
+        state,
+        modal: m,
+        onClose: () => {
+          state.modal = null;
+          rerender();
+        },
+        onStartWithIndex: (templateId, startIndex) => {
+          state.modal = null;
+          handleStartTemplateRunWithOptions(templateId, startIndex);
+        },
+      });
+    }
+
+    if (m.type === 'geo-picker') {
+      return renderGeoPickerModal({
+        modal: m,
+        onClose: () => {
+          state.modal = null;
+          rerender();
+        },
+        onConfirmLocation: (loc) => {
+          if (typeof m.onConfirm === 'function') {
+            m.onConfirm(loc);
+          } else {
+            state.modal = null;
+            rerender();
+          }
+        },
       });
     }
 
@@ -5916,7 +6151,23 @@ export function createUI({
     const typedStart = typeof options?.startContent === 'string' ? options.startContent.trim() : '';
     const typedEnd = typeof options?.endContent === 'string' ? options.endContent.trim() : '';
 
-    if (options?.rememberContent && (typedContent || typedStart || typedEnd)) {
+    let createdActivity = false;
+    if (options?.createIfMissing) {
+      const ensured = ensureSavedActivity(
+        { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
+        {
+          activityId: options?.activityId || null,
+          label: activity,
+          categoryId,
+          content: typedContent,
+          startContent: typedStart,
+          endContent: typedEnd,
+          rememberContent: Boolean(options?.rememberContent),
+        }
+      );
+      state.activities = ensured.activities;
+      createdActivity = ensured.created;
+    } else if (options?.rememberContent && (typedContent || typedStart || typedEnd)) {
       const upserted = upsertActivityContent(
         { activities: state.activities, entries: state.entries, activeTimer: state.activeTimer },
         {
@@ -5953,12 +6204,20 @@ export function createUI({
       captureTimerLocationAsync(nowTs);
     }
     await persist();
+    if (createdActivity) {
+      syncQuickTilesToNative();
+      trackEvent('saved_activity_created');
+    }
     pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
     trackEvent('timer_started', timerStartedPayload({
       hasCategory: Boolean(categoryId),
       hasLocation: Boolean(state.geoTrackingEnabled),
     }));
-    errorManager.notifySuccess(`Chronomètre lancé pour « ${activity} »`);
+    errorManager.notifySuccess(
+      createdActivity
+        ? `Activité « ${activity} » créée et chronomètre lancé !`
+        : `Chronomètre lancé pour « ${activity} »`
+    );
     rerender();
   }
 
