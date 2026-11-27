@@ -35,6 +35,7 @@ import { renderMergeModal } from './components/merge/merge-modal.js';
 import { renderTemplateEditorModal, renderTemplateManualLogModal } from './components/templates/template-modal.js';
 import { renderTemplateStartPickerModal } from './components/templates/template-start-modal.js';
 import { renderGeoPickerModal } from './components/geo/geo-picker-modal.js';
+import { renderEntrySplitModal } from './components/entries/entry-split-modal.js';
 import {
   renderActivityMapCard,
   mountActivityMap,
@@ -106,6 +107,10 @@ import {
   findSavedActivityMatch,
 } from './state/activity-actions.js';
 import {
+  splitTimeEntryState,
+  resolveEntryTimeBounds,
+} from './state/entry-actions.js';
+import {
   createHistoryManager,
   applyUndoableSnapshot,
 } from './core/history-manager.js';
@@ -119,6 +124,10 @@ import {
   advanceTemplateRun,
   pauseTemplateRunAfterManualStop,
   resumeReadyTemplateRun,
+  skipReadyTemplateStep,
+  skipUpcomingTemplateStep,
+  reorderTemplateRunSteps,
+  swapCurrentTemplateStep,
   computeTemplateRunProgress,
   buildEntriesFromTemplate,
   reassignCategoryInTemplates,
@@ -1065,7 +1074,70 @@ export function createUI({
     rerender();
   }
 
-  async function handleStartTemplateRunWithOptions(templateId, startIndex = 0) {
+  function openEntrySplitModal(entryId) {
+    const target = (state.entries || []).find(e => e.id === entryId);
+    if (!target) return;
+    const bounds = resolveEntryTimeBounds(target);
+    if (!bounds.valid || bounds.totalMins < 2) {
+      errorManager.handleError(
+        new Error('Cette session est trop courte pour être coupée (minimum 2 minutes).'),
+        'entry'
+      );
+      rerender();
+      return;
+    }
+    state.modal = {
+      type: 'entry-split',
+      entryId,
+    };
+    state.error = null;
+    rerender();
+  }
+
+  async function handleSplitEntry(payload) {
+    try {
+      const target = (state.entries || []).find(e => e.id === payload?.entryId);
+      if (!target) {
+        throw new Error('Session introuvable.');
+      }
+      recordUndoCheckpoint(`Découpage « ${target.activity} »`);
+      const splitRes = splitTimeEntryState(
+        {
+          entries: state.entries,
+          activities: state.activities,
+          activeTimer: state.activeTimer,
+        },
+        payload
+      );
+      state.entries = splitRes.entries;
+      state.activities = splitRes.activities;
+      state.activeTimer = splitRes.activeTimer;
+      if (state.editingEntryId === payload?.entryId) {
+        state.editingEntryId = null;
+      }
+      state.modal = null;
+      state.error = null;
+      syncCollectionRefsToStateManager();
+      await persist();
+      if (splitRes.createdActivity) {
+        syncQuickTilesToNative();
+        trackEvent('saved_activity_created');
+      }
+      trackEvent('time_entry_split', {
+        part1_mins: splitRes.firstEntry.mins,
+        part2_mins: splitRes.secondEntry.mins,
+      });
+      errorManager.notifySuccess(
+        `Session coupée : « ${splitRes.firstEntry.activity} » (${formatDuration(splitRes.firstEntry.mins)}) et « ${splitRes.secondEntry.activity} » (${formatDuration(splitRes.secondEntry.mins)}).`
+      );
+      rerender();
+    } catch (err) {
+      errorManager.handleError(err, 'entry');
+      rerender();
+    }
+  }
+
+  async function handleStartTemplateRunWithOptions(templateId, startIndex = 0, customSteps = null) {
     const template = (state.activityTemplates || []).find(t => t.id === templateId);
     if (!template) return;
 
@@ -1081,7 +1153,11 @@ export function createUI({
         closedEntryId = closed?.entry?.id || null;
       }
 
-      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(nowTs).toISOString(), startIndex });
+      const { run, firstStep } = startTemplateRun(template, {
+        startedAt: new Date(nowTs).toISOString(),
+        startIndex,
+        steps: Array.isArray(customSteps) && customSteps.length ? customSteps : null,
+      });
       const contents = resolveActivityContentPair(firstStep.activity, firstStep.categoryId);
       state.activeTimer = createActiveTimer({
         activity: firstStep.activity,
@@ -1480,6 +1556,104 @@ export function createUI({
     state.activeTemplateRun = null;
     await persist();
     errorManager.notifyInfo('Séquence du gabarit terminée.');
+    rerender();
+  }
+
+  async function handleSkipReadyTemplateStep() {
+    if (!state.activeTemplateRun) return;
+    const templateName = state.activeTemplateRun.templateName;
+    recordUndoCheckpoint('Étape du gabarit passée');
+    const skipped = skipReadyTemplateStep(state.activeTemplateRun);
+    if (skipped.completed) {
+      state.activeTemplateRun = null;
+      await persist();
+      trackEvent(
+        ANALYTICS_EVENTS.TEMPLATE_COMPLETED,
+        templateEventPayload({ stepCount: skipped.totalCompleted })
+      );
+      errorManager.notifySuccess(
+        `Gabarit « ${templateName} » terminé (${skipped.totalCompleted} étape${skipped.totalCompleted > 1 ? 's' : ''} enregistrée${skipped.totalCompleted > 1 ? 's' : ''}) !`
+      );
+      rerender();
+      return;
+    }
+    state.activeTemplateRun = skipped.nextRun;
+    await persist();
+    errorManager.notifyInfo(
+      `Étape « ${skipped.skippedStep?.activity || ''} » passée — Prêt pour : ${skipped.nextStep?.activity || ''}`
+    );
+    rerender();
+  }
+
+  async function handleSkipUpcomingTemplateStep(stepIndex) {
+    if (!state.activeTemplateRun) return;
+    recordUndoCheckpoint('Étape à venir passée');
+    const skipped = skipUpcomingTemplateStep(state.activeTemplateRun, stepIndex);
+    if (!skipped?.skippedStep) return;
+    if (skipped.completed) {
+      state.activeTemplateRun = null;
+      await persist();
+      errorManager.notifyInfo(`Étape « ${skipped.skippedStep.activity} » retirée — Gabarit terminé.`);
+      rerender();
+      return;
+    }
+    state.activeTemplateRun = skipped.nextRun;
+    await persist();
+    errorManager.notifyInfo(`Étape « ${skipped.skippedStep.activity} » passée pour cette exécution.`);
+    rerender();
+  }
+
+  async function handleReorderTemplateRunSteps(fromIndex, toIndex) {
+    if (!state.activeTemplateRun) return;
+    recordUndoCheckpoint('Réorganisation du gabarit');
+    const moved = reorderTemplateRunSteps(state.activeTemplateRun, fromIndex, toIndex);
+    if (!moved?.movedStep) return;
+    state.activeTemplateRun = moved.nextRun;
+    await persist();
+    rerender();
+  }
+
+  async function handleSwapCurrentTemplateStep(targetIndex) {
+    if (!state.activeTemplateRun) return;
+    const isRunning = state.activeTemplateRun.stepState === 'running';
+    recordUndoCheckpoint('Échange d’étape du gabarit');
+    const swapped = swapCurrentTemplateStep(state.activeTemplateRun, targetIndex);
+    if (!swapped?.swapped) return;
+
+    const nowTs = Date.now();
+    const clockNow = nowTime();
+    const currentDay = today();
+    state.activeTemplateRun = swapped.nextRun;
+
+    if (isRunning && swapped.nextCurrentStep) {
+      const contents = resolveActivityContentPair(
+        swapped.nextCurrentStep.activity,
+        swapped.nextCurrentStep.categoryId
+      );
+      state.activeTimer = createActiveTimer({
+        activity: swapped.nextCurrentStep.activity,
+        categoryId: swapped.nextCurrentStep.categoryId,
+        date: currentDay,
+        startTime: clockNow,
+        startTs: nowTs,
+        content: contents.content,
+        startContent: contents.startContent,
+        endContent: contents.endContent,
+      });
+      lastCompletedEndPrompt = null;
+      state.timerUpdatedAt = nowTs;
+      if (state.geoTrackingEnabled) {
+        captureTimerLocationAsync(nowTs);
+      }
+      await persist();
+      pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
+    } else {
+      await persist();
+    }
+
+    errorManager.notifyInfo(
+      `Ordre inversé : « ${swapped.nextCurrentStep?.activity || ''} » maintenant, « ${swapped.previousStep?.activity || ''} » ensuite.`
+    );
     rerender();
   }
 
@@ -2017,7 +2191,13 @@ export function createUI({
         e.stopPropagation();
         handleAdvanceTemplateRun({ recordCurrent: true });
       };
-      actions.append(clockNode, nextBtn);
+      const skipBtn = button('Passer', 'small secondary', 'floating-template-skip');
+      skipBtn.title = 'Passer l’étape en cours sans l’enregistrer';
+      skipBtn.onclick = (e) => {
+        e.stopPropagation();
+        handleAdvanceTemplateRun({ recordCurrent: false });
+      };
+      actions.append(clockNode, nextBtn, skipBtn);
     } else {
       actions.append(clockNode);
     }
@@ -2321,10 +2501,64 @@ export function createUI({
           'template-resume-step'
         );
         resumeBtn.onclick = handleResumeTemplateRun;
-        const quitBtn = button('Terminer le gabarit', 'secondary', 'template-cancel-run');
+        const secondaryRow = node('div', 'template-runner-secondary-actions');
+        const skipReadyBtn = button('Passer l’étape →', 'small secondary', 'template-skip-ready-step');
+        skipReadyBtn.onclick = handleSkipReadyTemplateStep;
+        const quitBtn = button('Terminer le gabarit', 'small secondary', 'template-cancel-run');
         quitBtn.onclick = handleStopTemplateRun;
-        btnRow.append(resumeBtn, quitBtn);
+        secondaryRow.append(skipReadyBtn, quitBtn);
+        btnRow.append(resumeBtn, secondaryRow);
         readyBox.appendChild(btnRow);
+
+        const remainingReady = state.activeTemplateRun.steps
+          .map((step, idx) => ({ step, idx }))
+          .filter(({ idx }) => idx >= runProgress.currentIndex);
+        if (remainingReady.length > 1) {
+          const queueBox = node('div', 'template-runner-queue');
+          queueBox.appendChild(node('div', 'template-runner-queue-title', 'Ordre restant (réorganiser ou passer)'));
+          remainingReady.forEach(({ step, idx }) => {
+            const row = node('div', `template-runner-queue-row ${idx === runProgress.currentIndex ? 'is-ready-current' : ''}`.trim());
+            row.dataset.templateQueueIndex = String(idx);
+            const label = node(
+              'span',
+              'template-runner-queue-label',
+              `${idx + 1}. ${step.activity}${idx === runProgress.currentIndex ? ' (prête)' : ''}`
+            );
+            const qActions = node('div', 'template-runner-queue-actions');
+            if (idx > runProgress.currentIndex) {
+              const swapBtn = button('⇄', 'small secondary', 'template-run-swap-current');
+              swapBtn.title = 'Mettre en prochaine étape';
+              swapBtn.setAttribute('aria-label', `Échanger ${step.activity} avec l’étape prête`);
+              swapBtn.onclick = () => handleSwapCurrentTemplateStep(idx);
+              qActions.appendChild(swapBtn);
+            }
+            const upBtn = button('↑', 'small secondary', 'template-run-move-up');
+            upBtn.title = 'Monter';
+            upBtn.setAttribute('aria-label', `Monter ${step.activity}`);
+            upBtn.disabled = idx <= runProgress.currentIndex;
+            upBtn.onclick = () => handleReorderTemplateRunSteps(idx, idx - 1);
+
+            const downBtn = button('↓', 'small secondary', 'template-run-move-down');
+            downBtn.title = 'Descendre';
+            downBtn.setAttribute('aria-label', `Descendre ${step.activity}`);
+            downBtn.disabled = idx >= state.activeTemplateRun.steps.length - 1;
+            downBtn.onclick = () => handleReorderTemplateRunSteps(idx, idx + 1);
+
+            const skipBtn = button('×', 'small secondary', 'template-run-skip-upcoming');
+            skipBtn.title = 'Passer cette étape';
+            skipBtn.setAttribute('aria-label', `Passer ${step.activity}`);
+            skipBtn.onclick = () => (
+              idx === runProgress.currentIndex
+                ? handleSkipReadyTemplateStep()
+                : handleSkipUpcomingTemplateStep(idx)
+            );
+            qActions.append(upBtn, downBtn, skipBtn);
+            row.append(label, qActions);
+            queueBox.appendChild(row);
+          });
+          readyBox.appendChild(queueBox);
+        }
+
         c.appendChild(readyBox);
         c.appendChild(renderGeoOptInControl());
         return c;
@@ -2370,6 +2604,52 @@ export function createUI({
         flowTrack.appendChild(node('span', `template-runner-step ${statusClass}`, `${prefix}${step.activity}`));
       });
       runnerBanner.appendChild(flowTrack);
+
+      const upcomingItems = state.activeTemplateRun.steps
+        .map((step, idx) => ({ step, idx }))
+        .filter(({ idx }) => idx > runProgress.currentIndex);
+      if (upcomingItems.length > 0) {
+        const queueBox = node('div', 'template-runner-queue');
+        queueBox.appendChild(node('div', 'template-runner-queue-title', 'Étapes suivantes (échanger, réorganiser ou passer)'));
+        upcomingItems.forEach(({ step, idx }) => {
+          const row = node('div', 'template-runner-queue-row');
+          row.dataset.templateQueueIndex = String(idx);
+          const label = node(
+            'span',
+            'template-runner-queue-label',
+            `${idx + 1}. ${step.activity}${step.targetMins ? ` (~${step.targetMins} min)` : ''}`
+          );
+          const qActions = node('div', 'template-runner-queue-actions');
+
+          const swapBtn = button('⇄', 'small secondary', 'template-run-swap-current');
+          swapBtn.title = 'Échanger avec l’étape en cours';
+          swapBtn.setAttribute('aria-label', `Échanger ${step.activity} avec l’étape en cours`);
+          swapBtn.onclick = () => handleSwapCurrentTemplateStep(idx);
+
+          const upBtn = button('↑', 'small secondary', 'template-run-move-up');
+          upBtn.title = 'Monter';
+          upBtn.setAttribute('aria-label', `Monter ${step.activity}`);
+          upBtn.disabled = idx <= runProgress.currentIndex + 1;
+          upBtn.onclick = () => handleReorderTemplateRunSteps(idx, idx - 1);
+
+          const downBtn = button('↓', 'small secondary', 'template-run-move-down');
+          downBtn.title = 'Descendre';
+          downBtn.setAttribute('aria-label', `Descendre ${step.activity}`);
+          downBtn.disabled = idx >= state.activeTemplateRun.steps.length - 1;
+          downBtn.onclick = () => handleReorderTemplateRunSteps(idx, idx + 1);
+
+          const skipUpcomingBtn = button('×', 'small secondary', 'template-run-skip-upcoming');
+          skipUpcomingBtn.title = 'Passer cette étape';
+          skipUpcomingBtn.setAttribute('aria-label', `Passer ${step.activity}`);
+          skipUpcomingBtn.onclick = () => handleSkipUpcomingTemplateStep(idx);
+
+          qActions.append(swapBtn, upBtn, downBtn, skipUpcomingBtn);
+          row.append(label, qActions);
+          queueBox.appendChild(row);
+        });
+        runnerBanner.appendChild(queueBox);
+      }
+
       box.appendChild(runnerBanner);
     }
 
@@ -2433,11 +2713,10 @@ export function createUI({
       runnerActions.appendChild(primaryNext);
 
       const secondaryRow = node('div', 'template-runner-secondary-actions');
-      if (!runProgress.isLastStep) {
-        const skipBtn = button('Passer l’étape', 'small secondary', 'template-skip-step');
-        skipBtn.onclick = () => handleAdvanceTemplateRun({ recordCurrent: false });
-        secondaryRow.appendChild(skipBtn);
-      }
+      const skipBtn = button('Passer l’étape', 'small secondary', 'template-skip-step');
+      skipBtn.onclick = () => handleAdvanceTemplateRun({ recordCurrent: false });
+      secondaryRow.appendChild(skipBtn);
+
       const stop = button('Arrêter le chrono', 'small danger', 'timer-stop');
       stop.onclick = stopTimer;
       secondaryRow.appendChild(stop);
@@ -3560,6 +3839,16 @@ export function createUI({
         info.appendChild(contentNote);
       }
 
+      const rowActions = node('div', 'entry-row-actions');
+      const bounds = resolveEntryTimeBounds(e);
+      const canSplit = bounds.valid && bounds.totalMins >= 2;
+      const splitBtn = button('Couper', 'small secondary', 'entry-split');
+      splitBtn.disabled = !canSplit;
+      splitBtn.title = canSplit
+        ? 'Couper cette session en deux activités'
+        : 'Session trop courte pour être coupée (minimum 2 minutes)';
+      splitBtn.onclick = () => openEntrySplitModal(e.id);
+
       const edit = button('Modifier', 'small', 'entry-edit');
       edit.onclick = () => {
         routeManager.navigate('entry');
@@ -3593,7 +3882,8 @@ export function createUI({
         rerender();
       };
 
-      r.append(info, edit, del);
+      rowActions.append(splitBtn, edit, del);
+      r.append(info, rowActions);
       c.appendChild(r);
     }
     return c;
@@ -4519,9 +4809,9 @@ export function createUI({
           state.modal = null;
           rerender();
         },
-        onStartWithIndex: (templateId, startIndex) => {
+        onStartWithIndex: (templateId, startIndex, steps) => {
           state.modal = null;
-          handleStartTemplateRunWithOptions(templateId, startIndex);
+          handleStartTemplateRunWithOptions(templateId, startIndex, steps);
         },
       });
     }
@@ -4541,6 +4831,18 @@ export function createUI({
             rerender();
           }
         },
+      });
+    }
+
+    if (m.type === 'entry-split') {
+      return renderEntrySplitModal({
+        state,
+        modal: m,
+        onClose: () => {
+          state.modal = null;
+          rerender();
+        },
+        onSplitEntry: handleSplitEntry,
       });
     }
 

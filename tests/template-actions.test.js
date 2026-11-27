@@ -16,6 +16,10 @@ import {
   advanceTemplateRun,
   pauseTemplateRunAfterManualStop,
   resumeReadyTemplateRun,
+  skipReadyTemplateStep,
+  skipUpcomingTemplateStep,
+  reorderTemplateRunSteps,
+  swapCurrentTemplateStep,
   computeTemplateRunProgress,
   buildEntriesFromTemplate,
   reassignCategoryInTemplates,
@@ -366,4 +370,125 @@ describe('Template integration with StateManager, ErrorManager, Export/Import & 
     expect(normalizeTemplatesList([null, { id: 'bad', name: '', steps: [] }])).toEqual([]);
     expect(normalizeActiveTemplateRun(null)).toBeNull();
   });
+
+  it('skips ready/upcoming steps, reorders remaining steps, swaps current step, and launches custom steps cleanly', () => {
+    const template = normalizeActivityTemplate({
+      id: 'tpl-flex',
+      name: 'Mosquée',
+      steps: [
+        { id: 's1', activity: 'Mosquée trajet', categoryId: 'transport', targetMins: 15 },
+        { id: 's2', activity: 'Mosquée prière', categoryId: 'spiritualite', targetMins: 20 },
+        { id: 's3', activity: 'Mosquée doha', categoryId: 'etude', targetMins: 15 },
+        { id: 's4', activity: 'Retour', categoryId: 'transport', targetMins: 10 },
+      ],
+    }, CATEGORIES);
+
+    // Custom steps override when starting
+    const customStarted = startTemplateRun(template, {
+      startIndex: 0,
+      steps: [template.steps[2], template.steps[0]],
+    });
+    expect(customStarted.run.steps.map(s => s.activity)).toEqual(['Mosquée doha', 'Mosquée trajet']);
+    expect(customStarted.firstStep.activity).toBe('Mosquée doha');
+
+    // Full run manipulation
+    const { run } = startTemplateRun(template);
+
+    // Reorder upcoming steps 2 <-> 3
+    const reordered = reorderTemplateRunSteps(run, 2, 3);
+    expect(reordered.nextRun.steps.map(s => s.activity)).toEqual([
+      'Mosquée trajet',
+      'Mosquée prière',
+      'Retour',
+      'Mosquée doha',
+    ]);
+    // Cannot reorder current running step via reorderTemplateRunSteps
+    const blockedReorder = reorderTemplateRunSteps(reordered.nextRun, 0, 2);
+    expect(blockedReorder.movedStep).toBeNull();
+
+    // Swap current running step (0) with step 2 ('Retour')
+    const swapped = swapCurrentTemplateStep(reordered.nextRun, 2);
+    expect(swapped.swapped).toBe(true);
+    expect(swapped.nextCurrentStep.activity).toBe('Retour');
+    expect(swapped.previousStep.activity).toBe('Mosquée trajet');
+    expect(swapped.nextRun.steps.map(s => s.activity)).toEqual([
+      'Retour',
+      'Mosquée prière',
+      'Mosquée trajet',
+      'Mosquée doha',
+    ]);
+
+    // Skip upcoming step index 1 ('Mosquée prière')
+    const skippedUp = skipUpcomingTemplateStep(swapped.nextRun, 1);
+    expect(skippedUp.completed).toBe(false);
+    expect(skippedUp.skippedStep.activity).toBe('Mosquée prière');
+    expect(skippedUp.nextRun.steps.map(s => s.activity)).toEqual([
+      'Retour',
+      'Mosquée trajet',
+      'Mosquée doha',
+    ]);
+
+    // Pause after step 0 -> 'Mosquée trajet' is ready; skip ready step -> 'Mosquée doha' is ready
+    const paused = pauseTemplateRunAfterManualStop(skippedUp.nextRun);
+    expect(paused.stepState).toBe('ready');
+    expect(paused.steps[paused.currentIndex].activity).toBe('Mosquée trajet');
+
+    const skipReady1 = skipReadyTemplateStep(paused);
+    expect(skipReady1.completed).toBe(false);
+    expect(skipReady1.skippedStep.activity).toBe('Mosquée trajet');
+    expect(skipReady1.nextStep.activity).toBe('Mosquée doha');
+
+    // Skip last ready step -> run completes
+    const skipReady2 = skipReadyTemplateStep(skipReady1.nextRun);
+    expect(skipReady2.completed).toBe(true);
+    expect(skipReady2.nextRun).toBeNull();
+    expect(skipReady2.totalCompleted).toBe(1);
+  });
+
+  it('dispatches template skip, reorder, and swap actions through StateManager with Undo support', () => {
+    const sm = createStateManager({
+      initialState: { categories: CATEGORIES, entries: [], activities: [] },
+      persistFn: () => Promise.resolve(),
+    });
+    sm.actions.saveTemplate({
+      id: 'tpl-sm',
+      name: 'Routine',
+      steps: [
+        { id: 'a', activity: 'Étape A', categoryId: 'transport', targetMins: 10 },
+        { id: 'b', activity: 'Étape B', categoryId: 'spiritualite', targetMins: 15 },
+        { id: 'c', activity: 'Étape C', categoryId: 'etude', targetMins: 20 },
+      ],
+    });
+    const tpl = sm.getState().activityTemplates[0];
+    sm.actions.startTemplateRun({ template: tpl, date: '2026-11-26', startTime: '08:00', startTs: 1000 });
+
+    sm.actions.reorderTemplateRunSteps(2, 1);
+    expect(sm.getState().activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Étape A',
+      'Étape C',
+      'Étape B',
+    ]);
+
+    sm.actions.swapCurrentTemplateStep({ targetIndex: 1, date: '2026-11-26', startTime: '08:01', startTs: 2000 });
+    expect(sm.getState().activeTimer.activity).toBe('Étape C');
+    expect(sm.getState().activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Étape C',
+      'Étape A',
+      'Étape B',
+    ]);
+
+    sm.actions.skipUpcomingTemplateStep(2);
+    expect(sm.getState().activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Étape C',
+      'Étape A',
+    ]);
+
+    sm.undo();
+    expect(sm.getState().activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Étape C',
+      'Étape A',
+      'Étape B',
+    ]);
+  });
 });
+

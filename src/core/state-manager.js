@@ -11,6 +11,7 @@ import { createDefaultQuickTilesConfig } from './mobile/quick-tiles.js';
 import { normalizeLocation, stripEntryGeoLocations } from './geo/geo-location.js';
 import { mergeCategoriesState } from '../state/category-actions.js';
 import { mergeActivitiesState, findSavedActivityMatch } from '../state/activity-actions.js';
+import { splitTimeEntryState } from '../state/entry-actions.js';
 import {
   createHistoryManager,
   applyUndoableSnapshot,
@@ -23,6 +24,10 @@ import {
   advanceTemplateRun,
   pauseTemplateRunAfterManualStop,
   resumeReadyTemplateRun,
+  skipReadyTemplateStep,
+  skipUpcomingTemplateStep,
+  reorderTemplateRunSteps,
+  swapCurrentTemplateStep,
   reassignCategoryInTemplates,
   reassignActivityInTemplates,
   buildEntriesFromTemplate,
@@ -58,6 +63,7 @@ export const ACTION_TYPES = Object.freeze({
   SET_QUICK_TILES_CONFIG: 'SET_QUICK_TILES_CONFIG',
   RECONCILE_NATIVE_TIMER: 'RECONCILE_NATIVE_TIMER',
   UPSERT_ENTRY: 'UPSERT_ENTRY',
+  SPLIT_ENTRY: 'SPLIT_ENTRY',
   DELETE_ENTRY: 'DELETE_ENTRY',
   ADD_ACTIVITY: 'ADD_ACTIVITY',
   DELETE_ACTIVITY: 'DELETE_ACTIVITY',
@@ -71,6 +77,10 @@ export const ACTION_TYPES = Object.freeze({
   ADVANCE_TEMPLATE_RUN: 'ADVANCE_TEMPLATE_RUN',
   PAUSE_TEMPLATE_RUN: 'PAUSE_TEMPLATE_RUN',
   RESUME_TEMPLATE_RUN: 'RESUME_TEMPLATE_RUN',
+  SKIP_READY_TEMPLATE_STEP: 'SKIP_READY_TEMPLATE_STEP',
+  SKIP_UPCOMING_TEMPLATE_STEP: 'SKIP_UPCOMING_TEMPLATE_STEP',
+  REORDER_TEMPLATE_RUN_STEPS: 'REORDER_TEMPLATE_RUN_STEPS',
+  SWAP_CURRENT_TEMPLATE_STEP: 'SWAP_CURRENT_TEMPLATE_STEP',
   STOP_TEMPLATE_RUN: 'STOP_TEMPLATE_RUN',
   LOG_TEMPLATE_ENTRIES: 'LOG_TEMPLATE_ENTRIES',
   SET_ERROR: 'SET_ERROR',
@@ -365,6 +375,26 @@ export function appReducer(state, action) {
       };
     }
 
+    case ACTION_TYPES.SPLIT_ENTRY: {
+      const result = splitTimeEntryState(
+        {
+          entries: state.entries,
+          activities: state.activities,
+          activeTimer: state.activeTimer,
+        },
+        action.payload || {}
+      );
+      return {
+        ...state,
+        entries: result.entries,
+        activities: result.activities,
+        activeTimer: result.activeTimer,
+        editingEntryId: state.editingEntryId === action.payload?.entryId ? null : state.editingEntryId,
+        modal: null,
+        error: null,
+      };
+    }
+
     case ACTION_TYPES.DELETE_ENTRY: {
       const target = state.entries.find(e => e.id === action.payload);
       const record = target ? createTrashRecord({ kind: TRASH_ITEM_KINDS.ENTRY, item: target }) : null;
@@ -509,8 +539,8 @@ export function appReducer(state, action) {
     }
 
     case ACTION_TYPES.START_TEMPLATE_RUN: {
-      const { template, startIndex = 0, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
-      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(startTs).toISOString(), startIndex });
+      const { template, startIndex = 0, steps = null, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
+      const { run, firstStep } = startTemplateRun(template, { startedAt: new Date(startTs).toISOString(), startIndex, steps });
       const savedMatch = findSavedActivityMatch(state.activities, {
         label: firstStep.activity,
         categoryId: firstStep.categoryId,
@@ -628,6 +658,76 @@ export function appReducer(state, action) {
         activeTimer: timer,
         timerUpdatedAt: startTs,
         activeTemplateRun: resumed.nextRun,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.SKIP_READY_TEMPLATE_STEP: {
+      if (!state.activeTemplateRun) return state;
+      const skipped = skipReadyTemplateStep(state.activeTemplateRun);
+      return {
+        ...state,
+        activeTemplateRun: skipped.completed ? null : skipped.nextRun,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.SKIP_UPCOMING_TEMPLATE_STEP: {
+      if (!state.activeTemplateRun) return state;
+      const { stepIndex } = action.payload || {};
+      const skipped = skipUpcomingTemplateStep(state.activeTemplateRun, stepIndex);
+      return {
+        ...state,
+        activeTemplateRun: skipped.completed ? null : skipped.nextRun,
+        error: null,
+      };
+    }
+
+    case ACTION_TYPES.REORDER_TEMPLATE_RUN_STEPS: {
+      if (!state.activeTemplateRun) return state;
+      const { fromIndex, toIndex } = action.payload || {};
+      const moved = reorderTemplateRunSteps(state.activeTemplateRun, fromIndex, toIndex);
+      return moved?.nextRun
+        ? {
+            ...state,
+            activeTemplateRun: moved.nextRun,
+            error: null,
+          }
+        : state;
+    }
+
+    case ACTION_TYPES.SWAP_CURRENT_TEMPLATE_STEP: {
+      if (!state.activeTemplateRun) return state;
+      const { targetIndex, date = today(), startTime = formatCurrentClock(), startTs = Date.now(), startLocation = null, location = null } = action.payload || {};
+      const swapped = swapCurrentTemplateStep(state.activeTemplateRun, targetIndex);
+      if (!swapped?.swapped) return state;
+
+      let nextTimer = state.activeTimer;
+      let nextTimerUpdatedAt = state.timerUpdatedAt;
+      if (state.activeTemplateRun.stepState === 'running' && swapped.nextCurrentStep) {
+        const savedMatch = findSavedActivityMatch(state.activities, {
+          label: swapped.nextCurrentStep.activity,
+          categoryId: swapped.nextCurrentStep.categoryId,
+        });
+        nextTimer = createActiveTimer({
+          activity: swapped.nextCurrentStep.activity,
+          categoryId: swapped.nextCurrentStep.categoryId,
+          date,
+          startTime,
+          startTs,
+          startLocation: startLocation ?? location,
+          content: savedMatch?.content || '',
+          startContent: savedMatch?.startContent || '',
+          endContent: savedMatch?.endContent || '',
+        });
+        nextTimerUpdatedAt = startTs;
+      }
+
+      return {
+        ...state,
+        activeTimer: nextTimer,
+        timerUpdatedAt: nextTimerUpdatedAt,
+        activeTemplateRun: swapped.nextRun,
         error: null,
       };
     }
@@ -808,6 +908,7 @@ const UNDOABLE_ACTION_LABELS = Object.freeze({
   [ACTION_TYPES.START_TIMER]: 'Démarrage du chrono',
   [ACTION_TYPES.STOP_TIMER]: 'Arrêt du chrono',
   [ACTION_TYPES.UPSERT_ENTRY]: 'Enregistrement de session',
+  [ACTION_TYPES.SPLIT_ENTRY]: 'Découpage de session',
   [ACTION_TYPES.DELETE_ENTRY]: 'Suppression de session',
   [ACTION_TYPES.ADD_ACTIVITY]: 'Ajout d’activité',
   [ACTION_TYPES.DELETE_ACTIVITY]: 'Suppression d’activité',
@@ -820,6 +921,10 @@ const UNDOABLE_ACTION_LABELS = Object.freeze({
   [ACTION_TYPES.ADVANCE_TEMPLATE_RUN]: 'Étape de gabarit',
   [ACTION_TYPES.PAUSE_TEMPLATE_RUN]: 'Pause de gabarit',
   [ACTION_TYPES.RESUME_TEMPLATE_RUN]: 'Reprise de gabarit',
+  [ACTION_TYPES.SKIP_READY_TEMPLATE_STEP]: 'Étape de gabarit passée',
+  [ACTION_TYPES.SKIP_UPCOMING_TEMPLATE_STEP]: 'Étape de gabarit passée',
+  [ACTION_TYPES.REORDER_TEMPLATE_RUN_STEPS]: 'Réorganisation de gabarit',
+  [ACTION_TYPES.SWAP_CURRENT_TEMPLATE_STEP]: 'Permutation d’étape de gabarit',
   [ACTION_TYPES.STOP_TEMPLATE_RUN]: 'Arrêt de gabarit',
   [ACTION_TYPES.LOG_TEMPLATE_ENTRIES]: 'Journalisation de gabarit',
   [ACTION_TYPES.SET_QUICK_TILES_CONFIG]: 'Configuration des tuiles rapides',
@@ -1033,6 +1138,9 @@ export function createStateManager({ initialState, persistFn, onError, maxHistor
       upsertEntry(entry) {
         return dispatch({ type: ACTION_TYPES.UPSERT_ENTRY, payload: entry });
       },
+      splitEntry(payload) {
+        return dispatch({ type: ACTION_TYPES.SPLIT_ENTRY, payload });
+      },
       deleteEntry(id) {
         return dispatch({ type: ACTION_TYPES.DELETE_ENTRY, payload: id });
       },
@@ -1068,6 +1176,18 @@ export function createStateManager({ initialState, persistFn, onError, maxHistor
       },
       resumeTemplateRun(payload) {
         return dispatch({ type: ACTION_TYPES.RESUME_TEMPLATE_RUN, payload });
+      },
+      skipReadyTemplateStep() {
+        return dispatch({ type: ACTION_TYPES.SKIP_READY_TEMPLATE_STEP });
+      },
+      skipUpcomingTemplateStep(stepIndex) {
+        return dispatch({ type: ACTION_TYPES.SKIP_UPCOMING_TEMPLATE_STEP, payload: { stepIndex } });
+      },
+      reorderTemplateRunSteps(fromIndex, toIndex) {
+        return dispatch({ type: ACTION_TYPES.REORDER_TEMPLATE_RUN_STEPS, payload: { fromIndex, toIndex } });
+      },
+      swapCurrentTemplateStep(payload) {
+        return dispatch({ type: ACTION_TYPES.SWAP_CURRENT_TEMPLATE_STEP, payload });
       },
       stopTemplateRun() {
         return dispatch({ type: ACTION_TYPES.STOP_TEMPLATE_RUN });

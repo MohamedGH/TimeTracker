@@ -323,4 +323,150 @@ describe('Activity Templates UI & Runner Integration', () => {
       '08:35-08:50 Mosquée doha',
     ]);
   });
+
+  it('allows skipping current (including last), ready, and upcoming steps, reordering queue, and swapping active step', async () => {
+    const template = {
+      id: 'tpl-mosque',
+      name: 'Mosquée',
+      steps: [
+        { id: 's1', activity: 'Mosquée trajet', categoryId: 'transport', targetMins: 15 },
+        { id: 's2', activity: 'Mosquée prière', categoryId: 'autre', targetMins: 20 },
+        { id: 's3', activity: 'Mosquée doha', categoryId: 'etude', targetMins: 15 },
+      ],
+      useCount: 0,
+      updatedAt: 1000,
+    };
+
+    const { root, state } = mountUI({ activityTemplates: [template] });
+
+    // Launch template -> running step 0: Mosquée trajet
+    root.querySelector('[data-behavior-target="template-start"]').click();
+    await flushAsync();
+    expect(state.activeTimer.activity).toBe('Mosquée trajet');
+
+    // Reorder upcoming steps in queue: move step index 2 ('Mosquée doha') up to index 1
+    const queueRowsBefore = root.querySelectorAll('[data-template-queue-index]');
+    expect(queueRowsBefore).toHaveLength(2);
+    queueRowsBefore[1].querySelector('[data-behavior-target="template-run-move-up"]').click();
+    await flushAsync();
+    expect(state.activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Mosquée trajet',
+      'Mosquée doha',
+      'Mosquée prière',
+    ]);
+
+    // Swap current running step ('Mosquée trajet') with 'Mosquée prière' at index 2
+    root.querySelectorAll('[data-template-queue-index]')[1]
+      .querySelector('[data-behavior-target="template-run-swap-current"]').click();
+    await flushAsync();
+    expect(state.activeTimer.activity).toBe('Mosquée prière');
+    expect(state.activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Mosquée prière',
+      'Mosquée doha',
+      'Mosquée trajet',
+    ]);
+    // Saved template remains unchanged
+    expect(state.activityTemplates[0].steps.map(s => s.activity)).toEqual([
+      'Mosquée trajet',
+      'Mosquée prière',
+      'Mosquée doha',
+    ]);
+
+    // Skip upcoming step index 1 ('Mosquée doha')
+    root.querySelectorAll('[data-template-queue-index]')[0]
+      .querySelector('[data-behavior-target="template-run-skip-upcoming"]').click();
+    await flushAsync();
+    expect(state.activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Mosquée prière',
+      'Mosquée trajet',
+    ]);
+
+    // Stop current timer manually -> transitions to 'ready' for 'Mosquée trajet'
+    root.querySelector('[data-behavior-target="timer-stop"]').click();
+    await flushAsync();
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0].activity).toBe('Mosquée prière');
+    expect(state.activeTemplateRun.stepState).toBe('ready');
+
+    // Skip ready step ('Mosquée trajet', last remaining step) -> finishes run without extra entry
+    const skipReadyBtn = root.querySelector('[data-behavior-target="template-skip-ready-step"]');
+    expect(skipReadyBtn).toBeTruthy();
+    skipReadyBtn.click();
+    await flushAsync();
+    expect(state.activeTemplateRun).toBeNull();
+    expect(state.activeTimer).toBeNull();
+    expect(state.entries).toHaveLength(1);
+  });
+
+  it('allows skipping the final running step directly without recording it', async () => {
+    const template = {
+      id: 'tpl-two',
+      name: 'Rapide',
+      steps: [
+        { id: 's1', activity: 'Trajet', categoryId: 'transport', targetMins: 10 },
+        { id: 's2', activity: 'Lecture', categoryId: 'etude', targetMins: 15 },
+      ],
+      useCount: 0,
+      updatedAt: 1000,
+    };
+
+    const { root, state } = mountUI({ activityTemplates: [template] });
+    root.querySelector('[data-behavior-target="template-start"]').click();
+    await flushAsync();
+
+    // Advance with record -> step 2 ('Lecture')
+    root.querySelector('[data-behavior-target="template-next-step"]').click();
+    await flushAsync();
+    expect(state.entries).toHaveLength(1);
+    expect(state.activeTimer.activity).toBe('Lecture');
+
+    // Even on the last step, 'Passer l’étape' button is available and completes without logging 'Lecture'
+    const skipLastBtn = root.querySelector('[data-behavior-target="template-skip-step"]');
+    expect(skipLastBtn).toBeTruthy();
+    skipLastBtn.click();
+    await flushAsync();
+
+    expect(state.activeTemplateRun).toBeNull();
+    expect(state.activeTimer).toBeNull();
+    expect(state.entries).toHaveLength(1);
+  });
+
+  it('allows reordering and skipping steps inside the template start picker modal before launch', async () => {
+    const template = {
+      id: 'tpl-picker',
+      name: 'Mosquée',
+      steps: [
+        { id: 's1', activity: 'Mosquée trajet', categoryId: 'transport', targetMins: 15 },
+        { id: 's2', activity: 'Mosquée prière', categoryId: 'autre', targetMins: 20 },
+        { id: 's3', activity: 'Mosquée doha', categoryId: 'etude', targetMins: 15 },
+      ],
+      useCount: 0,
+      updatedAt: 1000,
+    };
+
+    const { root, state } = mountUI({ activityTemplates: [template] });
+    root.querySelector('[data-behavior-target="template-start-picker-open"]').click();
+
+    const modal = root.querySelector('.template-start-picker-modal');
+    expect(modal).toBeTruthy();
+
+    // Skip step 1 ('Mosquée trajet')
+    const rows = modal.querySelectorAll('[data-template-start-step-index]');
+    rows[0].querySelector('[data-behavior-target="template-start-toggle-skip"]').click();
+
+    // Move 'Mosquée doha' up above 'Mosquée prière'
+    modal.querySelectorAll('[data-template-start-step-index]')[2]
+      .querySelector('[data-behavior-target="template-start-move-up"]').click();
+
+    // Confirm start
+    modal.querySelector('[data-behavior-target="template-start-confirm"]').click();
+    await flushAsync();
+
+    expect(state.activeTimer.activity).toBe('Mosquée doha');
+    expect(state.activeTemplateRun.steps.map(s => s.activity)).toEqual([
+      'Mosquée doha',
+      'Mosquée prière',
+    ]);
+  });
 });
+

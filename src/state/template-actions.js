@@ -481,8 +481,14 @@ export function detectRecurringSequences(
  * Starts a template run from step 0.
  * Pure function.
  */
-export function startTemplateRun(template, { startedAt = new Date().toISOString(), startIndex = 0 } = {}) {
-  const normalized = normalizeActivityTemplate(template);
+export function startTemplateRun(
+  template,
+  { startedAt = new Date().toISOString(), startIndex = 0, steps = null } = {}
+) {
+  const sourceTemplate = Array.isArray(steps) && steps.length
+    ? { ...template, steps }
+    : template;
+  const normalized = normalizeActivityTemplate(sourceTemplate);
   if (!normalized || !normalized.steps.length) {
     throw new Error('Ce gabarit ne contient aucune étape valide.');
   }
@@ -586,6 +592,166 @@ export function resumeReadyTemplateRun(run) {
       stepState: 'running',
     },
     currentStep: normalized.steps[normalized.currentIndex],
+  };
+}
+
+/**
+ * Skips the current step while paused in 'ready' state without launching or logging it.
+ * Pure function.
+ */
+export function skipReadyTemplateStep(run) {
+  const normalized = normalizeActiveTemplateRun(run);
+  if (!normalized) {
+    return {
+      completed: true,
+      nextRun: null,
+      nextStep: null,
+      skippedStep: null,
+      totalCompleted: 0,
+    };
+  }
+
+  const skippedStep = normalized.steps[normalized.currentIndex] || null;
+  const nextIndex = normalized.currentIndex + 1;
+  if (nextIndex >= normalized.steps.length) {
+    return {
+      completed: true,
+      nextRun: null,
+      nextStep: null,
+      skippedStep,
+      totalCompleted: normalized.completedEntriesCount,
+    };
+  }
+
+  const nextRun = {
+    ...normalized,
+    currentIndex: nextIndex,
+    stepState: 'ready',
+  };
+
+  return {
+    completed: false,
+    nextRun,
+    nextStep: nextRun.steps[nextIndex],
+    skippedStep,
+    totalCompleted: normalized.completedEntriesCount,
+  };
+}
+
+/**
+ * Skips (removes) an upcoming step from an active template run without modifying the saved template.
+ * When stepState is 'ready', stepIndex may also equal currentIndex.
+ * Pure function.
+ */
+export function skipUpcomingTemplateStep(run, stepIndex) {
+  const normalized = normalizeActiveTemplateRun(run);
+  if (!normalized) return { completed: true, nextRun: null, skippedStep: null, totalCompleted: 0 };
+
+  const minIndex = normalized.stepState === 'ready'
+    ? normalized.currentIndex
+    : normalized.currentIndex + 1;
+  const idx = Number(stepIndex);
+  if (!Number.isInteger(idx) || idx < minIndex || idx >= normalized.steps.length) {
+    return {
+      completed: false,
+      nextRun: normalized,
+      skippedStep: null,
+      totalCompleted: normalized.completedEntriesCount,
+    };
+  }
+
+  const skippedStep = normalized.steps[idx];
+  const nextSteps = normalized.steps.filter((_, i) => i !== idx);
+
+  if (nextSteps.length === 0 || normalized.currentIndex >= nextSteps.length) {
+    return {
+      completed: true,
+      nextRun: null,
+      skippedStep,
+      totalCompleted: normalized.completedEntriesCount,
+    };
+  }
+
+  return {
+    completed: false,
+    nextRun: {
+      ...normalized,
+      steps: nextSteps,
+    },
+    skippedStep,
+    totalCompleted: normalized.completedEntriesCount,
+  };
+}
+
+/**
+ * Reorders/moves steps within the remaining portion of an active template run.
+ * Pure function.
+ */
+export function reorderTemplateRunSteps(run, fromIndex, toIndex) {
+  const normalized = normalizeActiveTemplateRun(run);
+  if (!normalized) return null;
+
+  const minIndex = normalized.stepState === 'ready'
+    ? normalized.currentIndex
+    : normalized.currentIndex + 1;
+  const from = Number(fromIndex);
+  const to = Number(toIndex);
+  if (
+    !Number.isInteger(from)
+    || !Number.isInteger(to)
+    || from < minIndex
+    || to < minIndex
+    || from >= normalized.steps.length
+    || to >= normalized.steps.length
+    || from === to
+  ) {
+    return { nextRun: normalized, movedStep: null };
+  }
+
+  const movedStep = normalized.steps[from];
+  const nextSteps = reorderTemplateSteps(normalized.steps, from, to);
+  return {
+    nextRun: {
+      ...normalized,
+      steps: nextSteps,
+    },
+    movedStep,
+  };
+}
+
+/**
+ * Swaps the current step of an active template run with an upcoming step at targetIndex.
+ * Pure function.
+ */
+export function swapCurrentTemplateStep(run, targetIndex) {
+  const normalized = normalizeActiveTemplateRun(run);
+  if (!normalized) return null;
+
+  const target = Number(targetIndex);
+  const current = normalized.currentIndex;
+  if (!Number.isInteger(target) || target <= current || target >= normalized.steps.length) {
+    return {
+      nextRun: normalized,
+      previousStep: normalized.steps[current] || null,
+      nextCurrentStep: normalized.steps[current] || null,
+      swapped: false,
+    };
+  }
+
+  const nextSteps = normalized.steps.map(step => ({ ...step }));
+  const previousStep = nextSteps[current];
+  const nextCurrentStep = nextSteps[target];
+  nextSteps[current] = nextCurrentStep;
+  nextSteps[target] = previousStep;
+
+  return {
+    nextRun: {
+      ...normalized,
+      steps: nextSteps,
+    },
+    previousStep,
+    nextCurrentStep,
+    swapped: true,
   };
 }
 
