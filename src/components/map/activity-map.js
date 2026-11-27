@@ -370,15 +370,33 @@ export function renderActivityMapCard({
     card.appendChild(emptyBox);
   } else {
     if (!canRenderInteractiveMap) {
-      const configNotice = el(
-        'div',
-        'activity-map-config-note',
-        !apiKey
-          ? 'Carte interactive Google Maps non configurée (clé VITE_GOOGLE_MAPS_API_KEY absente). Vous pouvez consulter chaque position directement via les liens « Ouvrir dans Google Maps » ci-dessous.'
-          : 'Carte interactive Google Maps temporairement indisponible (clé invalide ou quota atteint). Utilisez les liens « Ouvrir dans Google Maps » ci-dessous pour visualiser vos lieux.'
-      );
-      configNotice.dataset.activityMapMissingKey = 'true';
-      card.appendChild(configNotice);
+      let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+      for (const cl of model.clusters) {
+        if (Number.isFinite(cl.latitude) && Number.isFinite(cl.longitude)) {
+          minLat = Math.min(minLat, cl.latitude);
+          maxLat = Math.max(maxLat, cl.latitude);
+          minLng = Math.min(minLng, cl.longitude);
+          maxLng = Math.max(maxLng, cl.longitude);
+        }
+      }
+      if (minLat > maxLat) {
+        minLat = 48.8; maxLat = 48.9; minLng = 2.3; maxLng = 2.4;
+      } else {
+        const dLat = Math.max(0.01, (maxLat - minLat) * 0.2);
+        const dLng = Math.max(0.01, (maxLng - minLng) * 0.2);
+        minLat -= dLat; maxLat += dLat; minLng -= dLng; maxLng += dLng;
+      }
+      const bboxStr = `${minLng},${minLat},${maxLng},${maxLat}`;
+      const osmEmbedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bboxStr)}&layer=mapnik`;
+
+      const mapStage = el('div', 'activity-map-stage');
+      const iframe = document.createElement('iframe');
+      iframe.className = 'activity-map-fallback-iframe';
+      iframe.title = 'Carte OpenStreetMap des activités';
+      iframe.src = osmEmbedUrl;
+      iframe.style.cssText = 'width:100%;height:340px;border:0;border-radius:var(--radius-sm);';
+      mapStage.appendChild(iframe);
+      card.appendChild(mapStage);
     } else {
       const mapStage = el('div', 'activity-map-stage');
       const mapCanvas = el('div', 'activity-map-canvas');
