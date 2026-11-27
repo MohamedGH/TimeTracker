@@ -1635,13 +1635,20 @@ export function createUI({
   async function handleSwapCurrentTemplateStep(targetIndex) {
     if (!state.activeTemplateRun) return;
     const isRunning = state.activeTemplateRun.stepState === 'running';
-    recordUndoCheckpoint('Échange d’étape du gabarit');
-    const swapped = swapCurrentTemplateStep(state.activeTemplateRun, targetIndex);
-    if (!swapped?.swapped) return;
-
+    recordUndoCheckpoint('Switch d’étape du gabarit');
     const nowTs = Date.now();
     const clockNow = nowTime();
     const currentDay = today();
+
+    let closedEntryId = null;
+    if (isRunning && state.activeTimer) {
+      const closed = recordRunningTimerIntoEntries(nowTs, clockNow);
+      closedEntryId = closed?.entry?.id || null;
+    }
+
+    const swapped = swapCurrentTemplateStep(state.activeTemplateRun, targetIndex);
+    if (!swapped?.swapped) return;
+
     state.activeTemplateRun = swapped.nextRun;
 
     if (isRunning && swapped.nextCurrentStep) {
@@ -1662,16 +1669,20 @@ export function createUI({
       lastCompletedEndPrompt = null;
       state.timerUpdatedAt = nowTs;
       if (state.geoTrackingEnabled) {
+        if (closedEntryId) captureEntryEndLocationAsync(closedEntryId);
         captureTimerLocationAsync(nowTs);
       }
       await persist();
       pushActiveTimerToNative(state.activeTimer, nowTs).catch(() => {});
     } else {
+      if (state.geoTrackingEnabled && closedEntryId) {
+        captureEntryEndLocationAsync(closedEntryId);
+      }
       await persist();
     }
 
     errorManager.notifyInfo(
-      `Ordre inversé : « ${swapped.nextCurrentStep?.activity || ''} » maintenant, « ${swapped.previousStep?.activity || ''} » ensuite.`
+      `Switch vers « ${swapped.nextCurrentStep?.activity || ''} » effectué · Nouvel enregistrement généré.`
     );
     rerender();
   }

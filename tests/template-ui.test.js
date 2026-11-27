@@ -384,7 +384,8 @@ describe('Activity Templates UI & Runner Integration', () => {
     // Stop current timer manually -> transitions to 'ready' for 'Mosquée trajet'
     root.querySelector('[data-behavior-target="timer-stop"]').click();
     await flushAsync();
-    expect(state.entries).toHaveLength(1);
+    expect(state.entries).toHaveLength(2);
+    expect(state.entries[1].activity).toBe('Mosquée trajet');
     expect(state.entries[0].activity).toBe('Mosquée prière');
     expect(state.activeTemplateRun.stepState).toBe('ready');
 
@@ -395,7 +396,7 @@ describe('Activity Templates UI & Runner Integration', () => {
     await flushAsync();
     expect(state.activeTemplateRun).toBeNull();
     expect(state.activeTimer).toBeNull();
-    expect(state.entries).toHaveLength(1);
+    expect(state.entries).toHaveLength(2);
   });
 
   it('allows skipping the final running step directly without recording it', async () => {
@@ -467,6 +468,34 @@ describe('Activity Templates UI & Runner Integration', () => {
       'Mosquée doha',
       'Mosquée prière',
     ]);
+  });
+
+  it('switches/swaps current template step with an upcoming step and generates a new time entry for the completed segment', async () => {
+    const template = {
+      id: 'tpl-switch',
+      name: 'Routine Switch',
+      steps: [
+        { id: 's1', activity: 'Act A', categoryId: 'autre', targetMins: 10 },
+        { id: 's2', activity: 'Act B', categoryId: 'autre', targetMins: 10 },
+      ],
+      useCount: 0,
+      updatedAt: 1000,
+    };
+    const { root, state } = mountUI({ activityTemplates: [template] });
+    root.querySelector('[data-behavior-target="template-start"]').click();
+    await flushAsync();
+
+    expect(state.activeTimer?.activity).toBe('Act A');
+    expect(state.activeTemplateRun?.currentIndex).toBe(0);
+
+    const swapBtn = root.querySelector('[data-behavior-target="template-run-swap-current"]');
+    expect(swapBtn).toBeTruthy();
+    swapBtn.click();
+    await flushAsync();
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0].activity).toBe('Act A');
+    expect(state.activeTimer?.activity).toBe('Act B');
   });
 });
 
